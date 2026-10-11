@@ -71,3 +71,8 @@ define_id!(
     TvdId,
     "Tvd"
 );
+define_id!(
+    /// Fahrstraße (Zug- oder Rangierstraße) aus der Projektierung.
+    RouteId,
+    "Route"
+);

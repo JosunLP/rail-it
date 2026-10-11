@@ -4,6 +4,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
+pub use railit_types::PointPosition;
 use railit_types::{Length, PointId, SignalId, TerminalId, TrackId, TvdId};
 
 /// Gleisabschnitt mit den Ports `a` und `b`.
@@ -210,17 +211,6 @@ impl PortRef {
     pub const fn new(node: NodeRef, port: Port) -> Self {
         Self { node, port }
     }
-}
-
-/// Lage einer Weiche.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
-pub enum PointPosition {
-    /// Spitze ↔ linker Strang.
-    Left,
-    /// Spitze ↔ rechter Strang.
-    Right,
 }
 
 /// Beliebiges benanntes Element des Netzes.

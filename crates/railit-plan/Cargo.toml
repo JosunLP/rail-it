@@ -1,0 +1,32 @@
+[package]
+name = "railit-plan"
+description = "Plan-Image von rail-it: binäres, signiertes Format der Projektierungsdaten mit Zero-Copy-Sicht für den Sicherheitskern (no_std, ohne alloc)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+railit-types = { workspace = true }
+# Integrität (SHA-256) und Authentizität (Ed25519) des Plan-Images. Beide Crates sind
+# no_std-fähig, weit verbreitet und kryptografisch geprüft.
+sha2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+
+[features]
+default = []
+# Eigentümer-Datenmodell, Schreiben und Signieren von Plan-Images.
+alloc = []
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "image"
+required-features = ["alloc"]
