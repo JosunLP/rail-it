@@ -75,3 +75,139 @@ fn missing_file_exits_with_2() {
             .contains("kann nicht gelesen werden")
     );
 }
+
+fn tmp_dir(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn keygen_compile_verify_info() {
+    let dir = tmp_dir("plan-flow");
+    let prefix = dir.join("railit");
+    let s = |p: &PathBuf| p.to_str().unwrap().to_string();
+
+    assert_eq!(
+        railit(&["plan", "keygen", &s(&prefix)]).status.code(),
+        Some(0)
+    );
+    assert_eq!(
+        railit(&["plan", "keygen", &s(&prefix)]).status.code(),
+        Some(2),
+        "kein Überschreiben"
+    );
+
+    let plan = dir.join("bs.rplan");
+    let key = s(&prefix.with_extension("key"));
+    let public = s(&prefix.with_extension("pub"));
+    let out = railit(&[
+        "plan",
+        "compile",
+        &example(),
+        "--out",
+        &s(&plan),
+        "--key",
+        &key,
+        "-o",
+        "json",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        (json["routes"].as_u64(), json["signed"].as_bool()),
+        (Some(8), Some(true))
+    );
+
+    let out = railit(&[
+        "plan",
+        "verify",
+        &s(&plan),
+        "--key",
+        &public,
+        "--network",
+        &example(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let out = railit(&["plan", "info", &s(&plan), "-o", "json"]);
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["routes"][0]["name"], "A-N1");
+    assert_eq!(json["routes"][0]["conflicts"].as_array().unwrap().len(), 4);
+
+    // Verfälschtes Image wird abgewiesen.
+    let mut bytes = std::fs::read(&plan).unwrap();
+    bytes[100] ^= 0x01;
+    let bad = dir.join("bad.rplan");
+    std::fs::write(&bad, bytes).unwrap();
+    assert_eq!(railit(&["plan", "verify", &s(&bad)]).status.code(), Some(1));
+
+    // Fremder Schlüssel wird abgewiesen.
+    let other = dir.join("other");
+    railit(&["plan", "keygen", &s(&other)]);
+    let out = railit(&[
+        "plan",
+        "verify",
+        &s(&plan),
+        "--key",
+        &s(&other.with_extension("pub")),
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+}
+
+#[test]
+fn scenarios_run_from_cli() {
+    let scenario = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/scenarios/01_einfahrt_gleis1.toml"
+    );
+    let out = railit(&["scenario", "run", scenario]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .contains("✔ Einfahrt in Gleis 1")
+    );
+
+    let dir = tmp_dir("scenario-fail");
+    let failing = dir.join("fail.toml");
+    std::fs::write(
+        &failing,
+        format!(
+            "[scenario]\nname = \"absichtlich falsch\"\nnetwork = \"{}\"\n[[step]]\nset_route = \"A-N1\"\nexpect = {{ route = {{ \"A-N1\" = \"proceed\" }} }}\n",
+            example().replace('\\', "/")
+        ),
+    )
+    .unwrap();
+    let out = railit(&["scenario", "run", failing.to_str().unwrap(), "-o", "json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["passed"], false);
+}
+
+#[test]
+fn online_commands_report_unreachable_server() {
+    let out = railit(&["--server", "http://127.0.0.1:1", "state"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        String::from_utf8(out.stderr)
+            .unwrap()
+            .contains("nicht erreichbar")
+    );
+}

@@ -944,8 +944,12 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "railit-import",
+ "railit-plan",
+ "railit-planning",
+ "railit-runtime",
  "railit-topology",
  "serde_json",
+ "ureq",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 [package]
 name = "railit"
-description = "Kommandozeile von rail-it: Netze prüfen und beschreiben; später Client des Dienstes railitd."
+description = "Kommandozeile von rail-it: Netze und Pläne prüfen, Szenarien ausführen, railitd bedienen."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,8 +16,12 @@ path = "src/main.rs"
 [dependencies]
 railit-import = { workspace = true }
 railit-topology = { workspace = true }
+railit-plan = { workspace = true, features = ["alloc"] }
+railit-planning = { workspace = true }
+railit-runtime = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
+ureq = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

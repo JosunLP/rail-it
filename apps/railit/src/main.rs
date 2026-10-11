@@ -1,19 +1,38 @@
 //! `railit` – Kommandozeile von rail-it.
 //!
-//! Phase 0 bietet die Offline-Befehle zum Prüfen und Beschreiben von Netzen. Die
-//! Online-Befehle (Fahrstraßen, Zustand, Hilfshandlungen, …) folgen mit dem Dienst
-//! `railitd` als Client der API.
+//! **Offline** (ohne Dienst):
 //!
-//! Exit-Codes: `0` Erfolg, `1` Netz ungültig, `2` Bedien- oder Lesefehler.
+//! ```text
+//! railit net validate|info NETZ.toml
+//! railit plan keygen PRÄFIX
+//! railit plan compile NETZ.toml --out PLAN.rplan [--key PRÄFIX.key]
+//! railit plan verify PLAN.rplan [--key PRÄFIX.pub] [--network NETZ.toml]
+//! railit plan info PLAN.rplan
+//! railit scenario run SZENARIO.toml…
+//! ```
+//!
+//! **Online** (Client von `railitd`, Adresse über `--server` bzw. `RAILIT_SERVER`):
+//!
+//! ```text
+//! railit state
+//! railit route list|set|cancel [NAME]
+//! railit point move NAME left|right
+//! railit sim train add|list|remove …
+//! railit sim fault set|clear ART ELEMENT
+//! railit watch
+//! ```
+//!
+//! Exit-Codes: `0` Erfolg, `1` ungültig bzw. abgelehnt, `2` Bedien-, Lese- oder
+//! Verbindungsfehler.
 
-use std::path::{Path, PathBuf};
+mod net;
+mod online;
+mod plan;
+
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use railit_import::{ImportError, toml_format};
-use railit_topology::{
-    Direction, NodeRef, Port, PortRef, SignalKind, TerminalKind, Topology, TvdMember, Validated,
-};
 use serde_json::{Value, json};
 
 #[derive(Debug, Parser)]
@@ -27,12 +46,25 @@ struct Cli {
     #[arg(long, short, global = true, value_enum, default_value_t = Output::Text)]
     output: Output,
 
+    /// Adresse von railitd (Online-Befehle).
+    #[arg(
+        long,
+        global = true,
+        env = "RAILIT_SERVER",
+        default_value = "http://127.0.0.1:7878"
+    )]
+    server: String,
+
+    /// Zugangstoken für railitd.
+    #[arg(long, global = true, env = "RAILIT_TOKEN", hide_env_values = true)]
+    token: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum Output {
+pub(crate) enum Output {
     /// Lesbarer Text.
     Text,
     /// JSON für Skripte und andere Werkzeuge.
@@ -44,6 +76,25 @@ enum Command {
     /// Netzbeschreibungen prüfen und auswerten.
     #[command(subcommand)]
     Net(NetCommand),
+    /// Projektierung: Schlüssel, Plan-Images erzeugen und prüfen.
+    #[command(subcommand)]
+    Plan(PlanCommand),
+    /// Betriebsszenarien ausführen.
+    #[command(subcommand)]
+    Scenario(ScenarioCommand),
+    /// Zustandsbild des Stellwerks (online).
+    State,
+    /// Fahrstraßen (online).
+    #[command(subcommand)]
+    Route(RouteCommand),
+    /// Weichen (online).
+    #[command(subcommand)]
+    Point(PointCommand),
+    /// Simulation steuern (online).
+    #[command(subcommand)]
+    Sim(SimCommand),
+    /// Ereignisse fortlaufend ausgeben (online).
+    Watch,
 }
 
 #[derive(Debug, Subcommand)]
@@ -60,260 +111,274 @@ enum NetCommand {
     },
 }
 
-const EXIT_INVALID: u8 = 1;
-const EXIT_USAGE: u8 = 2;
+#[derive(Debug, Subcommand)]
+enum PlanCommand {
+    /// Erzeugt ein Schlüsselpaar PRÄFIX.key (geheim) und PRÄFIX.pub (öffentlich).
+    Keygen {
+        /// Dateipräfix.
+        prefix: PathBuf,
+    },
+    /// Erzeugt Fahrstraßen, prüft sie unabhängig und schreibt das Plan-Image.
+    Compile {
+        /// Netzbeschreibung.
+        network: PathBuf,
+        /// Ausgabedatei.
+        #[arg(short = 'O', long = "out")]
+        out: PathBuf,
+        /// Geheimer Schlüssel zum Signieren.
+        #[arg(long)]
+        key: Option<PathBuf>,
+    },
+    /// Prüft ein Plan-Image (Struktur, Prüfsumme, Signatur, optional gegen ein Netz).
+    Verify {
+        /// Plan-Image.
+        plan: PathBuf,
+        /// Öffentlicher Schlüssel; dann muss der Plan signiert sein.
+        #[arg(long)]
+        key: Option<PathBuf>,
+        /// Netz für die unabhängige Gegenprüfung.
+        #[arg(long)]
+        network: Option<PathBuf>,
+    },
+    /// Listet die Fahrstraßen eines Plan-Images.
+    Info {
+        /// Plan-Image.
+        plan: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ScenarioCommand {
+    /// Führt Szenariodateien aus.
+    Run {
+        /// Szenarien (TOML).
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RouteCommand {
+    /// Alle Fahrstraßen mit Phase.
+    List,
+    /// Fahrstraße einstellen.
+    Set {
+        /// Name, z. B. A-N1.
+        name: String,
+    },
+    /// Fahrstraße zurücknehmen.
+    Cancel {
+        /// Name.
+        name: String,
+    },
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum Position {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Subcommand)]
+enum PointCommand {
+    /// Einzelne Weiche umstellen.
+    Move {
+        /// Name, z. B. W1.
+        name: String,
+        /// Ziellage.
+        #[arg(value_enum)]
+        position: Position,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SimCommand {
+    /// Züge.
+    #[command(subcommand)]
+    Train(TrainCommand),
+    /// Störungen.
+    #[command(subcommand)]
+    Fault(FaultCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum TrainCommand {
+    /// Zug vor ein Signal setzen.
+    Add {
+        /// Zugnummer.
+        name: String,
+        /// Signal, vor dem der Zug steht.
+        #[arg(long)]
+        at: String,
+        /// Zuglänge in Metern.
+        #[arg(long, default_value_t = 120)]
+        length: u32,
+        /// Geschwindigkeit in km/h.
+        #[arg(long, default_value_t = 60)]
+        speed: u16,
+        /// Halt zeigende Signale überfahren (Störungsfall).
+        #[arg(long)]
+        ignore_signals: bool,
+    },
+    /// Alle Züge.
+    List,
+    /// Zug entfernen.
+    Remove {
+        /// Zugnummer.
+        name: String,
+    },
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum FaultKind {
+    PointDisturbed,
+    TvdDisturbed,
+    TvdOccupied,
+    SignalDefective,
+}
+
+impl FaultKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::PointDisturbed => "point_disturbed",
+            Self::TvdDisturbed => "tvd_disturbed",
+            Self::TvdOccupied => "tvd_occupied",
+            Self::SignalDefective => "signal_defective",
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+enum FaultCommand {
+    /// Störung setzen.
+    Set {
+        /// Art.
+        #[arg(value_enum)]
+        kind: FaultKind,
+        /// Element.
+        element: String,
+    },
+    /// Störung aufheben.
+    Clear {
+        /// Art.
+        #[arg(value_enum)]
+        kind: FaultKind,
+        /// Element.
+        element: String,
+    },
+}
+
+pub(crate) const EXIT_INVALID: u8 = 1;
+pub(crate) const EXIT_USAGE: u8 = 2;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let output = cli.output;
     match cli.command {
-        Command::Net(NetCommand::Validate { file }) => validate(&file, cli.output),
-        Command::Net(NetCommand::Info { file }) => info(&file, cli.output),
+        Command::Net(NetCommand::Validate { file }) => net::validate(&file, output),
+        Command::Net(NetCommand::Info { file }) => net::info(&file, output),
+        Command::Plan(PlanCommand::Keygen { prefix }) => plan::keygen(&prefix, output),
+        Command::Plan(PlanCommand::Compile { network, out, key }) => {
+            plan::compile(&network, &out, key.as_deref(), output)
+        }
+        Command::Plan(PlanCommand::Verify { plan, key, network }) => {
+            plan::verify(&plan, key.as_deref(), network.as_deref(), output)
+        }
+        Command::Plan(PlanCommand::Info { plan }) => plan::info(&plan, output),
+        Command::Scenario(ScenarioCommand::Run { files }) => plan::run_scenarios(&files, output),
+        online => {
+            let client = online::Client::new(&cli.server, cli.token);
+            run_online(&client, online, output).unwrap_or_else(online::Failure::exit)
+        }
     }
 }
 
-/// Liest und importiert eine Netzbeschreibung.
-fn load(file: &Path) -> Result<Result<Validated, ImportError>, String> {
-    let source = std::fs::read_to_string(file)
-        .map_err(|e| format!("{} kann nicht gelesen werden: {e}", file.display()))?;
-    Ok(toml_format::parse(&source))
-}
-
-fn validate(file: &Path, output: Output) -> ExitCode {
-    let result = match load(file) {
-        Ok(result) => result,
-        Err(msg) => return fail_usage(&msg),
-    };
-    match (output, &result) {
-        (Output::Json, _) => print_json(&validation_json(&result)),
-        (Output::Text, Ok(v)) => {
-            let net = &v.topology;
-            println!(
-                "Netz „{}“ ist gültig: {} Gleise, {} Weichen, {} Netzenden, {} Signale, {} Gleisfreimeldeabschnitte.",
-                net.name(),
-                net.tracks().len(),
-                net.points().len(),
-                net.terminals().len(),
-                net.signals().len(),
-                net.tvds().len()
+fn run_online(
+    c: &online::Client,
+    command: Command,
+    output: Output,
+) -> Result<ExitCode, online::Failure> {
+    let path = |segment: &str| segment.replace('/', "%2F");
+    match command {
+        Command::State => online::state(c, output),
+        Command::Route(RouteCommand::List) => online::route_list(c, output),
+        Command::Route(RouteCommand::Set { name }) => online::request(
+            c,
+            &format!("/v1/routes/{}/set", path(&name)),
+            None,
+            &format!("Fahrstraße {name} einstellen"),
+            output,
+        ),
+        Command::Route(RouteCommand::Cancel { name }) => online::request(
+            c,
+            &format!("/v1/routes/{}/cancel", path(&name)),
+            None,
+            &format!("Fahrstraße {name} zurücknehmen"),
+            output,
+        ),
+        Command::Point(PointCommand::Move { name, position }) => {
+            let (pos, label) = match position {
+                Position::Left => ("left", "links"),
+                Position::Right => ("right", "rechts"),
+            };
+            online::request(
+                c,
+                &format!("/v1/points/{}/move", path(&name)),
+                Some(json!({ "position": pos })),
+                &format!("Weiche {name} nach {label}"),
+                output,
+            )
+        }
+        Command::Sim(SimCommand::Train(TrainCommand::Add {
+            name,
+            at,
+            length,
+            speed,
+            ignore_signals,
+        })) => {
+            let body = json!({
+                "name": name, "signal": at, "length_m": length, "speed_kmh": speed,
+                "ignore_signals": ignore_signals,
+            });
+            online::sim_done(
+                c.post("/v1/sim/trains", Some(body)),
+                &format!("Zug {name} steht vor {at}."),
+                output,
+            )
+        }
+        Command::Sim(SimCommand::Train(TrainCommand::List)) => online::trains(c, output),
+        Command::Sim(SimCommand::Train(TrainCommand::Remove { name })) => online::sim_done(
+            c.delete(&format!("/v1/sim/trains/{}", path(&name)))
+                .map(|v| (200, v)),
+            &format!("Zug {name} entfernt."),
+            output,
+        ),
+        Command::Sim(SimCommand::Fault(f)) => {
+            let (kind, element, active) = match f {
+                FaultCommand::Set { kind, element } => (kind, element, true),
+                FaultCommand::Clear { kind, element } => (kind, element, false),
+            };
+            let body = json!({ "kind": kind.as_str(), "element": element, "active": active });
+            let what = format!(
+                "Störung {} an {element} {}.",
+                kind.as_str(),
+                if active { "gesetzt" } else { "aufgehoben" }
             );
-            for w in &v.warnings {
-                println!("Warnung: {w}");
-            }
+            online::sim_done(c.post("/v1/sim/faults", Some(body)), &what, output)
         }
-        (Output::Text, Err(e)) => print!("{e}"),
-    }
-    if result.is_ok() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(EXIT_INVALID)
+        Command::Watch => online::watch(c, output),
+        Command::Net(_) | Command::Plan(_) | Command::Scenario(_) => Ok(ExitCode::SUCCESS),
     }
 }
 
-fn info(file: &Path, output: Output) -> ExitCode {
-    let validated = match load(file) {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => {
-            match output {
-                Output::Json => print_json(&validation_json(&Err(e))),
-                Output::Text => print!("{e}"),
-            }
-            return ExitCode::from(EXIT_INVALID);
-        }
-        Err(msg) => return fail_usage(&msg),
-    };
-    let net = &validated.topology;
-    match output {
-        Output::Json => print_json(&info_json(net)),
-        Output::Text => print_info_text(net),
-    }
-    ExitCode::SUCCESS
-}
-
-fn fail_usage(msg: &str) -> ExitCode {
+pub(crate) fn fail_usage(msg: &str) -> ExitCode {
     eprintln!("Fehler: {msg}");
     ExitCode::from(EXIT_USAGE)
 }
 
-fn print_json(value: &Value) {
+pub(crate) fn print_json(value: &Value) {
     match serde_json::to_string_pretty(value) {
         Ok(s) => println!("{s}"),
         Err(e) => eprintln!("Fehler: JSON-Ausgabe fehlgeschlagen: {e}"),
-    }
-}
-
-fn validation_json(result: &Result<Validated, ImportError>) -> Value {
-    match result {
-        Ok(v) => json!({
-            "valid": true,
-            "network": v.topology.name(),
-            "errors": [],
-            "warnings": v.warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
-        }),
-        Err(ImportError::Syntax(msg)) => json!({
-            "valid": false,
-            "errors": [{ "context": "", "message": msg, "requirement": null }],
-            "warnings": [],
-        }),
-        Err(ImportError::Invalid { errors, warnings }) => json!({
-            "valid": false,
-            "errors": errors.iter().map(|e| json!({
-                "context": e.context,
-                "message": e.message,
-                "requirement": e.requirement,
-            })).collect::<Vec<_>>(),
-            "warnings": warnings,
-        }),
-    }
-}
-
-fn metres(mm: u32) -> f64 {
-    f64::from(mm) / 1000.0
-}
-
-fn tvd_name(net: &Topology, member: TvdMember) -> &str {
-    net.tvd_of(member)
-        .and_then(|id| net.tvd(id))
-        .map_or("–", |t| t.name.as_str())
-}
-
-/// `"<element>.<port>"` des Gegenports von `port`.
-fn linked_name(net: &Topology, port: PortRef) -> String {
-    net.linked(port).map_or_else(
-        || "–".to_string(),
-        |other| {
-            let name = net.element_name(other.node.into()).unwrap_or("?");
-            format!("{name}.{}", other.port)
-        },
-    )
-}
-
-const fn direction_str(d: Direction) -> &'static str {
-    match d {
-        Direction::AToB => "a_to_b",
-        Direction::BToA => "b_to_a",
-    }
-}
-
-const fn signal_kind_str(k: SignalKind) -> &'static str {
-    match k {
-        SignalKind::Main => "main",
-        SignalKind::Distant => "distant",
-        SignalKind::Combined => "combined",
-        SignalKind::Shunting => "shunting",
-        SignalKind::EtcsStopMarker => "etcs_stop_marker",
-    }
-}
-
-const fn signal_kind_label(k: SignalKind) -> &'static str {
-    match k {
-        SignalKind::Main => "Hauptsignal",
-        SignalKind::Distant => "Vorsignal",
-        SignalKind::Combined => "Mehrabschnittssignal",
-        SignalKind::Shunting => "Rangiersignal",
-        SignalKind::EtcsStopMarker => "ETCS-Halt-Tafel",
-    }
-}
-
-const fn terminal_kind_str(k: TerminalKind) -> &'static str {
-    match k {
-        TerminalKind::BufferStop => "buffer_stop",
-        TerminalKind::Boundary => "boundary",
-    }
-}
-
-fn info_json(net: &Topology) -> Value {
-    let name_of = |e| net.element_name(e).unwrap_or("?");
-    json!({
-        "network": net.name(),
-        "components": net.components(),
-        "tracks": net.tracks().map(|(id, t)| json!({
-            "name": t.name,
-            "length_m": metres(t.length.as_mm()),
-            "tvd": tvd_name(net, TvdMember::Track(id)),
-        })).collect::<Vec<_>>(),
-        "points": net.points().map(|(id, p)| json!({
-            "name": p.name,
-            "tvd": tvd_name(net, TvdMember::Point(id)),
-        })).collect::<Vec<_>>(),
-        "terminals": net.terminals().map(|(_, t)| json!({
-            "name": t.name,
-            "kind": terminal_kind_str(t.kind),
-        })).collect::<Vec<_>>(),
-        "signals": net.signals().map(|(_, s)| json!({
-            "name": s.name,
-            "track": net.track(s.track).map_or("?", |t| t.name.as_str()),
-            "position_m": metres(s.position.as_mm()),
-            "direction": direction_str(s.direction),
-            "kind": signal_kind_str(s.kind),
-        })).collect::<Vec<_>>(),
-        "tvds": net.tvds().map(|(_, t)| json!({
-            "name": t.name,
-            "elements": t.members.iter().map(|m| name_of((*m).into())).collect::<Vec<_>>(),
-        })).collect::<Vec<_>>(),
-    })
-}
-
-fn print_info_text(net: &Topology) {
-    println!("Netz „{}“ ({} Teilnetz(e))", net.name(), net.components());
-
-    println!("\nGleise ({}):", net.tracks().len());
-    for (id, t) in net.tracks() {
-        println!(
-            "  {:<12} {:>10}   TVD {}",
-            t.name,
-            t.length.to_string(),
-            tvd_name(net, TvdMember::Track(id))
-        );
-    }
-
-    println!("\nWeichen ({}):", net.points().len());
-    for (id, p) in net.points() {
-        let node = NodeRef::Point(id);
-        let ends = [
-            (Port::Tip, "Spitze"),
-            (Port::Left, "links"),
-            (Port::Right, "rechts"),
-        ]
-        .map(|(port, label)| format!("{label} → {}", linked_name(net, PortRef::new(node, port))))
-        .join(", ");
-        println!(
-            "  {:<12} TVD {:<8} {ends}",
-            p.name,
-            tvd_name(net, TvdMember::Point(id))
-        );
-    }
-
-    println!("\nNetzenden ({}):", net.terminals().len());
-    for (_, t) in net.terminals() {
-        let kind = match t.kind {
-            TerminalKind::BufferStop => "Prellbock",
-            TerminalKind::Boundary => "Netzgrenze",
-        };
-        println!("  {:<12} {kind}", t.name);
-    }
-
-    println!("\nSignale ({}):", net.signals().len());
-    for (_, s) in net.signals() {
-        let track = net.track(s.track).map_or("?", |t| t.name.as_str());
-        let dir = match s.direction {
-            Direction::AToB => "a→b",
-            Direction::BToA => "b→a",
-        };
-        println!(
-            "  {:<12} {:>10} auf {track:<8} {dir}   {}",
-            s.name,
-            s.position.to_string(),
-            signal_kind_label(s.kind)
-        );
-    }
-
-    println!("\nGleisfreimeldeabschnitte ({}):", net.tvds().len());
-    for (_, t) in net.tvds() {
-        let members: Vec<_> = t
-            .members
-            .iter()
-            .map(|m| net.element_name((*m).into()).unwrap_or("?"))
-            .collect();
-        println!("  {:<12} {}", t.name, members.join(", "));
     }
 }
