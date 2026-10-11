@@ -11,7 +11,7 @@
 //! - durch SHA-256 gegen Verfälschung und optional durch Ed25519 gegen Unterschieben
 //!   geschützt (REQ-PLN-001 … REQ-PLN-004).
 //!
-//! Mit dem Feature `alloc` stehen außerdem das Eigentümer-Modell [`Plan`] sowie das
+//! Mit dem Feature `alloc` stehen außerdem das Eigentümer-Modell `Plan` sowie das
 //! Schreiben und Signieren zur Verfügung.
 //!
 //! Das Format ist in [`format`] beschrieben.

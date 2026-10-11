@@ -10,7 +10,7 @@
 //!   Bedienanforderungen.
 //! - **Ausgaben** ([`Outputs`]): Stellbefehle ([`Command`]) und Ereignisse ([`Event`]).
 //! - **Zustand** ([`KernelState`]): liegt in vom Aufrufer bereitgestelltem Speicher; der Kern
-//!   allokiert nicht. Auf dem Server liefert [`OwnedState`] (Feature `alloc`) den Speicher.
+//!   allokiert nicht. Auf dem Server liefert `OwnedState` (Feature `alloc`) den Speicher.
 //!
 //! Sicherheitsprinzipien:
 //!

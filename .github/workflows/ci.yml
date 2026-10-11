@@ -28,7 +28,7 @@ jobs:
       - name: Tests
         run: cargo test --workspace --all-features --locked
       - name: Doku
-        run: cargo doc --workspace --no-deps --locked
+        run: cargo doc --workspace --all-features --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings
 
