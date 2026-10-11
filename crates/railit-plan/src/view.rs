@@ -269,6 +269,18 @@ impl<'a> PlanView<'a> {
                 }
             }
             let tvds = TvdEntries::new(self.bytes, self.pool_off, raw.tvds_start, raw.tvds_len);
+            // Jede Weiche liegt in einem Abschnitt der Fahrstraße; sonst wäre sie ohne
+            // Gleisfreimeldung verschlossen und könnte nie aufgelöst werden.
+            for (point, _) in points.clone() {
+                let point_tvd = read_word(
+                    self.bytes,
+                    self.point_tvd_off,
+                    point.index().unwrap_or(usize::MAX),
+                );
+                if !point_tvd.is_some_and(|pt| tvds.clone().any(|t| t.raw() == pt)) {
+                    return Err(bad("Weiche außerhalb der Abschnitte")(index));
+                }
+            }
             for (i, tvd) in tvds.clone().enumerate() {
                 if tvd.index().is_none_or(|t| t >= self.tvds) {
                     return Err(bad("TVD")(index));

@@ -492,6 +492,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "railit-kernel"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "railit-import",
+ "railit-plan",
+ "railit-planning",
+ "railit-rules",
+ "railit-types",
+ "serde",
+]
+
+[[package]]
 name = "railit-plan"
 version = "0.1.0"
 dependencies = [
@@ -509,6 +522,13 @@ dependencies = [
  "railit-import",
  "railit-plan",
  "railit-topology",
+ "railit-types",
+]
+
+[[package]]
+name = "railit-rules"
+version = "0.1.0"
+dependencies = [
  "railit-types",
 ]
 
