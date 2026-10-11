@@ -31,7 +31,7 @@ fn first_cycle_commands_stop_everywhere() {
             )
         })
         .count();
-    assert_eq!(stops, 6);
+    assert_eq!(stops, h.plan().signal_count());
     assert_eq!(h.last, Ok(()));
 }
 
@@ -362,7 +362,11 @@ fn invariant_violation_enters_safe_state() {
             )
         })
         .count();
-    assert_eq!(stops, 6, "Beim Eintritt erhalten alle Signale Halt");
+    assert_eq!(
+        stops,
+        h.plan().signal_count(),
+        "Beim Eintritt erhalten alle Signale Halt"
+    );
 
     // Danach wird jede Anforderung abgelehnt.
     let events = h.set_route("F-P2");

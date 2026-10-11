@@ -5,7 +5,8 @@ use std::process::ExitCode;
 
 use railit_import::{ImportError, toml_format};
 use railit_topology::{
-    Direction, NodeRef, Port, PortRef, SignalKind, TerminalKind, Topology, TvdMember, Validated,
+    Direction, NodeRef, Port, PortRef, SignalKind, SignalSystem, TerminalKind, Topology, TvdMember,
+    Validated,
 };
 use serde_json::{Value, json};
 
@@ -142,6 +143,13 @@ const fn signal_kind_label(k: SignalKind) -> &'static str {
     }
 }
 
+const fn system_str(s: SignalSystem) -> &'static str {
+    match s {
+        SignalSystem::Ks => "ks",
+        SignalSystem::Hv => "hv",
+    }
+}
+
 const fn terminal_kind_str(k: TerminalKind) -> &'static str {
     match k {
         TerminalKind::BufferStop => "buffer_stop",
@@ -162,6 +170,8 @@ fn info_json(net: &Topology) -> Value {
         "points": net.points().map(|(id, p)| json!({
             "name": p.name,
             "tvd": tvd_name(net, TvdMember::Point(id)),
+            "diverging": p.diverging.map(railit_topology::PointPosition::as_str),
+            "diverging_speed_kmh": p.diverging.map(|_| p.diverging_speed.as_kmh()),
         })).collect::<Vec<_>>(),
         "terminals": net.terminals().map(|(_, t)| json!({
             "name": t.name,
@@ -173,6 +183,12 @@ fn info_json(net: &Topology) -> Value {
             "position_m": metres(s.position.as_mm()),
             "direction": direction_str(s.direction),
             "kind": signal_kind_str(s.kind),
+            "system": system_str(s.system),
+        })).collect::<Vec<_>>(),
+        "level_crossings": net.level_crossings().map(|(_, l)| json!({
+            "name": l.name,
+            "track": net.track(l.track).map_or("?", |t| t.name.as_str()),
+            "position_m": metres(l.position.as_mm()),
         })).collect::<Vec<_>>(),
         "tvds": net.tvds().map(|(_, t)| json!({
             "name": t.name,
@@ -204,8 +220,16 @@ fn print_info_text(net: &Topology) {
         ]
         .map(|(port, label)| format!("{label} → {}", linked_name(net, PortRef::new(node, port))))
         .join(", ");
+        let diverging = p.diverging.map_or_else(String::new, |d| {
+            let side = if d == railit_topology::PointPosition::Left {
+                "links"
+            } else {
+                "rechts"
+            };
+            format!(" · abzweigend {side} ({})", p.diverging_speed)
+        });
         println!(
-            "  {:<12} TVD {:<8} {ends}",
+            "  {:<12} TVD {:<8} {ends}{diverging}",
             p.name,
             tvd_name(net, TvdMember::Point(id))
         );
@@ -228,11 +252,24 @@ fn print_info_text(net: &Topology) {
             Direction::BToA => "b→a",
         };
         println!(
-            "  {:<12} {:>10} auf {track:<8} {dir}   {}",
+            "  {:<12} {:>10} auf {track:<8} {dir}   {} ({})",
             s.name,
             s.position.to_string(),
-            signal_kind_label(s.kind)
+            signal_kind_label(s.kind),
+            system_str(s.system).to_uppercase()
         );
+    }
+
+    if net.level_crossings().len() > 0 {
+        println!("\nBahnübergänge ({}):", net.level_crossings().len());
+        for (_, l) in net.level_crossings() {
+            let track = net.track(l.track).map_or("?", |t| t.name.as_str());
+            println!(
+                "  {:<12} {:>10} auf {track}",
+                l.name,
+                l.position.to_string()
+            );
+        }
     }
 
     println!("\nGleisfreimeldeabschnitte ({}):", net.tvds().len());

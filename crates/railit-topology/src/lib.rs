@@ -41,9 +41,10 @@ mod topology;
 pub use builder::{TopologyBuilder, Validated};
 pub use error::{Report, TopologyError, Warning};
 pub use model::{
-    Direction, ElementRef, NodeRef, Point, PointPosition, Port, PortRef, Signal, SignalKind,
-    Terminal, TerminalKind, Track, TvdMember, TvdSection,
+    DEFAULT_DIVERGING_SPEED, Direction, ElementRef, LevelCrossing, NodeRef, Point, PointPosition,
+    Port, PortRef, Signal, SignalKind, SignalSystem, Terminal, TerminalKind, Track, TvdMember,
+    TvdSection,
 };
 pub use topology::{Exit, Exits, Topology};
 
-pub use railit_types::{Length, PointId, SignalId, TerminalId, TrackId, TvdId};
+pub use railit_types::{Length, LxId, PointId, SignalId, Speed, TerminalId, TrackId, TvdId};

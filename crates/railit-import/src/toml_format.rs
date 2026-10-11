@@ -14,6 +14,8 @@
 //!
 //! [[point]]
 //! name = "W1"
+//! diverging = "right"        # optional: abzweigender Strang
+//! diverging_speed_kmh = 40   # optional, Standard 40
 //!
 //! [[link]]                   # Ports: a, b (Gleis) · tip, left, right (Weiche) · end (Netzende)
 //! from = "W.end"
@@ -25,6 +27,12 @@
 //! position_m = 200           # ab Port a
 //! direction = "a_to_b"       # oder "b_to_a"
 //! kind = "main"              # main, distant, combined, shunting, etcs_stop_marker
+//! system = "ks"              # optional: ks (Standard) oder hv
+//!
+//! [[level_crossing]]         # Bahnübergang
+//! name = "BÜ1"
+//! track = "1"
+//! position_m = 120
 //!
 //! [[tvd]]
 //! name = "T1"
@@ -36,8 +44,9 @@
 use serde::Deserialize;
 
 use railit_topology::{
-    Direction, ElementRef, Length, NodeRef, Port, PortRef, SignalKind, TerminalKind,
-    TopologyBuilder, TopologyError, TvdMember, Validated,
+    DEFAULT_DIVERGING_SPEED, Direction, ElementRef, Length, NodeRef, PointPosition, Port, PortRef,
+    SignalKind, SignalSystem, Speed, TerminalKind, TopologyBuilder, TopologyError, TvdMember,
+    Validated,
 };
 
 use crate::{Diagnostic, ImportError};
@@ -58,6 +67,8 @@ struct Document {
     signal: Vec<SignalEntry>,
     #[serde(default)]
     tvd: Vec<TvdEntry>,
+    #[serde(default)]
+    level_crossing: Vec<LevelCrossingEntry>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,6 +102,33 @@ struct TrackEntry {
 #[serde(deny_unknown_fields)]
 struct PointEntry {
     name: String,
+    #[serde(default)]
+    diverging: Option<PositionEntry>,
+    #[serde(default)]
+    diverging_speed_kmh: Option<u16>,
+}
+
+#[derive(Copy, Clone, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PositionEntry {
+    Left,
+    Right,
+}
+
+#[derive(Copy, Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SystemEntry {
+    #[default]
+    Ks,
+    Hv,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LevelCrossingEntry {
+    name: String,
+    track: String,
+    position_m: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,6 +146,8 @@ struct SignalEntry {
     position_m: f64,
     direction: DirectionEntry,
     kind: SignalKindEntry,
+    #[serde(default)]
+    system: SystemEntry,
 }
 
 #[derive(Copy, Clone, Debug, Deserialize)]
@@ -150,6 +190,7 @@ pub fn parse(source: &str) -> Result<Validated, ImportError> {
     add_links(&mut b, &doc.link, &mut errors);
     add_signals(&mut b, doc.signal, &mut errors);
     add_tvds(&mut b, doc.tvd, &mut errors);
+    add_level_crossings(&mut b, doc.level_crossing, &mut errors);
 
     match b.build() {
         Ok(validated) if errors.is_empty() => Ok(validated),
@@ -201,8 +242,31 @@ fn add_tracks(b: &mut TopologyBuilder, entries: Vec<TrackEntry>, errors: &mut Ve
 fn add_points(b: &mut TopologyBuilder, entries: Vec<PointEntry>, errors: &mut Vec<Diagnostic>) {
     for p in entries {
         let context = format!("point „{}“", p.name);
-        if let Err(e) = b.add_point(p.name) {
-            errors.push(model_error(context, &e));
+        if p.diverging.is_none() && p.diverging_speed_kmh.is_some() {
+            errors.push(Diagnostic {
+                context: context.clone(),
+                message: "diverging_speed_kmh ohne diverging".into(),
+                requirement: None,
+            });
+        }
+        let id = match b.add_point(p.name) {
+            Ok(id) => id,
+            Err(e) => {
+                errors.push(model_error(context, &e));
+                continue;
+            }
+        };
+        if let Some(d) = p.diverging {
+            let pos = match d {
+                PositionEntry::Left => PointPosition::Left,
+                PositionEntry::Right => PointPosition::Right,
+            };
+            let speed = p
+                .diverging_speed_kmh
+                .map_or(DEFAULT_DIVERGING_SPEED, Speed::from_kmh);
+            if let Err(e) = b.set_point_diverging(id, pos, speed) {
+                errors.push(model_error(context, &e));
+            }
         }
     }
 }
@@ -255,7 +319,41 @@ fn add_signals(b: &mut TopologyBuilder, entries: Vec<SignalEntry>, errors: &mut 
             SignalKindEntry::Shunting => SignalKind::Shunting,
             SignalKindEntry::EtcsStopMarker => SignalKind::EtcsStopMarker,
         };
-        if let Err(e) = b.add_signal(s.name, track, position, direction, kind) {
+        let system = match s.system {
+            SystemEntry::Ks => SignalSystem::Ks,
+            SystemEntry::Hv => SignalSystem::Hv,
+        };
+        match b.add_signal(s.name, track, position, direction, kind) {
+            Ok(id) => {
+                if let Err(e) = b.set_signal_system(id, system) {
+                    errors.push(model_error(context, &e));
+                }
+            }
+            Err(e) => errors.push(model_error(context, &e)),
+        }
+    }
+}
+
+fn add_level_crossings(
+    b: &mut TopologyBuilder,
+    entries: Vec<LevelCrossingEntry>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for l in entries {
+        let context = format!("level_crossing „{}“", l.name);
+        let Some(ElementRef::Track(track)) = b.lookup(&l.track) else {
+            errors.push(Diagnostic {
+                context,
+                message: format!("„{}“ ist kein bekanntes Gleis", l.track),
+                requirement: None,
+            });
+            continue;
+        };
+        let Some(position) = metres(l.position_m) else {
+            errors.push(invalid_metres(context, "position_m", l.position_m));
+            continue;
+        };
+        if let Err(e) = b.add_level_crossing(l.name, track, position) {
             errors.push(model_error(context, &e));
         }
     }

@@ -5,12 +5,14 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use railit_types::{Length, PointId, SignalId, TerminalId, TrackId, TvdId};
+use railit_types::{
+    Length, LxId, PointId, PointPosition, SignalId, Speed, TerminalId, TrackId, TvdId,
+};
 
 use crate::error::{Report, TopologyError, Warning};
 use crate::model::{
-    Direction, ElementRef, NodeRef, Point, PortRef, Signal, SignalKind, Terminal, TerminalKind,
-    Track, TvdMember, TvdSection,
+    DEFAULT_DIVERGING_SPEED, Direction, ElementRef, LevelCrossing, NodeRef, Point, PortRef, Signal,
+    SignalKind, SignalSystem, Terminal, TerminalKind, Track, TvdMember, TvdSection,
 };
 use crate::topology::{Links, Topology};
 
@@ -51,6 +53,7 @@ pub struct TopologyBuilder {
     terminals: Vec<Terminal>,
     signals: Vec<Signal>,
     tvds: Vec<TvdSection>,
+    level_crossings: Vec<LevelCrossing>,
     links: Links,
     names: BTreeMap<String, ElementRef>,
 }
@@ -105,7 +108,11 @@ impl TopologyBuilder {
         let id = PointId::from_index(self.points.len())
             .ok_or(TopologyError::TooManyElements { kind: "Weiche" })?;
         self.names.insert(name.clone(), ElementRef::Point(id));
-        self.points.push(Point { name });
+        self.points.push(Point {
+            name,
+            diverging: None,
+            diverging_speed: DEFAULT_DIVERGING_SPEED,
+        });
         self.links.points.push([None; 3]);
         Ok(id)
     }
@@ -161,6 +168,85 @@ impl TopologyBuilder {
             position,
             direction,
             kind,
+            system: SignalSystem::Ks,
+        });
+        Ok(id)
+    }
+
+    /// Legt den abzweigenden Strang einer Weiche und die Geschwindigkeit darin fest.
+    ///
+    /// # Errors
+    /// Unbekannte Weiche.
+    pub fn set_point_diverging(
+        &mut self,
+        point: PointId,
+        diverging: PointPosition,
+        speed: Speed,
+    ) -> Result<(), TopologyError> {
+        let p =
+            point
+                .index()
+                .and_then(|i| self.points.get_mut(i))
+                .ok_or(TopologyError::UnknownId {
+                    kind: "Weiche",
+                    raw: point.raw(),
+                })?;
+        p.diverging = Some(diverging);
+        p.diverging_speed = speed;
+        Ok(())
+    }
+
+    /// Legt das Signalsystem eines Signals fest (Standard: Ks).
+    ///
+    /// # Errors
+    /// Unbekanntes Signal.
+    pub fn set_signal_system(
+        &mut self,
+        signal: SignalId,
+        system: SignalSystem,
+    ) -> Result<(), TopologyError> {
+        let s = signal.index().and_then(|i| self.signals.get_mut(i)).ok_or(
+            TopologyError::UnknownId {
+                kind: "Signal",
+                raw: signal.raw(),
+            },
+        )?;
+        s.system = system;
+        Ok(())
+    }
+
+    /// Fügt einen Bahnübergang auf Gleisabschnitt `track` hinzu.
+    ///
+    /// # Errors
+    /// Doppelter Name, unbekanntes Gleis, Position außerhalb des Gleises oder zu viele
+    /// Bahnübergänge.
+    pub fn add_level_crossing(
+        &mut self,
+        name: impl Into<String>,
+        track: TrackId,
+        position: Length,
+    ) -> Result<LxId, TopologyError> {
+        let name = name.into();
+        self.check_name(&name)?;
+        let t = self.track(track)?;
+        if position > t.length {
+            return Err(TopologyError::PositionOutsideTrack {
+                object: name,
+                track: t.name.clone(),
+                position,
+                length: t.length,
+            });
+        }
+        let id =
+            LxId::from_index(self.level_crossings.len()).ok_or(TopologyError::TooManyElements {
+                kind: "Bahnübergang",
+            })?;
+        self.names
+            .insert(name.clone(), ElementRef::LevelCrossing(id));
+        self.level_crossings.push(LevelCrossing {
+            name,
+            track,
+            position,
         });
         Ok(id)
     }
@@ -322,6 +408,7 @@ impl TopologyBuilder {
             terminals: self.terminals,
             signals: self.signals,
             tvds: self.tvds,
+            level_crossings: self.level_crossings,
             links: self.links,
             names: self.names,
             track_tvd: single(track_tvds),

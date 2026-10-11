@@ -5,11 +5,11 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use railit_types::{PointId, SignalId, TerminalId, TrackId, TvdId};
+use railit_types::{LxId, PointId, SignalId, TerminalId, TrackId, TvdId};
 
 use crate::model::{
-    ElementRef, NodeRef, Point, PointPosition, Port, PortRef, Signal, Terminal, Track, TvdMember,
-    TvdSection,
+    ElementRef, LevelCrossing, NodeRef, Point, PointPosition, Port, PortRef, Signal, Terminal,
+    Track, TvdMember, TvdSection,
 };
 
 /// Verbindungstabelle: pro Knoten und Port der verbundene Gegenport.
@@ -171,6 +171,7 @@ pub struct Topology {
     pub(crate) terminals: Vec<Terminal>,
     pub(crate) signals: Vec<Signal>,
     pub(crate) tvds: Vec<TvdSection>,
+    pub(crate) level_crossings: Vec<LevelCrossing>,
     pub(crate) links: Links,
     pub(crate) names: BTreeMap<String, ElementRef>,
     pub(crate) track_tvd: Vec<Option<TvdId>>,
@@ -206,6 +207,25 @@ impl Topology {
     /// Alle Gleisfreimeldeabschnitte.
     pub fn tvds(&self) -> impl ExactSizeIterator<Item = (TvdId, &TvdSection)> {
         enumerate_ids(&self.tvds)
+    }
+
+    /// Alle Bahnübergänge.
+    pub fn level_crossings(&self) -> impl ExactSizeIterator<Item = (LxId, &LevelCrossing)> {
+        enumerate_ids(&self.level_crossings)
+    }
+
+    /// Bahnübergang `id`.
+    pub fn level_crossing(&self, id: LxId) -> Option<&LevelCrossing> {
+        self.level_crossings.get(id.index()?)
+    }
+
+    /// Bahnübergänge auf Gleisabschnitt `track`.
+    pub fn level_crossings_on(
+        &self,
+        track: TrackId,
+    ) -> impl Iterator<Item = (LxId, &LevelCrossing)> {
+        self.level_crossings()
+            .filter(move |(_, l)| l.track == track)
     }
 
     /// Gleisabschnitt `id`.
@@ -246,6 +266,7 @@ impl Topology {
             ElementRef::Terminal(id) => &self.terminal(id)?.name,
             ElementRef::Signal(id) => &self.signal(id)?.name,
             ElementRef::Tvd(id) => &self.tvd(id)?.name,
+            ElementRef::LevelCrossing(id) => &self.level_crossing(id)?.name,
         };
         Some(name)
     }
@@ -347,4 +368,4 @@ macro_rules! impl_from_index {
     )*};
 }
 
-impl_from_index!(TrackId, PointId, TerminalId, SignalId, TvdId);
+impl_from_index!(TrackId, PointId, TerminalId, SignalId, TvdId, LxId);

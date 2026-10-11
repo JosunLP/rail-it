@@ -4,8 +4,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
-pub use railit_types::PointPosition;
-use railit_types::{Length, PointId, SignalId, TerminalId, TrackId, TvdId};
+use railit_types::{Length, LxId, PointId, SignalId, Speed, TerminalId, TrackId, TvdId};
+pub use railit_types::{PointPosition, SignalKind, SignalSystem};
 
 /// Gleisabschnitt mit den Ports `a` und `b`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,7 +23,14 @@ pub struct Track {
 pub struct Point {
     /// Fachlicher Name, z. B. `"W1"`.
     pub name: String,
+    /// Abzweigender Strang, falls bekannt. Der andere Strang ist der gerade.
+    pub diverging: Option<PointPosition>,
+    /// Zulässige Geschwindigkeit im abzweigenden Strang.
+    pub diverging_speed: Speed,
 }
+
+/// Geschwindigkeit im abzweigenden Strang, wenn nichts anderes angegeben ist.
+pub const DEFAULT_DIVERGING_SPEED: Speed = Speed::from_kmh(40);
 
 /// Art eines Netzendes.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -57,23 +64,6 @@ pub enum Direction {
     BToA,
 }
 
-/// Art eines Signals.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
-pub enum SignalKind {
-    /// Hauptsignal (H/V: Hp; Ks: Ks-Hauptsignal).
-    Main,
-    /// Vorsignal.
-    Distant,
-    /// Mehrabschnittssignal (z. B. Ks mit Vorsignalfunktion).
-    Combined,
-    /// Rangiersignal (Sh).
-    Shunting,
-    /// ETCS-Halt-Tafel (Ne 14) als Start- bzw. Zielpunkt im ETCS-Betrieb.
-    EtcsStopMarker,
-}
-
 /// Signal als Punktobjekt auf einem Gleisabschnitt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -88,6 +78,20 @@ pub struct Signal {
     pub direction: Direction,
     /// Signalart.
     pub kind: SignalKind,
+    /// Signalsystem (Ks oder H/V).
+    pub system: SignalSystem,
+}
+
+/// Bahnübergang als Punktobjekt auf einem Gleisabschnitt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct LevelCrossing {
+    /// Fachlicher Name, z. B. `"BÜ1"`.
+    pub name: String,
+    /// Gleisabschnitt, den der Bahnübergang kreuzt.
+    pub track: TrackId,
+    /// Position gemessen ab Port `a` des Gleisabschnitts.
+    pub position: Length,
 }
 
 /// Element, das einem Gleisfreimeldeabschnitt angehören kann.
@@ -228,6 +232,8 @@ pub enum ElementRef {
     Signal(SignalId),
     /// Gleisfreimeldeabschnitt.
     Tvd(TvdId),
+    /// Bahnübergang.
+    LevelCrossing(LxId),
 }
 
 impl From<NodeRef> for ElementRef {

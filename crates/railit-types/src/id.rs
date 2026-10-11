@@ -76,3 +76,8 @@ define_id!(
     RouteId,
     "Route"
 );
+define_id!(
+    /// Bahnübergang (BÜ) als Punktobjekt auf einem Gleisabschnitt.
+    LxId,
+    "Lx"
+);

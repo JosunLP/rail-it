@@ -1,7 +1,7 @@
 //! rail-it-TOML-Import.
 
 use railit_import::{ImportError, toml_format};
-use railit_topology::{ElementRef, Length};
+use railit_topology::{ElementRef, Length, PointPosition, SignalKind, SignalSystem, Speed};
 
 const EXAMPLE: &str = include_str!("../../../examples/beispielstadt.toml");
 
@@ -18,14 +18,41 @@ fn example_network_imports() {
             net.signals().len(),
             net.tvds().len()
         ),
-        (4, 2, 6, 6)
+        (4, 2, 8, 6)
     );
+    assert_eq!(net.level_crossings().len(), 1);
     let Some(ElementRef::Signal(a)) = net.lookup("A") else {
         panic!("Signal A fehlt")
     };
+    let a = net.signal(a).unwrap();
+    assert_eq!(a.position, Length::from_m(1000).unwrap());
+    assert_eq!((a.kind, a.system), (SignalKind::Combined, SignalSystem::Ks));
+    let Some(ElementRef::Signal(f)) = net.lookup("F") else {
+        panic!("Signal F fehlt")
+    };
+    assert_eq!(net.signal(f).unwrap().system, SignalSystem::Hv);
+    let (_, w1) = net.points().next().unwrap();
     assert_eq!(
-        net.signal(a).unwrap().position,
-        Length::from_m(1000).unwrap()
+        (w1.diverging, w1.diverging_speed),
+        (Some(PointPosition::Right), Speed::from_kmh(40))
+    );
+    let (_, bue) = net.level_crossings().next().unwrap();
+    assert_eq!(
+        (bue.name.as_str(), bue.position),
+        ("BÜ1", Length::from_m(500).unwrap())
+    );
+}
+
+#[test]
+fn diverging_speed_requires_diverging_branch() {
+    let src = "[network]\nname = \"n\"\n[[point]]\nname = \"W\"\ndiverging_speed_kmh = 60\n";
+    let ImportError::Invalid { errors, .. } = toml_format::parse(src).unwrap_err() else {
+        panic!("Validierungsfehler erwartet")
+    };
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("diverging_speed_kmh ohne diverging"))
     );
 }
 

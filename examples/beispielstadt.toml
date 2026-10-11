@@ -1,12 +1,14 @@
 # Beispielstadt – kleiner Durchgangsbahnhof mit zwei Bahnsteiggleisen.
 #
-#            A ▶                       N1 ▶               ◀ F
-#   GW ════ west ════ W1 ╤════ 1 ════╤ W2 ════ east ════ GE
+#    a ▷         A ▶                       N1 ▶     BÜ1        ◀ F       ◁ f
+#   GW ════ west ════ W1 ╤════ 1 ════╤ W2 ════ east ══╪═══════════ GE
 #                        ╘════ 2 ════╛
 #                         ◀ P1/P2   N2 ▶
 #
-# Einfahrsignal A (aus Westen), Ausfahrsignale N1/N2 (nach Osten),
-# Einfahrsignal F (aus Osten), Ausfahrsignale P1/P2 (nach Westen).
+# Westseite im Ks-System: Vorsignal a, Einfahrsignal A (Mehrabschnittssignal), Ausfahrsignale
+# N1/N2. Ostseite im H/V-System: Vorsignal f, Einfahrsignal F (Hauptsignal mit Vorsignal am
+# Mast), Ausfahrsignale P1/P2. Gleis 2 liegt jeweils im abzweigenden Strang (40 km/h).
+# Auf der Ostseite kreuzt der Bahnübergang BÜ1 die Strecke.
 #
 # Hauptsignale stehen am Gleisende und damit an einer Gleisfreimeldegrenze (REQ-PLN-010).
 
@@ -39,9 +41,13 @@ length_m = 1000
 
 [[point]]
 name = "W1"
+diverging = "right"
+diverging_speed_kmh = 40
 
 [[point]]
 name = "W2"
+diverging = "right"
+diverging_speed_kmh = 40
 
 [[link]]
 from = "GW.end"
@@ -80,7 +86,8 @@ name = "A"
 track = "west"
 position_m = 1000
 direction = "a_to_b"
-kind = "main"
+kind = "combined"
+system = "ks"
 
 [[signal]]
 name = "N1"
@@ -88,6 +95,7 @@ track = "1"
 position_m = 600
 direction = "a_to_b"
 kind = "main"
+system = "ks"
 
 [[signal]]
 name = "N2"
@@ -95,13 +103,15 @@ track = "2"
 position_m = 600
 direction = "a_to_b"
 kind = "main"
+system = "ks"
 
 [[signal]]
 name = "F"
 track = "east"
 position_m = 0
 direction = "b_to_a"
-kind = "main"
+kind = "combined"
+system = "hv"
 
 [[signal]]
 name = "P1"
@@ -109,6 +119,7 @@ track = "1"
 position_m = 0
 direction = "b_to_a"
 kind = "main"
+system = "hv"
 
 [[signal]]
 name = "P2"
@@ -116,6 +127,28 @@ track = "2"
 position_m = 0
 direction = "b_to_a"
 kind = "main"
+system = "hv"
+
+[[signal]]
+name = "a"
+track = "west"
+position_m = 0
+direction = "a_to_b"
+kind = "distant"
+system = "ks"
+
+[[signal]]
+name = "f"
+track = "east"
+position_m = 1000
+direction = "b_to_a"
+kind = "distant"
+system = "hv"
+
+[[level_crossing]]
+name = "BÜ1"
+track = "east"
+position_m = 500
 
 [[tvd]]
 name = "TW"

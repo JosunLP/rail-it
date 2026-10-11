@@ -6,6 +6,7 @@
 //! - [`id`]: typsichere Indizes für alle Infrastrukturelemente,
 //! - [`units`]: Längen und Geschwindigkeiten als Ganzzahlen,
 //! - [`point`]: Lagen von Weichen,
+//! - [`signal`]: Signalarten und Signalsysteme,
 //! - [`time`]: monotone Zeit des Stellwerkszyklus,
 //! - [`bitset`]: Bitmengen über vom Aufrufer bereitgestellten Speicher.
 
@@ -24,11 +25,13 @@
 pub mod bitset;
 pub mod id;
 pub mod point;
+pub mod signal;
 pub mod time;
 pub mod units;
 
 pub use bitset::{BitSet, BitSetMut, OutOfRange};
-pub use id::{PointId, RouteId, SignalId, TerminalId, TrackId, TvdId};
+pub use id::{LxId, PointId, RouteId, SignalId, TerminalId, TrackId, TvdId};
 pub use point::PointPosition;
+pub use signal::{SignalKind, SignalSystem};
 pub use time::{Duration, Tick};
 pub use units::{Length, Speed};
