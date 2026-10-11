@@ -1,0 +1,39 @@
+[package]
+name = "railitd"
+description = "Dienst von rail-it: Stellwerk mit REST/JSON-API und Ereignisstrom; in Phase 1 mit simulierter Feldebene."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "railitd"
+path = "src/main.rs"
+
+[dependencies]
+railit-types = { workspace = true, features = ["serde"] }
+railit-topology = { workspace = true }
+railit-plan = { workspace = true, features = ["alloc"] }
+railit-import = { workspace = true }
+railit-rules = { workspace = true }
+railit-kernel = { workspace = true, features = ["alloc", "serde"] }
+railit-sim = { workspace = true }
+railit-runtime = { workspace = true }
+serde = { workspace = true, features = ["std"] }
+serde_json = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+axum = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+railit-planning = { workspace = true }
+ureq = { workspace = true }
+
+[lints]
+workspace = true

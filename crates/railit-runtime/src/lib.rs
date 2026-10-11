@@ -6,11 +6,13 @@
 //!   CLI und Protokoll.
 //! - [`load_plan`]: Plan-Image laden und prüfen (optional mit Signatur).
 //! - [`scenario`]: deklarative Betriebsszenarien ausführen.
+//! - [`keys`]: Schlüssel für signierte Plan-Images.
 //!
 //! Die Runtime selbst ist in Phase 1 eine Server-Variante (`std`). Die Embedded-Variante
 //! mit Timer-Interrupt folgt in Phase 5 (Konzept, Abschnitt 13).
 
 mod field;
+pub mod keys;
 mod names;
 mod runtime;
 pub mod scenario;
