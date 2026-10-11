@@ -657,10 +657,7 @@ jeweiligen Phasen.
 
 ## 19. Noch offene Punkte
 
-1. **Lizenzangaben:** Der Kontakt für kommerzielle Lizenzen ist support@josunlp.de.
-   Anwendbares Recht (Deutschland) und Gerichtsstand (Norderstedt) sind vorbelegt und noch
-   zu bestätigen.
-2. **Konkrete Embedded-Hardware** für den sicheren Rechner (wichtig ab Phase 5).
-3. **Besetzung der unabhängigen Rollen** (Verifikation, Validierung, ISA) mit Blick auf eine
+1. **Konkrete Embedded-Hardware** für den sicheren Rechner (wichtig ab Phase 5).
+2. **Besetzung der unabhängigen Rollen** (Verifikation, Validierung, ISA) mit Blick auf eine
    spätere Zulassung.
-4. **Beitragsmodell:** CLA ja oder nein.
+3. **Beitragsmodell:** CLA ja oder nein.
