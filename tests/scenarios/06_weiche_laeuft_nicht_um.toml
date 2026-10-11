@@ -1,0 +1,14 @@
+[scenario]
+name = "Weiche erreicht ihre Endlage nicht"
+network = "../../examples/beispielstadt.toml"
+
+[[step]]
+fault = { kind = "point_disturbed", element = "W1" }
+set_route = "A-N1"
+expect = { accepted = true, route = { "A-N1" = "setting" } }
+
+[[step]]
+note = "Nach der Umstellzeit wird die Einstellung abgebrochen"
+until = { route = { "A-N1" = "idle" } }
+timeout_s = 15
+expect = { alarm = ["setting_timeout"], signal = { A = "stop" } }

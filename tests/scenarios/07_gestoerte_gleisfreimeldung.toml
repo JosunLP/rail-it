@@ -1,0 +1,15 @@
+[scenario]
+name = "Gestörte Gleisfreimeldung"
+network = "../../examples/beispielstadt.toml"
+
+[[step]]
+fault = { kind = "tvd_disturbed", element = "T1" }
+set_route = "A-N1"
+expect = { rejected = "tvd_not_clear" }
+
+[[step]]
+note = "Andere Fahrstraßen bleiben möglich"
+set_route = "A-N2"
+until = { route = { "A-N2" = "proceed" } }
+timeout_s = 15
+expect = { accepted = true }

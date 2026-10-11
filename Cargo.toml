@@ -7,6 +7,8 @@ members = [
     "crates/railit-planning",
     "crates/railit-rules",
     "crates/railit-kernel",
+    "crates/railit-sim",
+    "crates/railit-runtime",
     "crates/railit-import",
     "apps/railit",
 ]
@@ -28,6 +30,8 @@ railit-plan = { path = "crates/railit-plan" }
 railit-planning = { path = "crates/railit-planning" }
 railit-rules = { path = "crates/railit-rules" }
 railit-kernel = { path = "crates/railit-kernel" }
+railit-sim = { path = "crates/railit-sim" }
+railit-runtime = { path = "crates/railit-runtime" }
 
 serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = "1"

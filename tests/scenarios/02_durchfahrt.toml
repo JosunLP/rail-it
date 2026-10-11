@@ -1,0 +1,22 @@
+[scenario]
+name = "Durchfahrt durch Gleis 1 auf die Strecke"
+network = "../../examples/beispielstadt.toml"
+
+[[step]]
+add_train = { name = "ICE7", signal = "A", length_m = 200, speed_kmh = 80 }
+set_route = "A-N1"
+until = { route = { "A-N1" = "proceed" } }
+timeout_s = 15
+
+[[step]]
+note = "Ausfahrt vorbereiten, während der Zug einfährt"
+set_route = "N1-GE"
+until = { route = { "N1-GE" = "proceed" } }
+timeout_s = 15
+expect = { accepted = true, signal = { N1 = "proceed" }, point = { W2 = "left" } }
+
+[[step]]
+note = "Zug verlässt das Netz, alles ist wieder frei"
+until = { train = { ICE7 = "left" } }
+timeout_s = 300
+expect = { sim_event = ["train_left"], route = { "A-N1" = "idle", "N1-GE" = "idle" }, tvd = { TW = "clear", TW1 = "clear", T1 = "clear", TW2 = "clear", TE = "clear" }, signal = { A = "stop", N1 = "stop" } }

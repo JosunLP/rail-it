@@ -1,0 +1,22 @@
+[package]
+name = "railit-sim"
+description = "Simulator von rail-it: Weichen, Signale, Gleisfreimeldung und Zugfahrten auf dem Netzmodell, mit Störungsinjektion."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+railit-types = { workspace = true, features = ["serde"] }
+railit-topology = { workspace = true }
+railit-kernel = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+railit-import = { workspace = true }
+
+[lints]
+workspace = true

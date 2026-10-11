@@ -1,0 +1,83 @@
+//! Laufzeit von rail-it.
+//!
+//! - [`Runtime`]: koppelt Sicherheitskern und Feldebene ([`FieldAdapter`]) im festen Zyklus:
+//!   Feld fortschreiben → Meldungen sammeln → Kern → Stellbefehle ans Feld.
+//! - [`Snapshot`] und [`NamedEvent`]: Zustand und Ereignisse mit fachlichen Namen, für API,
+//!   CLI und Protokoll.
+//! - [`load_plan`]: Plan-Image laden und prüfen (optional mit Signatur).
+//! - [`scenario`]: deklarative Betriebsszenarien ausführen.
+//!
+//! Die Runtime selbst ist in Phase 1 eine Server-Variante (`std`). Die Embedded-Variante
+//! mit Timer-Interrupt folgt in Phase 5 (Konzept, Abschnitt 13).
+
+mod field;
+mod names;
+mod runtime;
+pub mod scenario;
+
+pub use field::FieldAdapter;
+pub use names::{NamedEvent, PointSnapshot, RouteSnapshot, SignalSnapshot, Snapshot, TvdSnapshot};
+pub use runtime::{CycleOutput, Runtime};
+
+use railit_plan::{PlanError, PlanView, VerifyingKey};
+use railit_topology::Topology;
+
+/// Lädt ein Plan-Image für die gesamte Laufzeit des Prozesses.
+///
+/// Mit `key` wird eine gültige Signatur verlangt (REQ-PLN-004). Das Image wird bewusst im
+/// Speicher belassen (`'static`), weil der Kern es während des gesamten Betriebs liest.
+///
+/// # Errors
+/// [`PlanError`], wenn das Image ungültig ist oder die Signatur fehlt bzw. falsch ist.
+pub fn load_plan(
+    bytes: Vec<u8>,
+    key: Option<&VerifyingKey>,
+) -> Result<PlanView<'static>, PlanError> {
+    // Erst prüfen, dann dauerhaft ablegen: Ungültige Images belegen keinen Speicher.
+    match key {
+        Some(k) => PlanView::parse_signed(&bytes, k)?,
+        None => PlanView::parse(&bytes)?,
+    };
+    let image: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+    PlanView::parse(image)
+}
+
+/// Prüft, ob Plan und Netz zusammengehören (gleiche Elemente in gleicher Reihenfolge).
+///
+/// Der Simulator arbeitet auf dem Netz, der Kern auf dem Plan; beide verwenden dieselben
+/// IDs. Passen sie nicht zusammen, darf der Betrieb nicht starten.
+///
+/// # Errors
+/// Beschreibung der ersten Abweichung.
+pub fn check_correspondence(plan: &PlanView<'_>, net: &Topology) -> Result<(), String> {
+    if plan.network_name() != net.name() {
+        return Err(format!(
+            "Plan „{}“ gehört nicht zum Netz „{}“",
+            plan.network_name(),
+            net.name()
+        ));
+    }
+    let points = net
+        .points()
+        .map(|(id, p)| (plan.point_name(id), p.name.as_str()));
+    let signals = net
+        .signals()
+        .map(|(id, s)| (plan.signal_name(id), s.name.as_str()));
+    let tvds = net
+        .tvds()
+        .map(|(id, t)| (plan.tvd_name(id), t.name.as_str()));
+    if plan.point_count() != net.points().len()
+        || plan.signal_count() != net.signals().len()
+        || plan.tvd_count() != net.tvds().len()
+    {
+        return Err("Anzahl der Elemente in Plan und Netz verschieden".into());
+    }
+    for (in_plan, in_net) in points.chain(signals).chain(tvds) {
+        if in_plan != Some(in_net) {
+            return Err(format!(
+                "Element „{in_net}“ fehlt im Plan oder steht an anderer Stelle"
+            ));
+        }
+    }
+    Ok(())
+}

@@ -26,7 +26,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Tests
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --all-features --locked
       - name: Doku
         run: cargo doc --workspace --no-deps --locked
         env:
@@ -43,7 +43,7 @@ jobs:
       - name: Sicherheitsrelevante Crates ohne std bauen
         run: >
           cargo build --locked --target thumbv7em-none-eabihf
-          -p railit-types -p railit-topology
+          -p railit-types -p railit-topology -p railit-plan -p railit-rules -p railit-kernel
 
   deny:
     name: Lizenzen & Advisories

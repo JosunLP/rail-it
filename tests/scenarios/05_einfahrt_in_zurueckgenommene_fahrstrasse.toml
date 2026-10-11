@@ -1,0 +1,29 @@
+[scenario]
+name = "Zug fährt trotz Rücknahme ein"
+description = """
+Die Fahrstraße wird nach der Fahrtstellung zurückgenommen. Ein Zug überfährt das Halt
+zeigende Signal. Der Kern alarmiert und hält alle Elemente verschlossen, bis der Zug sie
+geräumt hat.
+"""
+network = "../../examples/beispielstadt.toml"
+
+[[step]]
+set_route = "A-N1"
+until = { route = { "A-N1" = "proceed" } }
+timeout_s = 15
+
+[[step]]
+cancel_route = "A-N1"
+expect = { route = { "A-N1" = "cancelling" }, signal = { A = "stop" } }
+
+[[step]]
+note = "Zug überfährt A in Haltstellung"
+add_train = { name = "LZ1", signal = "A", length_m = 50, speed_kmh = 40, ignore_signals = true }
+until = { route = { "A-N1" = "occupied" } }
+timeout_s = 30
+expect = { alarm = ["train_entered_cancelled_route"], sim_event = ["signal_passed_at_danger"], point = { W1 = "left" } }
+
+[[step]]
+note = "W1 bleibt verschlossen, solange der Zug darauf steht"
+move_point = { point = "W1", position = "right" }
+expect = { rejected = "point_locked" }

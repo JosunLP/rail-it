@@ -1,0 +1,33 @@
+[scenario]
+name = "Einfahrt in Gleis 1 mit zugbewirkter Auflösung"
+description = """
+Ein Zug wartet vor dem Einfahrsignal A. Die Fahrstraße A-N1 wird eingestellt, die Weiche
+W1 läuft um, das Signal zeigt Fahrt. Der Zug fährt ein; hinter ihm wird die Fahrstraße
+abschnittsweise aufgelöst. Er hält vor dem Ausfahrsignal N1.
+"""
+network = "../../examples/beispielstadt.toml"
+
+[[step]]
+note = "Zug steht vor A"
+add_train = { name = "RE1", signal = "A", length_m = 120, speed_kmh = 60 }
+wait_s = 1
+expect = { train = { RE1 = "waiting" }, tvd = { TW = "occupied" }, signal = { A = "stop" } }
+
+[[step]]
+note = "Fahrstraße A-N1 einstellen: W1 läuft um, dann Fahrt"
+set_route = "A-N1"
+until = { route = { "A-N1" = "proceed" } }
+timeout_s = 15
+expect = { accepted = true, signal = { A = "proceed" }, point = { W1 = "left" } }
+
+[[step]]
+note = "Zug fährt ein; Fahrstraße löst hinter ihm auf"
+until = { route = { "A-N1" = "idle" } }
+timeout_s = 120
+expect = { signal = { A = "stop" }, tvd = { TW = "clear", TW1 = "clear", T1 = "occupied" } }
+
+[[step]]
+note = "Zug hält vor N1"
+until = { train = { RE1 = "waiting" } }
+timeout_s = 120
+expect = { signal = { N1 = "stop" }, tvd = { T1 = "occupied", TW2 = "clear" } }

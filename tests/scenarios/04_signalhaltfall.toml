@@ -1,0 +1,27 @@
+[scenario]
+name = "Signalhaltfall bei gestörter Weiche"
+network = "../../examples/beispielstadt.toml"
+
+[[step]]
+set_route = "A-N2"
+until = { route = { "A-N2" = "proceed" } }
+timeout_s = 15
+expect = { signal = { A = "proceed" }, point = { W1 = "right" } }
+
+[[step]]
+note = "W1 meldet Störung: A fällt sofort auf Halt"
+fault = { kind = "point_disturbed", element = "W1" }
+expect = { signal = { A = "stop" }, route = { "A-N2" = "halted" }, alarm = ["signal_dropped"] }
+
+[[step]]
+note = "Störung behoben: kein selbsttätiger Fahrtbegriff"
+clear_fault = { kind = "point_disturbed", element = "W1" }
+wait_s = 5
+expect = { signal = { A = "stop" }, route = { "A-N2" = "halted" } }
+
+[[step]]
+note = "Rücknahme mit Zeitverschluss"
+cancel_route = "A-N2"
+until = { route = { "A-N2" = "idle" } }
+timeout_s = 70
+expect = { accepted = true }

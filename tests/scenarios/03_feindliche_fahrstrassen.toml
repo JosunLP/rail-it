@@ -1,0 +1,46 @@
+[scenario]
+name = "Feindliche Fahrstraßen und besetzte Abschnitte"
+network = "../../examples/beispielstadt.toml"
+
+[[step]]
+set_route = "A-N1"
+until = { route = { "A-N1" = "proceed" } }
+timeout_s = 15
+
+[[step]]
+note = "A-N2 teilt Startsignal und Weiche W1"
+set_route = "A-N2"
+expect = { rejected = "conflict", route = { "A-N2" = "idle" } }
+
+[[step]]
+note = "F-P1 führt in das Gleis, in das A-N1 einfährt"
+set_route = "F-P1"
+expect = { rejected = "conflict" }
+
+[[step]]
+note = "N2-GE ist verträglich"
+set_route = "N2-GE"
+until = { route = { "N2-GE" = "proceed" } }
+timeout_s = 15
+expect = { signal = { A = "proceed", N2 = "proceed" } }
+
+[[step]]
+note = "Rücknahme mit Fahrt: Zeitverschluss läuft"
+cancel_route = "A-N1"
+expect = { accepted = true, route = { "A-N1" = "cancelling" }, signal = { A = "stop" } }
+
+[[step]]
+note = "Abschnitt hinter W2 wird besetzt gemeldet: N2 fällt auf Halt"
+fault = { kind = "tvd_occupied", element = "TE" }
+expect = { route = { "N2-GE" = "halted" }, signal = { N2 = "stop" }, alarm = ["signal_dropped"] }
+
+[[step]]
+note = "Zeitverschluss von A-N1 läuft ab"
+wait_s = 61
+expect = { route = { "A-N1" = "idle" } }
+
+[[step]]
+note = "Gleis 2 ist besetzt: A-N2 nicht möglich"
+fault = { kind = "tvd_occupied", element = "T2" }
+set_route = "A-N2"
+expect = { rejected = "tvd_not_clear" }
