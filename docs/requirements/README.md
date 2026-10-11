@@ -7,6 +7,9 @@ Anforderung → Code → Test (Konzept, Abschnitt 16).
 | Datei | Bereich |
 |-------|---------|
 | [topologie.md](topologie.md) | `REQ-TOP`: Netzmodell und seine Validierung |
+| [plan.md](plan.md) | `REQ-PLN`: Projektierung und Plan-Image |
+| [kern.md](kern.md) | `REQ-IXL`: Sicherheitskern (Fahrwegsicherung) |
+| [dienst.md](dienst.md) | `REQ-SVC`: Dienst, API und Bedienung |
 
 **Regeln**
 

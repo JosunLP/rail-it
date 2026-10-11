@@ -1,16 +1,18 @@
 # Gefährdungsliste (Hazard Log)
 
-> Stand: Phase 0 · lebendes Dokument nach EN 50126. Die Liste wird mit jeder Phase
-> erweitert. Bewertungen (Häufigkeit, Schwere, Risiko) folgen mit der systematischen
-> Gefährdungsanalyse; hier sind zunächst die Gefährdungen und die geplanten bzw.
-> umgesetzten Gegenmaßnahmen erfasst.
+> Stand: Phase 1 · lebendes Dokument nach EN 50126. Die Liste wird mit jeder Phase
+> erweitert. Die Bewertung nach Häufigkeit, Schwere und Risiko folgt mit der systematischen
+> Gefährdungsanalyse. Bis dahin hält die Liste die Gefährdungen und die geplanten bzw.
+> umgesetzten Gegenmaßnahmen fest.
 
 | ID | Gefährdung | Mögliche Ursache in rail-it | Gegenmaßnahmen | Status |
 |----|------------|-----------------------------|----------------|--------|
-| H-001 | Zusammenstoß zweier Züge | Feindliche Fahrstraßen gleichzeitig eingestellt; Belegung nicht erkannt; Fahrerlaubnis trotz Besetzung | Feindlichkeitsprüfung über Bitsets (Phase 1), Invarianten nach jedem Zyklus (Phase 1), lückenlose Gleisfreimeldung im Modell (REQ-TOP-006), „gestört“ gilt als „besetzt“ | offen; REQ-TOP-006 umgesetzt |
-| H-002 | Entgleisung an einer Weiche | Fahrerlaubnis ohne überwachte Endlage; Weg über eine Weiche, der physisch nicht existiert | Strukturell nur zulässige Wege durch Weichen (REQ-TOP-007); Endlagenüberwachung als Voraussetzung der Fahrerlaubnis (Phase 1) | offen; REQ-TOP-007 umgesetzt |
-| H-003 | Umstellen einer Weiche unter einem Zug | Stellbefehl trotz Verschluss oder Belegung | Verschluss festgelegter Fahrstraßen; Stellbefehle nur aus dem Kern (Phase 1) | offen |
-| H-004 | Falsches Netzmodell (Projektierungsfehler) | Fehler in Netzbeschreibung oder Import; Modell weicht von der Realität ab | Vollständige Validierung (REQ-TOP-001…010); unabhängige Gegenprüfung der Projektierung (Phase 1); signiertes Plan-Image (Phase 1) | teilweise umgesetzt |
-| H-005 | Zug wird nicht erkannt | Lücke in der Gleisfreimeldung; Kommunikationsverlust zu Achszählern | Lückenlose TVD-Abdeckung (REQ-TOP-006); Heartbeat-Überwachung, Ausfall ⇒ „gestört“ (Phase 1) | offen; REQ-TOP-006 umgesetzt |
-| H-006 | Unberechtigte oder versehentliche Bedienhandlung | Fehlbedienung, Angriff über API | RBAC, mTLS, Audit (Phase 1/3); Hilfshandlungen nur mit zweiter Bestätigung und Zählwerk (Phase 2) | offen |
-| H-007 | Fehlfunktion durch Softwarefehler im Kern | Panik, Überlauf, undefiniertes Verhalten | `forbid(unsafe_code)`; keine `unwrap`/`panic`/Indexierung/ungeprüfte Arithmetik (Clippy `deny`); deterministischer Kern; Redundanz mit Voter (Phase 5) | Lints ab Phase 0 aktiv |
+| H-001 | Zusammenstoß zweier Züge | Feindliche Fahrstraßen gleichzeitig eingestellt; Belegung nicht erkannt; Fahrerlaubnis trotz Besetzung | Feindlichkeiten aus der Projektierung (REQ-PLN-012) mit unabhängiger Gegenprüfung (REQ-PLN-013); Zulassung nur ohne feindliche Fahrstraße und bei freien Abschnitten (REQ-IXL-002/003); Fahrt nur bei erfüllten Bedingungen (REQ-IXL-005); Invarianten (REQ-IXL-008) | Phase 1 umgesetzt. Offen: Durchrutschwege und Flankenschutz (Phase 2) |
+| H-002 | Entgleisung an einer Weiche | Fahrerlaubnis ohne überwachte Endlage; Weg über eine Weiche, der physisch nicht existiert | Nur zulässige Wege durch Weichen (REQ-TOP-007); Fahrt nur bei überwachter Lage (REQ-IXL-005); Abbruch bei Umstellzeitüberschreitung (REQ-IXL-010) | Phase 1 umgesetzt |
+| H-003 | Umstellen einer Weiche unter einem Zug | Stellbefehl trotz Verschluss oder Belegung | Stellbefehle nur aus dem Kern (REQ-SVC-002), nur an unverschlossene Weichen in freiem Abschnitt (REQ-IXL-004); Auflösung erst hinter dem Zug (REQ-IXL-007) | Phase 1 umgesetzt |
+| H-004 | Falsches Netzmodell oder falscher Plan (Projektierungsfehler) | Fehler in Netzbeschreibung, Import oder Generator; Plan passt nicht zum Netz | Netzvalidierung (REQ-TOP-001…010); Signalstandorte (REQ-PLN-010); unabhängige Gegenprüfung (REQ-PLN-013); Strukturprüfung des Images (REQ-PLN-001/002); Abgleich Plan ↔ Netz (REQ-SVC-001) | Phase 1 umgesetzt. Offen: Import realer Daten (railML, PlanPro) mit eigener Prüfung (Phase 4) |
+| H-005 | Zug wird nicht erkannt | Lücke in der Gleisfreimeldung; Ausfall der Kommunikation zu Achszählern | Lückenlose TVD-Abdeckung (REQ-TOP-006); fehlende oder veraltete Meldung ⇒ gestört ⇒ besetzt (REQ-IXL-009) | Phase 1 umgesetzt |
+| H-006 | Unberechtigte oder versehentliche Bedienhandlung | Fehlbedienung; Angriff über die API | Jede Anforderung wird vom Kern geprüft (REQ-SVC-002/004); Zugangstoken (REQ-SVC-003) | Teilweise. Offen: Rollen, mTLS, Audit-Journal (Phase 3); Hilfshandlungen mit zweiter Bestätigung (Phase 2) |
+| H-007 | Fehlfunktion durch Softwarefehler im Kern | Panik, Überlauf, undefiniertes Verhalten, nichtdeterministisches Verhalten | `forbid(unsafe_code)`; Lints gegen Panikpfade und ungeprüfte Arithmetik; deterministischer Kern (REQ-IXL-001); Invarianten mit sicherem Zustand (REQ-IXL-008); Property-Tests | Phase 1 umgesetzt. Offen: redundante Kanäle mit Voter, formale Nachweise mit Kani (Phase 5) |
+| H-008 | Unterschobener oder verfälschter Plan | Manipulation oder Beschädigung des Plan-Images; Austausch gegen einen fremden Plan | SHA-256 über das gesamte Image (REQ-PLN-003); Ed25519-Signatur, Betrieb nur mit vertrauenswürdigem Schlüssel (REQ-PLN-004); geheime Schlüssel geschützt (REQ-SVC-005) | Phase 1 umgesetzt. Offen: Schlüsselverwaltung, Vier-Augen-Freigabe der Aktivierung (Phase 3) |
+| H-009 | Zug überfährt ein Halt zeigendes Signal | Fehlhandlung des Triebfahrzeugführers; fehlende Zugbeeinflussung | Bei Einfahrt in eine zurückgenommene Fahrstraße: Alarm, Verschluss bleibt (REQ-IXL-006) | Teilweise. Offen: Erkennung jeder unerlaubten Besetzung, Schutzstrecken über Durchrutschwege (Phase 2), Zugbeeinflussung PZB/ETCS (Phase 4) |

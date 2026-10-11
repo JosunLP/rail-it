@@ -1,6 +1,6 @@
 # rail-it – Konzept einer Engine für Netz- und Stellwerkmanagement
 
-> Status: **Entwurf v0.2** · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
+> Status: **v0.3** (Phase 1 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
 >
 > v0.2 arbeitet die Grundsatzentscheidungen aus Abschnitt 2 ein: vollständiger Netz- und
 > Bahnbetrieb, deutsches ESTW **und** europäisches System (ETCS/EULYNX), Server **und**
@@ -510,6 +510,12 @@ Sicherheit: mTLS, Rollen (Fahrdienstleiter, Disponent, Instandhaltung, Projektie
 Administration, Beobachter), vollständiges Audit und ein Zonenmodell nach IEC 62443 /
 CLC/TS 50701.
 
+**Stand Phase 1:** `railitd` bietet die API `v1` zunächst als **REST/JSON** mit einem
+Ereignisstrom über Server-Sent Events und einem Bearer-Token (siehe
+[api.md](api.md)). Damit sind Bedienung, Zustandsbild, Ereignisse und Simulation ohne
+Code-Generierung von jedem Werkzeug aus nutzbar. Der Protobuf/gRPC-Vertrag folgt in
+Phase 3. Die REST-Pfade bleiben dann als JSON-Abbildung desselben Vertrags erhalten.
+
 ### 14.2 CLI `railit`
 
 Die CLI hat zwei Betriebsarten: **offline** für Projektierung und Analyse, **online** als Client
@@ -631,15 +637,21 @@ Daraus folgen diese Regeln:
 
 ## 18. Roadmap
 
-| Phase | Inhalt | Ergebnis |
-|-------|--------|----------|
-| **0 – Fundament** | Workspace, CI, Lizenz, `types`, `topology`, rail-it-TOML, `railit net validate/info`, erste Gefährdungsliste und Anforderungen | Netz laden, prüfen und beschreiben |
-| **1 – Minimaler Kern** | Plan-Image, Fahrstraßengenerator mit Gegenprüfung, Kern mit Weichen, Signalen und TVD, Simulator, Szenarien, `railitd` mit erster API | Bahnhof „Beispielstadt“ (`examples/beispielstadt.toml`) fährt sicher in der Simulation, bedienbar über die CLI |
-| **2 – ESTW vollständig** | Durchrutschwege, Flankenschutz, Teilauflösung, Zeitverschluss, Hilfshandlungen, Ks und H/V, BÜ, Journal und Replay | Fachlich vollständiges Einzelstellwerk nach `de-estw` |
-| **3 – Netz & Betrieb** | Mehrere Stellbereiche, Streckenblock, Zugnummern, Fahrplan, Zuglenkung, Disposition, vollständige API | Betrieb eines Netzes mit mehreren Bahnhöfen in der Simulation |
-| **4 – Europa** | ETCS Level 2 (MA-Erzeugung, RBC-Funktion), EULYNX SCI-* über RaSTA, Import von railML 3 und PlanPro | Mischbetrieb ESTW/ETCS, Anbindung an Prüfstände |
-| **5 – Sicherheit & Embedded** | Redundante Kanäle, Voter, Cortex-R-Runtime, Kani-Nachweise, Fuzzing, Safety Case | Zulassungsreifer Kandidat für das Labor |
-| **6 – UI** | Spurplan-UI als API-Client mit sicherer Anzeige- und Bestätigungskette | Bedienplatz |
+| Phase | Inhalt | Ergebnis | Stand |
+|-------|--------|----------|-------|
+| **0 – Fundament** | Workspace, CI, Lizenz, `types`, `topology`, rail-it-TOML, `railit net validate/info`, erste Gefährdungsliste und Anforderungen | Netz laden, prüfen und beschreiben | ✔ |
+| **1 – Minimaler Kern** | Plan-Image (signiert), Fahrstraßengenerator mit unabhängiger Gegenprüfung, Kern mit Weichen, Signalen und TVD inkl. Teilauflösung und Zeitverschluss, Simulator, Szenarien, `railitd` mit REST-API, CLI | Bahnhof „Beispielstadt“ (`examples/beispielstadt.toml`) fährt sicher in der Simulation, bedienbar über die CLI | ✔ |
+| **2 – ESTW vollständig** | Durchrutschwege, Flankenschutz, Hilfshandlungen mit Zählwerk, Signalbegriffe Ks und H/V (`railit-movement`), BÜ, Erkennung unerlaubter Besetzungen, Journal und Replay | Fachlich vollständiges Einzelstellwerk nach `de-estw` | offen |
+| **3 – Netz & Betrieb** | Mehrere Stellbereiche, Streckenblock, Zugnummern, Fahrplan, Zuglenkung, Disposition, gRPC-Vertrag, Rollen, mTLS, Audit | Betrieb eines Netzes mit mehreren Bahnhöfen in der Simulation | offen |
+| **4 – Europa** | ETCS Level 2 (MA-Erzeugung, RBC-Funktion), EULYNX SCI-* über RaSTA, Import von railML 3 und PlanPro | Mischbetrieb ESTW/ETCS, Anbindung an Prüfstände | offen |
+| **5 – Sicherheit & Embedded** | Redundante Kanäle, Voter, Cortex-R-Runtime, Kani-Nachweise, Fuzzing, Safety Case | Zulassungsreifer Kandidat für das Labor | offen |
+| **6 – UI** | Spurplan-UI als API-Client mit sicherer Anzeige- und Bestätigungskette | Bedienplatz | offen |
+
+**Umgesetzte Crates (Stand Phase 1):** `railit-types`, `railit-topology`, `railit-plan`,
+`railit-planning`, `railit-rules`, `railit-kernel`, `railit-sim`, `railit-runtime`
+(einschließlich Szenario-Runner und Schlüsselverwaltung), `railit-import` sowie die
+Anwendungen `railit` und `railitd`. Die übrigen Crates aus Abschnitt 5 entstehen in den
+jeweiligen Phasen.
 
 ---
 
