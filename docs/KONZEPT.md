@@ -645,8 +645,9 @@ Daraus folgen diese Regeln:
 
 ## 19. Noch offene Punkte
 
-1. **Lizenzangaben:** Gerichtsstand, anwendbares Recht und Kontakt für kommerzielle Lizenzen.
-   Vorbelegt sind Deutschland, Norderstedt und https://josunlp.de; bitte bestätigen.
+1. **Lizenzangaben:** Der Kontakt für kommerzielle Lizenzen ist support@josunlp.de.
+   Anwendbares Recht (Deutschland) und Gerichtsstand (Norderstedt) sind vorbelegt und noch
+   zu bestätigen.
 2. **Konkrete Embedded-Hardware** für den sicheren Rechner (wichtig ab Phase 5).
 3. **Besetzung der unabhängigen Rollen** (Verifikation, Validierung, ISA) mit Blick auf eine
    spätere Zulassung.

@@ -51,4 +51,4 @@ Gleitkommazahlen.
 
 rail-it steht unter der [Non-Commercial Source License (NCSL) v1.0](LICENSE). Nicht
 kommerzielle Nutzung ist erlaubt. Für jede kommerzielle Nutzung ist eine schriftliche Lizenz
-nötig: https://josunlp.de
+nötig: support@josunlp.de
