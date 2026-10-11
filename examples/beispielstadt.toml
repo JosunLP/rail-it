@@ -1,0 +1,140 @@
+# Beispielstadt – kleiner Durchgangsbahnhof mit zwei Bahnsteiggleisen.
+#
+#            A ▶                       N1 ▶               ◀ F
+#   GW ════ west ════ W1 ╤════ 1 ════╤ W2 ════ east ════ GE
+#                        ╘════ 2 ════╛
+#                         ◀ P1/P2   N2 ▶
+#
+# Einfahrsignal A (aus Westen), Ausfahrsignale N1/N2 (nach Osten),
+# Einfahrsignal F (aus Osten), Ausfahrsignale P1/P2 (nach Westen).
+
+[network]
+name = "Beispielstadt"
+
+[[terminal]]
+name = "GW"
+kind = "boundary"
+
+[[terminal]]
+name = "GE"
+kind = "boundary"
+
+[[track]]
+name = "west"
+length_m = 1000
+
+[[track]]
+name = "1"
+length_m = 600
+
+[[track]]
+name = "2"
+length_m = 600
+
+[[track]]
+name = "east"
+length_m = 1000
+
+[[point]]
+name = "W1"
+
+[[point]]
+name = "W2"
+
+[[link]]
+from = "GW.end"
+to = "west.a"
+
+[[link]]
+from = "west.b"
+to = "W1.tip"
+
+[[link]]
+from = "W1.left"
+to = "1.a"
+
+[[link]]
+from = "W1.right"
+to = "2.a"
+
+[[link]]
+from = "1.b"
+to = "W2.left"
+
+[[link]]
+from = "2.b"
+to = "W2.right"
+
+[[link]]
+from = "W2.tip"
+to = "east.a"
+
+[[link]]
+from = "east.b"
+to = "GE.end"
+
+[[signal]]
+name = "A"
+track = "west"
+position_m = 950
+direction = "a_to_b"
+kind = "main"
+
+[[signal]]
+name = "N1"
+track = "1"
+position_m = 580
+direction = "a_to_b"
+kind = "main"
+
+[[signal]]
+name = "N2"
+track = "2"
+position_m = 580
+direction = "a_to_b"
+kind = "main"
+
+[[signal]]
+name = "F"
+track = "east"
+position_m = 50
+direction = "b_to_a"
+kind = "main"
+
+[[signal]]
+name = "P1"
+track = "1"
+position_m = 20
+direction = "b_to_a"
+kind = "main"
+
+[[signal]]
+name = "P2"
+track = "2"
+position_m = 20
+direction = "b_to_a"
+kind = "main"
+
+[[tvd]]
+name = "TW"
+elements = ["west"]
+
+[[tvd]]
+name = "TW1"
+elements = ["W1"]
+
+[[tvd]]
+name = "T1"
+elements = ["1"]
+
+[[tvd]]
+name = "T2"
+elements = ["2"]
+
+[[tvd]]
+name = "TW2"
+elements = ["W2"]
+
+[[tvd]]
+name = "TE"
+elements = ["east"]

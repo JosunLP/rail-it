@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: "1.97.0"
+
+jobs:
+  check:
+    name: Format, Lints, Tests, Doku
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain installieren
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --locked
+      - name: Doku
+        run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  no-std:
+    name: no_std-Build (Cortex-M)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain installieren
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target thumbv7em-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+      - name: Sicherheitsrelevante Crates ohne std bauen
+        run: >
+          cargo build --locked --target thumbv7em-none-eabihf
+          -p railit-types -p railit-topology
+
+  deny:
+    name: Lizenzen & Advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2

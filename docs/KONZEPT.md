@@ -634,7 +634,7 @@ Daraus folgen diese Regeln:
 | Phase | Inhalt | Ergebnis |
 |-------|--------|----------|
 | **0 – Fundament** | Workspace, CI, Lizenz, `types`, `topology`, rail-it-TOML, `railit net validate/info`, erste Gefährdungsliste und Anforderungen | Netz laden, prüfen und beschreiben |
-| **1 – Minimaler Kern** | Plan-Image, Fahrstraßengenerator mit Gegenprüfung, Kern mit Weichen, Signalen und TVD, Simulator, Szenarien, `railitd` mit erster API | Bahnhof „Beispielstadt“ fährt sicher in der Simulation, bedienbar über die CLI |
+| **1 – Minimaler Kern** | Plan-Image, Fahrstraßengenerator mit Gegenprüfung, Kern mit Weichen, Signalen und TVD, Simulator, Szenarien, `railitd` mit erster API | Bahnhof „Beispielstadt“ (`examples/beispielstadt.toml`) fährt sicher in der Simulation, bedienbar über die CLI |
 | **2 – ESTW vollständig** | Durchrutschwege, Flankenschutz, Teilauflösung, Zeitverschluss, Hilfshandlungen, Ks und H/V, BÜ, Journal und Replay | Fachlich vollständiges Einzelstellwerk nach `de-estw` |
 | **3 – Netz & Betrieb** | Mehrere Stellbereiche, Streckenblock, Zugnummern, Fahrplan, Zuglenkung, Disposition, vollständige API | Betrieb eines Netzes mit mehreren Bahnhöfen in der Simulation |
 | **4 – Europa** | ETCS Level 2 (MA-Erzeugung, RBC-Funktion), EULYNX SCI-* über RaSTA, Import von railML 3 und PlanPro | Mischbetrieb ESTW/ETCS, Anbindung an Prüfstände |
