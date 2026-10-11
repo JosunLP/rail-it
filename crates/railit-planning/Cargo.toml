@@ -1,0 +1,22 @@
+[package]
+name = "railit-planning"
+description = "Projektierung von rail-it: Fahrstraßen aus dem Netzmodell erzeugen, unabhängig gegenprüfen und als signiertes Plan-Image kompilieren."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+railit-types = { workspace = true }
+railit-topology = { workspace = true }
+railit-plan = { workspace = true, features = ["alloc"] }
+
+[dev-dependencies]
+railit-import = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

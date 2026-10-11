@@ -7,6 +7,8 @@
 #
 # Einfahrsignal A (aus Westen), Ausfahrsignale N1/N2 (nach Osten),
 # Einfahrsignal F (aus Osten), Ausfahrsignale P1/P2 (nach Westen).
+#
+# Hauptsignale stehen am Gleisende und damit an einer Gleisfreimeldegrenze (REQ-PLN-010).
 
 [network]
 name = "Beispielstadt"
@@ -76,42 +78,42 @@ to = "GE.end"
 [[signal]]
 name = "A"
 track = "west"
-position_m = 950
+position_m = 1000
 direction = "a_to_b"
 kind = "main"
 
 [[signal]]
 name = "N1"
 track = "1"
-position_m = 580
+position_m = 600
 direction = "a_to_b"
 kind = "main"
 
 [[signal]]
 name = "N2"
 track = "2"
-position_m = 580
+position_m = 600
 direction = "a_to_b"
 kind = "main"
 
 [[signal]]
 name = "F"
 track = "east"
-position_m = 50
+position_m = 0
 direction = "b_to_a"
 kind = "main"
 
 [[signal]]
 name = "P1"
 track = "1"
-position_m = 20
+position_m = 0
 direction = "b_to_a"
 kind = "main"
 
 [[signal]]
 name = "P2"
 track = "2"
-position_m = 20
+position_m = 0
 direction = "b_to_a"
 kind = "main"
 

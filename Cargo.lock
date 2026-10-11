@@ -502,6 +502,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "railit-planning"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "railit-import",
+ "railit-plan",
+ "railit-topology",
+ "railit-types",
+]
+
+[[package]]
 name = "railit-topology"
 version = "0.1.0"
 dependencies = [

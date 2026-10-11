@@ -61,7 +61,7 @@ fn info_json_lists_elements() {
     assert_eq!(json["network"], "Beispielstadt");
     assert_eq!(json["tracks"].as_array().unwrap().len(), 4);
     assert_eq!(json["signals"][0]["name"], "A");
-    assert_eq!(json["signals"][0]["position_m"], 950.0);
+    assert_eq!(json["signals"][0]["position_m"], 1000.0);
     assert_eq!(json["tvds"][1]["elements"][0], "W1");
 }
 

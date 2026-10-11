@@ -25,7 +25,7 @@ fn example_network_imports() {
     };
     assert_eq!(
         net.signal(a).unwrap().position,
-        Length::from_m(950).unwrap()
+        Length::from_m(1000).unwrap()
     );
 }
 
