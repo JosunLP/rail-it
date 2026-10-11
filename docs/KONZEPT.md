@@ -1,286 +1,357 @@
 # rail-it – Konzept einer Engine für Netz- und Stellwerkmanagement
 
-> Status: **Entwurf v0.1** · Sprache der Implementierung: **Rust** · Lizenz: GPL-3.0
+> Status: **Entwurf v0.2** · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
+>
+> v0.2 arbeitet die Grundsatzentscheidungen aus Abschnitt 2 ein: vollständiger Netz- und
+> Bahnbetrieb, deutsches ESTW **und** europäisches System (ETCS/EULYNX), Server **und**
+> Embedded, API-first-Dienst mit CLI.
 
 ---
 
 ## 1. Zielbild
 
-**rail-it** ist eine in Rust geschriebene Engine, die drei Aufgaben vereint:
+**rail-it** ist eine in Rust geschriebene Engine für den **vollständigen Betrieb eines
+Schienennetzes**. Sie umfasst vier Ebenen:
 
-1. **Netzmanagement** – ein exaktes, maschinenlesbares Modell der Eisenbahninfrastruktur
-   (Gleise, Weichen, Kreuzungen, Signale, Gleisfreimeldeabschnitte, Bahnübergänge,
-   Stellbereiche) inklusive Topologie, Geometrie und Betriebsstellen.
-2. **Stellwerkslogik** – die sicherheitsrelevante Steuerung: Fahrstraßenbildung,
-   Verschlüsse, Flankenschutz, Durchrutschwege, Signalbegriffe, Fahrstraßenauflösung,
-   Hilfshandlungen.
-3. **Betriebsführung** – die nicht sicherheitsrelevante Ebene darüber: Zugnummernmeldung,
-   automatische Zuglenkung, Konflikterkennung, Bedienoberflächen, Protokollierung.
+1. **Netzmanagement:** ein exaktes, maschinenlesbares Modell der Infrastruktur. Dazu gehören
+   Gleise, Weichen, Kreuzungen, Signale, Gleisfreimeldeabschnitte, Bahnübergänge, Strecken,
+   Blockabschnitte, Betriebsstellen und Stellbereiche, jeweils mit Topologie und Geometrie.
+2. **Fahrwegsicherung (Stellwerk):** die sicherheitsrelevante Steuerung. Sie bildet
+   Fahrstraßen, setzt Verschlüsse, sichert Flankenschutz und Durchrutschwege, löst Fahrstraßen
+   auf, führt den Streckenblock und die Hilfshandlungen. Sie folgt der Logik des deutschen ESTW
+   bzw. DSTW.
+3. **Zugsicherung / Fahrerlaubnis:** die Übergabe der Fahrerlaubnis an den Zug. Sie geschieht
+   klassisch über Lichtsignale (Ks, H/V, mit PZB) oder europäisch über **ETCS Level 2** mit
+   Movement Authorities aus einem RBC.
+4. **Betriebsführung:** Fahrplan, Disposition, Zuglenkung, Zugnummernmeldung und
+   Zuglaufverfolgung, dazu Diagnose, Protokollierung und Auswertung.
 
 ### Qualitätsziele
 
 | Ziel              | Was das konkret heißt |
 |-------------------|------------------------|
-| **Sicher**        | Jeder Zweifel führt in den restriktiven Zustand (Signal „Halt“). Strikte Trennung von sicherheitsrelevantem Kern und allem anderen. Kein `unsafe`, keine Panics im Kern. |
-| **Verlässlich**   | Deterministisch: gleiche Eingaben ⇒ bitgleiche Ausgaben. Vollständig rekonstruierbar aus Ereignisprotokoll. Redundanzfähig (2-von-2 / 2-von-3). |
-| **Performant**    | Sicherheitskern-Zyklus < 1 ms für 5 000 Elemente, Fahrstraßen-Zulassungsprüfung im Mikrosekundenbereich, keine Allokation im Zyklus. |
-| **Modular**       | Klar geschnittene Crates mit einseitigen Abhängigkeiten. Kern kennt weder Netzwerk, Datenbank noch Hardware. |
-| **Erweiterbar**   | Nationale Regelwerke, Elementtypen, Feldschnittstellen und Importformate sind austauschbar über Traits – ohne den Kern anzufassen. |
+| **Sicher**        | Jeder Zweifel führt in den restriktiven Zustand. Der sicherheitsrelevante Kern ist strikt vom Rest getrennt. Der Kern wird von Beginn an nach den Maßstäben für SIL 4 entwickelt: kein `unsafe`, keine Panics, keine dynamische Allokation. |
+| **Verlässlich**   | Deterministisch: Gleiche Eingaben ergeben bitgleiche Ausgaben. Jeder Zustand lässt sich aus dem Ereignisprotokoll rekonstruieren. Redundanz ist als 2-von-2 und 2-von-3 möglich. |
+| **Performant**    | Ein Zyklus des Sicherheitskerns dauert unter 1 ms bei 5 000 Elementen. Die Zulassungsprüfung einer Fahrstraße liegt im Mikrosekundenbereich. Im Zyklus wird kein Speicher allokiert. |
+| **Modular**       | Klar geschnittene Crates mit einseitigen Abhängigkeiten. Der Kern kennt weder Netzwerk noch Datenbank noch Hardware. |
+| **Erweiterbar**   | Regelwerke, Fahrerlaubnis-Kanäle, Elementtypen, Feldprotokolle und Importformate lassen sich über Traits austauschen, ohne den Kern anzufassen. |
+| **Portabel**      | Derselbe Kern läuft auf Linux-Servern und als `no_std`-Firmware auf sicheren Mikrocontrollern. |
 
-### Ehrliche Abgrenzung
+### Zulassungspfad
 
-Software allein macht kein zulassungsfähiges Stellwerk. Ein Einsatz im realen Bahnbetrieb
-erfordert einen Entwicklungsprozess nach **EN 50126 / EN 50716 (Nachfolger von EN 50128) /
-EN 50129**, sichere Hardware, eine qualifizierte Toolchain und eine unabhängige Begutachtung.
-rail-it wird deshalb so gebaut, dass dieser Weg **offen bleibt** (Architektur, Nachweisbarkeit,
-Rückverfolgbarkeit), zielt aber zunächst auf:
+Das Ziel ist realer Betrieb. Dafür reicht gute Software allein nicht. Nötig sind außerdem ein
+Sicherheitslebenszyklus nach **EN 50126 / EN 50716 / EN 50129**, sichere Hardware, eine
+qualifizierte Toolchain, unabhängige Rollen für Verifikation, Validierung und Begutachtung sowie
+eine Zulassung. rail-it legt deshalb **ab Phase 0** die nötigen Grundlagen an (Abschnitt 16):
+Anforderungen mit IDs, eine Gefährdungsliste, Rückverfolgbarkeit und Nachweise.
 
-- Simulation, Ausbildung und Forschung,
-- Testumgebungen und Prüfstände (z. B. Gegenstück für Stellwerkstests),
-- Modellbahn- und Lehranlagen.
+Bis zu einer Zulassung ist der Einsatz auf Simulation, Ausbildung, Prüfstände und Testlabore
+beschränkt. Diese Einsatzfelder sind zugleich Meilensteine auf dem Weg dorthin.
 
 ---
 
-## 2. Architekturprinzipien
+## 2. Getroffene Entscheidungen
 
-1. **Functional Core, Imperative Shell.** Der Stellwerkskern ist eine reine Zustandsmaschine:
-   `(Zustand, Eingaben, Zeit) → (neuer Zustand, Befehle)`. Er liest keine Uhr, öffnet keine
-   Sockets, allokiert nicht. Alles „Schmutzige“ lebt in der Hülle.
-2. **Fail-safe per Typsystem.** Zustände, die nicht *positiv* als sicher bestätigt sind,
-   werden wie der ungünstigste Fall behandelt. `Occupancy::Disturbed` ist für die Logik
-   gleichbedeutend mit „besetzt“, eine Weiche ohne überwachte Endlage ist „nicht in Lage“.
-3. **Daten vor Code.** Die Stellwerkslogik wird nicht pro Bahnhof programmiert, sondern
-   aus geprüften **Projektierungsdaten** (Fahrstraßentabelle, Flankenschutz, Durchrutschwege)
-   generiert. Der Kern ist generisch, die Anlage ist Konfiguration.
+| # | Frage | Entscheidung | Folgen für die Architektur |
+|---|-------|--------------|----------------------------|
+| E1 | Einsatzzweck | Vollständiger Netz- und Bahnbetrieb | Strecke, Block, Betriebsführung und Zugsicherung kommen in den Umfang. Der Sicherheitslebenszyklus beginnt sofort. |
+| E2 | Regelwerk | Deutsches ESTW/DSTW **und** europäisches System | Zwischen Fahrwegsicherung und Signalisierung liegt eine Fahrerlaubnis-Abstraktion (Abschnitt 9). Regelwerke: `de-estw`, `etcs`. Feldanbindung nach EULYNX. |
+| E3 | Datenformat | railML 3 für den Austausch, PlanPro als deutscher Import, eigenes TOML für Tests und Beispiele, signiertes Binär-Image für den Kern | Siehe Abschnitt 6 |
+| E4 | Plattform | Linux-Server **und** Embedded | Kern ist `no_std` ohne `alloc`. Der Plan wird ohne Kopie direkt aus dem Speicher gelesen. Zustandspuffer stellt der Aufrufer (Abschnitt 13). |
+| E5 | Bedienung | Zuerst Dienst mit umfassender API und CLI, später UI | API-first mit Protobuf/gRPC als Vertrag. Die CLI ist ein API-Client. Eine UI kommt später als weiterer Client dazu (Abschnitt 14). |
+| E6 | Lizenz | Eigene Lizenz: **Non-Commercial Source License (NCSL) v1.0** | Nur Abhängigkeiten mit freizügigen Lizenzen; Copyleft ist ausgeschlossen und wird per `cargo-deny` erzwungen. Cargo nutzt `license-file`. |
+
+---
+
+## 3. Architekturprinzipien
+
+1. **Functional Core, Imperative Shell.** Der Kern ist eine reine Zustandsmaschine:
+   `(Zustand, Eingaben, Zeit) → (neuer Zustand, Befehle)`. Er führt keine I/O aus, liest keine
+   Uhr und allokiert nichts.
+2. **Fail-safe über das Typsystem.** Nur ein positiv bestätigter Zustand gilt als sicher.
+   `Occupancy::Disturbed` behandelt die Logik wie „besetzt“. Eine Weiche ohne überwachte Endlage
+   ist „nicht in Lage“.
+3. **Daten statt Code.** Die Anlage wird projektiert, nicht programmiert. Der Kern ist generisch
+   und arbeitet auf geprüften Projektierungsdaten.
 4. **Einseitige Abhängigkeiten.** Sicherheitsrelevante Crates hängen nie von nicht
-   sicherheitsrelevanten ab. Die Betriebsführung darf nur *Anforderungen* stellen –
-   Befehle an Feldelemente erzeugt ausschließlich der Kern.
-5. **Event Sourcing.** Jede Eingabe wird vor der Verarbeitung protokolliert. Damit sind
-   Replay, Störungsanalyse, Redundanzabgleich und Regressionstests aus Realbetrieb möglich.
-6. **Explizite Zustände.** Kein versteckter Zustand, keine globalen Variablen. Der gesamte
-   Kernzustand ist `Clone + Eq + Hash` und kann gehasht, verglichen und gesnapshottet werden.
+   sicherheitsrelevanten ab. Betriebsführung, API und UI stellen nur *Anforderungen*. Befehle an
+   Feldelemente und Fahrerlaubnisse erzeugt ausschließlich der Kern.
+5. **Event Sourcing.** Jede Eingabe wird vor der Verarbeitung protokolliert. Das ermöglicht
+   Replay, Störungsanalyse, Redundanzabgleich und Regressionstests mit Realdaten.
+6. **Explizite Zustände.** Es gibt keinen versteckten oder globalen Zustand. Der Kernzustand
+   lässt sich hashen, vergleichen und als Snapshot sichern.
+7. **Partitionierung statt Locks.** Ein großes Netz besteht aus vielen Stellbereichen mit je
+   einem eigenen, single-threaded Kern. Sie kommunizieren über definierte Schnittstellen.
 
 ---
 
-## 3. Systemüberblick
+## 4. Systemüberblick
 
 ```mermaid
 flowchart TB
-    subgraph NS["Nicht sicherheitsrelevant (SIL 0)"]
-        HMI["Bedienoberfläche / Web-HMI"]
-        API["railit-api<br/>gRPC · WebSocket · AuthN/Z · Audit"]
-        OPS["railit-ops<br/>Zuglenkung · Zugnummern · Fahrplan"]
-        SIM["railit-sim<br/>Zug- & Störungssimulation"]
-        IMP["railit-import<br/>railML 3 · PlanPro"]
-        PLN["railit-planning<br/>Fahrstraßengenerator · Validierung · Signatur"]
+    subgraph CL["Clients (SIL 0)"]
+        CLI["railit (CLI)"]
+        UI["UI (später)"]
+        EXT["Fremdsysteme"]
     end
 
-    subgraph S["Sicherheitsrelevant"]
-        RT["railit-runtime<br/>Zyklus · Eingangspuffer · Watchdog"]
-        SAF["railit-safety<br/>Redundanz · Voter · Safe State"]
-        K["railit-kernel<br/>Stellwerkslogik (pure)"]
-        RULES["railit-rules<br/>Regelwerk (generisch, DE, …)"]
-        PLAN[("Projektierungsdaten<br/>signiert, unveränderlich")]
+    subgraph SV["Dienst railitd (SIL 0)"]
+        API["railit-api<br/>gRPC · REST/JSON · Event-Streams · RBAC · Audit"]
+        OPS["railit-ops<br/>Fahrplan · Disposition · Zuglenkung · Zugnummern"]
+        PLN["railit-planning<br/>Import · Generator · Validierung"]
+        SIM["railit-sim<br/>Züge · Störungen · Zeitraffer"]
+        JR[("railit-journal")]
     end
 
-    subgraph IO["Feldebene"]
-        AD["railit-adapters<br/>EULYNX SCI-* · RaSTA · Simulator · Modellbahn"]
+    subgraph SC["Sicherer Teil (SIL 4) – Server-Prozess oder sicherer Rechner"]
+        RT["railit-runtime<br/>Zyklus · Watchdog"]
+        SAF["railit-safety<br/>Kanäle · Voter · Safe State"]
+        K["railit-kernel<br/>Fahrwegsicherung · Block"]
+        MP["railit-movement<br/>Fahrerlaubnis → Signalbegriff / ETCS-MA"]
+        PV["railit-plan<br/>Plan-Image prüfen (Signatur, Struktur)"]
+    end
+
+    subgraph FD["Feld"]
+        AD["railit-adapters<br/>EULYNX SCI-* über RaSTA · Simulator"]
         FE["Weichen · Signale · Achszähler · BÜ"]
+        RBC["ETCS-Fahrzeuge (über RBC-Funktion)"]
     end
 
-    HMI --> API --> OPS
-    API -- Bedienanforderung --> RT
-    OPS -- Fahrstraßenanforderung --> RT
-    IMP --> PLN --> PLAN
-    PLAN --> K
-    RULES --> K
-    RT <--> SAF <--> K
-    RT -- Befehle --> AD --> FE
-    FE -- Meldungen --> AD -- Eingaben --> RT
+    CLI & UI & EXT --> API
+    API --> OPS & PLN & SIM
+    API -- Bedienanforderungen --> RT
+    OPS -- Fahrstraßenanforderungen --> RT
+    PLN -- signiertes Plan-Image --> PV --> K
+    RT <--> SAF <--> K --> MP
+    MP -- Befehle --> RT
+    RT --> AD --> FE
+    FE --> AD --> RT
+    MP <--> RBC
     SIM <--> AD
-    RT -- Zustandsänderungen --> JR[("railit-journal<br/>Event-Log · Snapshots")]
+    RT --> JR
     RT -- Zustandsbild --> API
 ```
 
 **Datenfluss in einem Zyklus**
 
-1. Adapter und API legen Eingaben in einen begrenzten, lock-freien Eingangspuffer.
-2. Die Runtime schließt den Zyklus: Eingaben werden zeitgestempelt, ins Journal geschrieben
-   und als geordnete Liste dem Kern übergeben.
-3. Der Kern berechnet neuen Zustand und Befehle (bei Redundanz: auf allen Kanälen).
-4. Der Voter vergleicht die Ergebnisse; bei Abweichung → sicherer Zustand.
-5. Befehle gehen an die Adapter, das Zustandsbild an API/HMI.
+1. Adapter und API legen ihre Eingaben in einen begrenzten Eingangspuffer.
+2. Die Runtime schließt den Zyklus. Sie stempelt die Eingaben mit der Zeit, schreibt sie ins
+   Journal und übergibt sie geordnet an den Kern.
+3. Der Kern berechnet Zustand, Stellbefehle und Fahrerlaubnisse, bei Redundanz auf allen Kanälen.
+4. Der Voter vergleicht die Ergebnisse. Bei einer Abweichung geht das System in den sicheren
+   Zustand.
+5. Die Befehle gehen an die Adapter, das Zustandsbild an API und Betriebsführung.
 
 ---
 
-## 4. Modulschnitt (Cargo-Workspace)
+## 5. Modulschnitt (Cargo-Workspace)
 
 ```
 rail-it/
 ├── Cargo.toml                  # Workspace, gemeinsame Lints & Profile
 ├── crates/
-│   ├── railit-types/           # IDs, Einheiten, Tick/Zeit, Bitsets, Fehler   (no_std)
-│   ├── railit-topology/        # Infrastrukturgraph, Navigation, Geometrie    (no_std + alloc)
-│   ├── railit-plan/            # Datenstrukturen der Projektierung            (no_std)
-│   ├── railit-planning/        # Generator, Validierung, Signierung der Projektierung
-│   ├── railit-rules/           # Regelwerk-Trait + Implementierungen          (no_std)
-│   ├── railit-kernel/          # Sicherheitskern Stellwerkslogik              (no_std, forbid(unsafe))
-│   ├── railit-safety/          # Redundanzkanäle, Voter, Watchdog, Safe State
-│   ├── railit-runtime/         # Zyklussteuerung, Eingangspuffer, Shell um den Kern
-│   ├── railit-journal/         # Append-only Event-Log, Hash-Kette, Snapshots, Replay
-│   ├── railit-elements/        # Element-Meldungen/-Befehle, Treiber-Traits
-│   ├── railit-adapters/        # eulynx/, rasta/, sim/, modelrail/ (Feature-Flags)
-│   ├── railit-ops/             # Zuglenkung (ARS), Zugnummernmeldung, Konflikterkennung
-│   ├── railit-sim/             # Zugbewegung, Gleisfreimeldung, Fehlerinjektion
-│   ├── railit-import/          # railML 3.x, PlanPro, eigenes TOML-Format
-│   └── railit-api/             # gRPC/WebSocket, RBAC, Audit
+│   ├── railit-types/           # IDs, Einheiten, Zeit, Bitsets                 SIL 4 · no_std
+│   ├── railit-topology/        # Infrastrukturgraph, Navigation, Validierung    SIL 4 · no_std + alloc
+│   ├── railit-plan/            # Plan-Image: Format, Zero-Copy-Sicht, Prüfung   SIL 4 · no_std
+│   ├── railit-rules/           # RuleSet-Trait, de-estw, etcs                   SIL 4 · no_std
+│   ├── railit-kernel/          # Fahrwegsicherung, Streckenblock                SIL 4 · no_std
+│   ├── railit-movement/        # Fahrerlaubnis → Lichtsignal / ETCS-MA          SIL 4 · no_std
+│   ├── railit-safety/          # Kanäle, Voter, Watchdog, Safe State            SIL 4 · no_std
+│   ├── railit-runtime/         # Zyklussteuerung (std und Embedded-Variante)    SIL 4
+│   ├── railit-planning/        # Fahrstraßengenerator, Validierung, Signierung  SIL 0 (+ unabh. Prüfer)
+│   ├── railit-import/          # railML 3, PlanPro, rail-it-TOML                SIL 0
+│   ├── railit-journal/         # Event-Log, Hash-Kette, Snapshots, Replay       SIL 0 (Diagnose)
+│   ├── railit-adapters/        # eulynx/, rasta/, sim/                          SIL 4 (RaSTA) / 0
+│   ├── railit-ops/             # Fahrplan, Disposition, ARS, Zugnummern         SIL 0
+│   ├── railit-sim/             # Zugbewegung, Gleisfreimeldung, Fehlerinjektion SIL 0
+│   ├── railit-proto/           # Protobuf-Verträge der API (railit.v1)
+│   └── railit-api/             # gRPC/REST-Server, AuthN/Z, Audit               SIL 0
 ├── apps/
-│   ├── railit-server/          # Gesamtsystem als Dienst
-│   ├── railit-cli/             # Projektierung prüfen, Replay, Szenarien ausführen
-│   └── railit-hmi/             # Web-Bedienoberfläche (Spurplandarstellung)
+│   ├── railitd/                # Dienst
+│   └── railit/                 # CLI
+├── examples/                   # Beispielnetze (TOML)
 ├── tests/scenarios/            # Deklarative Betriebsszenarien
 └── docs/
+    ├── KONZEPT.md
+    ├── requirements/           # Anforderungen mit IDs
+    └── safety/                 # Gefährdungsliste, Sicherheitsnachweis
 ```
 
-**Abhängigkeitsregel** (wird per CI geprüft, z. B. mit `cargo-deny` / eigenem Check):
+**Abhängigkeitsregel** (die CI prüft sie):
 
 ```
-types ← topology ← plan ← rules ← kernel ← safety ← runtime ← {api, ops, adapters}
+types ← topology ← plan ← rules ← kernel ← movement ← safety ← runtime ← {api, ops, adapters}
                      ↑
-                 planning ← import
+               planning ← import
 ```
 
-Der Kern (`railit-kernel`) hängt nur von `types`, `plan` und `rules` ab und hat **keine**
-externen Abhängigkeiten außer evtl. `heapless`. Je kleiner der Kern, desto leichter Nachweis
-und Begutachtung.
+Crates mit SIL 4 dürfen nur von Crates mit SIL 4 abhängen. Externe Abhängigkeiten sind dort
+auf ein Minimum beschränkt und werden einzeln begründet.
 
 ---
 
-## 5. Netzmodell (`railit-topology`)
+## 6. Datenformate
 
-### 5.1 Modellierung
+| Zweck | Format | Begründung |
+|-------|--------|------------|
+| Austausch Infrastruktur, Stellwerk, Fahrplan | **railML 3.x** | Europäischer Standard. Deckt Infrastruktur, Interlocking und Fahrplan ab und ist mit RailTopoModel kompatibel. |
+| Deutsche Projektierungsdaten | **PlanPro** (Import) | Datenmodell der DB für ESTW- und DSTW-Planung. Ohne PlanPro gibt es keine realen deutschen Anlagen. |
+| Handgeschriebene Netze, Tests, Beispiele | **rail-it-TOML** | railML ist zu ausführlich, um Testfälle von Hand zu schreiben. Das TOML ist kompakt, gut zu diffen und gut zu reviewen. |
+| Eingabe des Kerns | **Plan-Image `.rplan`** | Eigenes Binärformat mit Versionsheader, Hash und Ed25519-Signatur. Wird ohne Kopie gelesen und funktioniert auf Embedded ohne Parser. |
+| API | **Protobuf** (gRPC) und JSON-Abbildung | Typsicherer, versionierter Vertrag mit generierbaren Clients in allen Sprachen. |
+| Journal | Eigenes Binärformat, append-only | Hash-Kette, schnelles Replay |
 
-Angelehnt an **RailTopoModel / railML 3** und **EULYNX/PlanPro**, aber für Rechenzeit optimiert:
+Die Formate unterscheiden sich, das Modell dahinter ist eines: Alle Importer erzeugen dieselbe
+interne `Topology`, aus der `railit-planning` das Plan-Image kompiliert.
 
-- **Knoten mit Ports:** Jedes Element (Gleisabschnitt, Weiche, Kreuzung, Prellbock) hat
-  benannte Anschlüsse. Ein Gleis hat `A`/`B`, eine Weiche `Spitze`/`Links`/`Rechts`,
-  eine Kreuzungsweiche vier Ports mit erlaubten Fahrwegen.
-- **Kanten verbinden Ports**, nicht Elemente. Damit ist die Fahrtrichtung beim Durchlaufen
-  einer Weiche eindeutig, und unzulässige Wege (z. B. Links → Rechts) sind strukturell
-  ausgeschlossen.
-- **Punktobjekte** (Signale, Achszählpunkte, Isolierstöße, Gleissperren, Tafeln) liegen mit
-  Position und Wirkrichtung auf einem Gleisabschnitt.
-- **Logische Ebenen** darüber: Gleisfreimeldeabschnitte (TVD), Stellbereiche,
-  Betriebsstellen, Bahnsteige.
+---
 
-### 5.2 Speicherlayout
+## 7. Netzmodell (`railit-topology`)
+
+### 7.1 Modellierung
+
+Das Modell lehnt sich an **RailTopoModel / railML 3** und **EULYNX/PlanPro** an, ist aber auf
+Rechenzeit optimiert.
+
+- **Knoten mit Ports:** Jedes Element hat benannte Anschlüsse. Ein Gleisabschnitt hat `A`/`B`,
+  eine Weiche `Spitze`/`Links`/`Rechts`, ein Prellbock nur `A`.
+- **Verbindungen zwischen Ports:** Kanten verbinden Ports, nicht Elemente. Dadurch ist die
+  Fahrtrichtung durch eine Weiche eindeutig, und unzulässige Wege (etwa Links → Rechts) sind
+  schon strukturell ausgeschlossen.
+- **Punktobjekte** (Signale, Achszählpunkte, Isolierstöße, Gleissperren, ETCS-Balisen, Tafeln)
+  liegen mit Position und Wirkrichtung auf einem Gleisabschnitt.
+- **Logische Ebenen** liegen darüber: Gleisfreimeldeabschnitte (TVD), Blockabschnitte,
+  Strecken, Betriebsstellen, Stellbereiche und ETCS-Bereiche.
+
+### 7.2 Speicherlayout
 
 ```rust
 /// Typsichere Indizes statt Referenzen oder Rc<RefCell<..>>.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct PointId(u32);
 
 pub struct Topology {
-    tracks:   Vec<Track>,        // Arena, Index = TrackId
-    points:   Vec<Point>,        // Arena, Index = PointId
-    signals:  Vec<Signal>,
-    tvds:     Vec<TvdSection>,
-    links:    Vec<Link>,         // Port ↔ Port
-    // vorberechnete Nachbarschaftslisten (CSR) für schnelle Navigation
-    adjacency: CsrGraph<PortRef>,
+    tracks:  Vec<Track>,        // Arena, Index = TrackId
+    points:  Vec<Point>,
+    signals: Vec<Signal>,
+    tvds:    Vec<TvdSection>,
+    links:   Vec<Link>,          // Port ↔ Port
+    names:   NameIndex,          // fachliche ID ("W12") ↔ Index
 }
 ```
 
-- Arenen + `u32`-Indizes ⇒ cachefreundlich, kein Referenzzählen, trivial serialisierbar.
-- Nach dem Laden **unveränderlich**; Änderungen erzeugen eine neue, neu validierte Version.
-- Identität über stabile, fachliche IDs (z. B. `"W12"`, `"N3"`) – intern auf Indizes gemappt.
+Arenen mit `u32`-Indizes sind cachefreundlich, kommen ohne Referenzzählen aus und lassen sich
+direkt in das Plan-Image kompilieren. Nach dem Laden ist die Topologie unveränderlich.
 
-### 5.3 Validierung beim Laden
+### 7.3 Validierung
 
-Bevor eine Topologie verwendet wird, prüft `railit-planning` u. a.: Zusammenhang,
-keine offenen Ports (außer Prellbock/Netzgrenze), konsistente Wirkrichtungen,
-Gleisfreimeldeabschnitte lückenlos und überlappungsfrei, jedes Signal hat einen
-erreichbaren Zielpunkt, Weichen liegen vollständig in einem TVD-Abschnitt.
+Vor jeder Verwendung wird geprüft:
+
+- Alle Namen sind eindeutig.
+- Kein Port ist offen (außer an der Netzgrenze), keiner doppelt verbunden.
+- Jedes Punktobjekt liegt innerhalb seines Gleises.
+- Die Gleisfreimeldeabschnitte decken das Netz lückenlos und überlappungsfrei ab.
+- Jede Weiche liegt in genau einem TVD-Abschnitt.
 
 ---
 
-## 6. Projektierung (`railit-plan`, `railit-planning`)
-
-Die Projektierung übersetzt das Netz in die Tabellen, mit denen der Kern arbeitet –
-das Äquivalent zur Fahrstraßen- und Verschlusstabelle.
+## 8. Projektierung (`railit-planning`, `railit-plan`)
 
 ```mermaid
 flowchart LR
     A["railML / PlanPro / TOML"] --> B["Topologie<br/>validieren"]
-    B --> C["Fahrstraßen<br/>generieren"]
+    B --> C["Fahrstraßen,<br/>Blöcke generieren"]
     C --> D["Flankenschutz,<br/>Durchrutschwege,<br/>Feindlichkeiten"]
     D --> E["Regelwerks-<br/>prüfung"]
-    E --> F["Kompilieren<br/>(Bitsets, Indizes)"]
-    F --> G["Signieren<br/>(Hash + Signatur)"]
-    G --> H[("InterlockingPlan")]
+    E --> F["Unabhängige<br/>Gegenprüfung"]
+    F --> G["Kompilieren &<br/>Signieren"]
+    G --> H[(".rplan")]
 ```
 
-Pro Fahrstraße enthält der `InterlockingPlan`:
+Pro Fahrstraße enthält der Plan:
 
-- Start- und Zielsignal, Art (Zug-/Rangierstraße),
-- erforderliche Weichenlagen und Gleissperren,
-- befahrene TVD-Abschnitte in Reihenfolge (für Teilauflösung),
-- zulässige Durchrutschwege mit ihren Elementen,
-- Flankenschutzelemente (direkt und mittelbar über Flankenschutz-Transport),
-- feindliche Fahrstraßen,
-- Signalbegriffsregeln (Geschwindigkeiten, Vorsignalisierung) des Regelwerks.
+- Start- und Ziel sowie die Art (Zug- oder Rangierstraße),
+- die Weichenlagen,
+- die TVD-Abschnitte in Fahrreihenfolge,
+- die Durchrutschwege,
+- die Flankenschutzelemente,
+- die feindlichen Fahrstraßen,
+- das Geschwindigkeitsprofil.
 
-Alle Mengen werden zu **Bitsets fester Breite** kompiliert. Eine Feindlichkeitsprüfung
-ist damit eine Handvoll `AND`-Operationen über `u64`-Wörter.
+Alle Mengen werden zu **Bitsets fester Breite** kompiliert. Eine Feindlichkeitsprüfung besteht
+dann aus wenigen `AND`-Operationen.
 
-**Doppelte Absicherung:** Der Generator ist nicht sicherheitsrelevant entwickelt. Sein
-Ergebnis wird deshalb von einem **unabhängigen Prüfer** (zweite Implementierung, andere
-Algorithmen) gegengeprüft. Nur übereinstimmende Pläne werden signiert. Der Kern lädt
-ausschließlich signierte Pläne und prüft Signatur und Versionskompatibilität beim Start.
+Der Generator gilt als nicht sicherheitsrelevant. Deshalb prüft ein **unabhängiger Prüfer**
+seine Ergebnisse: eine zweite Implementierung mit anderen Algorithmen. Nur übereinstimmende Pläne
+werden signiert. Eine Aktivierung im Betrieb erfordert zwei Personen.
 
 ---
 
-## 7. Sicherheitskern (`railit-kernel`)
+## 9. Fahrerlaubnis-Abstraktion: ESTW und ETCS in einem Kern
 
-### 7.1 Schnittstelle
+Damit das deutsche und das europäische System nebeneinander funktionieren, trennt rail-it zwei
+Fragen:
+
+- **Was ist sicher?** Diese Frage beantwortet die Fahrwegsicherung (`railit-kernel`). Sie
+  liefert eine abstrakte **Fahrerlaubnis**: von wo bis wo der Fahrweg gesichert ist, mit welchem
+  Gefahrpunkt, welchem Durchrutschweg und welchem Geschwindigkeitsprofil.
+- **Wie erfährt es der Zug?** Diese Frage beantwortet `railit-movement`. Es übersetzt die
+  Fahrerlaubnis über einen *Kanal* in Signalbegriffe oder Movement Authorities.
+
+```rust
+pub struct MovementPermission {
+    pub route: RouteId,
+    pub start: SignalId,              // bzw. ETCS-Halt-Tafel / Marker
+    pub end_of_authority: Location,
+    pub danger_point: Location,
+    pub overlap: Option<OverlapId>,
+    pub speed_profile: SpeedProfileRef,
+}
+
+pub trait SignallingChannel {
+    /// Fahrerlaubnisse dieses Zyklus → kanalspezifische Befehle.
+    fn render(&mut self, permissions: &[MovementPermission], out: &mut CommandBuffer);
+}
+```
+
+| Kanal | Ausgabe | Regelwerk |
+|-------|---------|-----------|
+| `lineside::ks` | Ks-Signalbegriffe, Zusatzanzeiger (Zs3/Zs3v), PZB-Wirkung | `de-estw` |
+| `lineside::hv` | H/V-Signalbegriffe, PZB-Wirkung | `de-estw` |
+| `etcs::l2` | Movement Authorities (EoA, Danger Point, Overlap, statisches Geschwindigkeitsprofil) an die RBC-Funktion | `etcs` |
+
+Ein Abschnitt kann **mehrere Kanäle zugleich** haben, etwa ETCS Level 2 mit Lichtsignalen als
+Rückfallebene. Das ist im Mischbetrieb der Normalfall. Für ETCS mit Moving Block bzw. Hybrid
+Level 3 ist das Konzept der *Virtual Sub-Sections* (VSS) vorgesehen: Belegung entsteht dann
+aus der Gleisfreimeldung **und** aus Positionsmeldungen der Züge.
+
+---
+
+## 10. Fahrwegsicherung (`railit-kernel`)
+
+### 10.1 Schnittstelle
 
 ```rust
 #![no_std]
 #![forbid(unsafe_code)]
 
 pub struct Interlocking<'p, R: RuleSet> {
-    plan:  &'p InterlockingPlan,   // geprüft, signiert, unveränderlich
+    plan:  PlanView<'p>,           // geprüftes Plan-Image, zero-copy
     rules: R,
-    state: KernelState,            // vollständig, Clone + Eq + Hash
+    state: KernelState<'p>,        // Puffer vom Aufrufer, Größe aus dem Plan-Header
 }
 
 impl<'p, R: RuleSet> Interlocking<'p, R> {
     /// Ein Zyklus. Keine I/O, keine Uhr, keine Allokation, keine Panics.
-    pub fn step(
-        &mut self,
-        now: Tick,
-        inputs: &[Input],
-        out: &mut CommandBuffer,
-    ) -> Result<StepReport, SafeStateReason>;
-}
-
-pub enum Input {
-    PointReport  { id: PointId,  status: PointStatus },   // Endlage überwacht / keine Endlage / gestört
-    TvdReport    { id: TvdId,    status: Occupancy },     // frei / besetzt / gestört
-    SignalReport { id: SignalId, status: SignalStatus },  // Begriff bestätigt / Lampenfehler / …
-    Request(OperatorRequest),                             // Fahrstraße einstellen, auflösen, …
-    AuxRequest(Confirmed<AuxOperation>),                  // zählpflichtige Hilfshandlung
-    Heartbeat    { element: ElementRef },
-}
-
-pub enum Command {
-    MovePoint   { id: PointId,  to: PointPosition },
-    ShowAspect  { id: SignalId, aspect: Aspect },
-    LevelCrossing { id: LxId, cmd: LxCommand },
+    pub fn step(&mut self, now: Tick, inputs: &[Input], out: &mut Outputs)
+        -> Result<StepReport, SafeStateReason>;
 }
 ```
 
-### 7.2 Fahrstraßen-Lebenszyklus
+`Input` umfasst Element-Meldungen (Weiche, Signal, TVD, BÜ), Bedienanforderungen, bestätigte
+Hilfshandlungen, Meldungen der Nachbarstellwerke und Heartbeats. `Outputs` enthält Stellbefehle
+und Fahrerlaubnisse.
+
+### 10.2 Fahrstraßen-Lebenszyklus
 
 ```mermaid
 stateDiagram-v2
@@ -289,11 +360,11 @@ stateDiagram-v2
     [*] --> Angefordert
     Angefordert --> Abgelehnt: Zulassungsprüfung negativ
     Angefordert --> Einstellen: Zulassungsprüfung positiv<br/>(Elemente reserviert)
-    Einstellen --> Festgelegt: alle Weichen in überwachter Endlage,<br/>Flankenschutz & Durchrutschweg gesichert
+    Einstellen --> Festgelegt: Weichen in überwachter Endlage,<br/>Flankenschutz & Durchrutschweg gesichert
     Einstellen --> Abgebrochen: Zeitüberschreitung / Störung
-    Festgelegt --> SignalFahrt: Freimeldung aller Abschnitte
-    SignalFahrt --> Befahren: Zug passiert Startsignal<br/>(Signal fällt auf Halt)
-    SignalFahrt --> Ruecknahme: Bedienhandlung
+    Festgelegt --> Fahrerlaubnis: Freimeldung aller Abschnitte
+    Fahrerlaubnis --> Befahren: Zug passiert Startpunkt
+    Fahrerlaubnis --> Ruecknahme: Bedienhandlung
     Ruecknahme --> Aufgeloest: kein Zug in Annäherung<br/>oder Zeitverschluss abgelaufen
     Befahren --> Befahren: Teilauflösung je Abschnitt
     Befahren --> Aufgeloest: Ziel erreicht,<br/>Durchrutschweg aufgelöst
@@ -302,252 +373,281 @@ stateDiagram-v2
     Aufgeloest --> [*]
 ```
 
-Zentrale Regeln, die der Kern in **jedem** Zyklus durchsetzt:
+### 10.3 Regeln, die in jedem Zyklus gelten
 
-- **Signalhaltfall:** Ein Signal zeigt nur Fahrt, solange *alle* Bedingungen der
-  Fahrstraße gelten (Weichen überwacht, Abschnitte frei, Flankenschutz, Durchrutschweg,
-  Nachbarstellwerk-Zustimmung). Fällt eine weg → sofort Halt.
-- **Verschluss:** Elemente einer festgelegten Fahrstraße lassen sich nicht umstellen;
-  jede Anforderung dazu wird abgewiesen.
-- **Auflösung nur zugbewirkt oder unter Zeitverschluss**; manuelle Auflösung belegter
-  Elemente nur als zählpflichtige Hilfshandlung.
-- **Kommunikationsverlust** zu einem Element (fehlender Heartbeat) ⇒ Element gilt als
-  gestört ⇒ betroffene Signale auf Halt.
+- **Fahrerlaubnis nur bei vollständiger Sicherung.** Entfällt eine Bedingung, wird die
+  Fahrerlaubnis sofort zurückgenommen. Das Signal fällt auf Halt, oder die MA wird verkürzt.
+- **Verschluss:** Elemente einer festgelegten Fahrstraße lassen sich nicht umstellen.
+- **Auflösung nur durch den Zug oder unter Zeitverschluss.** Alles andere ist eine
+  zählpflichtige Hilfshandlung.
+- **Kommunikationsverlust** zu einem Element bedeutet: gestört, also restriktiv.
 
-### 7.3 Invarianten
+### 10.4 Netz: Strecke, Block, Nachbarstellwerke
 
-Nach jedem `step` werden Invarianten geprüft; eine Verletzung führt nicht zur Panik,
-sondern zu `Err(SafeStateReason)` und damit zum sicheren Zustand (alle Signale Halt,
-keine Stellbefehle, Alarm). Beispiele:
+- **Streckenblock:** Blockabschnitte zwischen Betriebsstellen werden wie Fahrstraßen
+  behandelt, mit Erlaubnis- und Gleisfreimeldung im Sinne eines Zentralblocks.
+- **Nachbarstellwerke:** Jeder Stellbereich hat einen eigenen Kern. An den Grenzen tauschen
+  sie Zustimmungen, Belegungen und Fahrerlaubnisse aus, angelehnt an EULYNX SCI-ILS.
+  Grenzüberschreitende Fahrstraßen funktionieren per Anfrage und Zustimmung.
+- **Bahnübergänge:** Einschalten, Sicherung überwachen, Freigabe der Fahrerlaubnis nur bei
+  gesichertem BÜ.
 
-- Kein Element ist von zwei nicht verträglichen Fahrstraßen gleichzeitig belegt.
-- Ein Fahrt zeigendes Signal hat genau eine festgelegte Fahrstraße.
-- Jede Weiche in einer festgelegten Fahrstraße ist in überwachter, geforderter Endlage.
-- Kein Stellbefehl an ein verschlossenes Element.
+### 10.5 Invarianten
 
-Dieselben Invarianten werden in Tests (Property-Based) und, wo möglich, formal (Kani)
-nachgewiesen – sie sind die **zentrale Sicherheitsspezifikation** des Projekts.
+Nach jedem `step` prüft der Kern seine Invarianten. Eine Verletzung führt nicht zur Panik,
+sondern zu `Err(SafeStateReason)` und damit in den sicheren Zustand. Beispiele:
 
-### 7.4 Hilfshandlungen
+- Kein Element ist von zwei unverträglichen Fahrstraßen belegt.
+- Jede Fahrerlaubnis gehört zu genau einer festgelegten Fahrstraße.
+- Jede Weiche einer festgelegten Fahrstraße ist in der geforderten Lage überwacht.
+- Kein Stellbefehl geht an ein verschlossenes Element.
 
-Hilfshandlungen (z. B. Hilfsauflösung, Ersatzsignal, Achszähl-Grundstellung,
-Weichenumstellung unter Belegung) sind über das Typsystem abgesichert:
+Die Invarianten sind die **zentrale Sicherheitsspezifikation**. Sie werden mit Property-Tests
+und, wo möglich, formal mit Kani nachgewiesen.
+
+### 10.6 Hilfshandlungen
 
 ```rust
-pub struct Pending<Op>  { op: Op, requested_by: OperatorId, at: Tick }
+pub struct Pending<Op>   { op: Op, requested_by: OperatorId, at: Tick }
 pub struct Confirmed<Op> { op: Op, requested_by: OperatorId, confirmed_by: OperatorId, counter: u64 }
-
-impl<Op: AuxOperation> Pending<Op> {
-    /// Nur über eine zweite, getrennte Bestätigung erreichbar.
-    pub fn confirm(self, by: OperatorId, at: Tick, ctr: &mut AuxCounter) -> Result<Confirmed<Op>, AuxError>;
-}
 ```
 
-Der Kern akzeptiert nur `Confirmed<_>`. Jede Hilfshandlung erhöht ein Zählwerk und wird
-unveränderlich im Journal protokolliert.
+Der Kern nimmt nur `Confirmed<_>` an. Eine Bestätigung erfordert eine zweite, getrennte
+Handlung. Jede Hilfshandlung zählt ein Zählwerk hoch und wird im Journal festgehalten.
 
 ---
 
-## 8. Regelwerke (`railit-rules`)
+## 11. Regelwerke (`railit-rules`)
 
-Unterschiedliche Bahnen, unterschiedliche Regeln. Der Kern bleibt generisch; Abweichungen
-stecken in einem Trait, der **statisch** (Generics) eingebunden wird – kein dynamisches
-Nachladen von Code in den Sicherheitskern.
+Regelwerke werden **statisch** über Generics eingebunden. Code wird nie dynamisch in den Kern
+nachgeladen.
 
 ```rust
 pub trait RuleSet {
-    /// Welcher Signalbegriff ergibt sich aus Fahrstraße, Folgesignal und Geschwindigkeiten?
-    fn aspect(&self, ctx: &AspectContext) -> Aspect;
-    /// Wann ist ein Durchrutschweg erforderlich und wie lang?
     fn overlap(&self, route: &RouteDef) -> OverlapRequirement;
-    /// Teilauflösung je Abschnitt oder Gesamtauflösung?
     fn release_strategy(&self, route: &RouteDef) -> ReleaseStrategy;
-    /// Zeitverschluss bei Fahrstraßenrücknahme.
     fn approach_locking(&self, route: &RouteDef) -> Duration;
+    fn flank_protection(&self, ctx: &FlankContext) -> FlankRequirement;
 }
 ```
 
-Geplante Implementierungen: `Generic` (Lehr-/Testregelwerk), `DeKs` (deutsches
-Ks-Signalsystem, ESTW-Logik), `DeHV` (H/V-Signale). Weitere über eigene Crates.
+- `de-estw`: Logik nach Ril 819, Ks- und H/V-Signale, PZB-Wirkung, Zentralblock.
+- `etcs`: ETCS Level 2 nach TSI ZZS. Im Mischbetrieb wird es mit `de-estw` kombiniert.
 
 ---
 
-## 9. Feldanbindung (`railit-elements`, `railit-adapters`)
+## 12. Feldanbindung (`railit-adapters`)
 
-Der Kern spricht nur abstrakte `Input`/`Command`. Adapter übersetzen auf reale Protokolle:
-
-| Adapter      | Zweck |
-|--------------|-------|
-| `sim`        | In-Process-Simulator, deterministisch, für Tests und Ausbildung |
-| `eulynx`     | EULYNX-Schnittstellen SCI-P (Weiche), SCI-LS (Lichtsignal), SCI-TDS (Gleisfreimeldung), SCI-LX (BÜ), SCI-ILS (Nachbarstellwerk) |
-| `rasta`      | Sicheres Transportprotokoll RaSTA (DIN VDE V 0831-200) unter EULYNX |
-| `modelrail`  | z. B. DCC/LocoNet/Z21 für Modellbahn und Lehranlagen |
+| Adapter  | Zweck |
+|----------|-------|
+| `sim`    | Deterministischer In-Process-Simulator für Tests und Ausbildung |
+| `eulynx` | SCI-P (Weiche), SCI-LS (Lichtsignal), SCI-TDS (Gleisfreimeldung), SCI-LX (BÜ), SCI-ILS (Nachbarstellwerk), SCI-RBC |
+| `rasta`  | Sicheres Transportprotokoll RaSTA (DIN VDE V 0831-200) nach EN 50159 |
 
 ```rust
 pub trait FieldAdapter: Send {
-    /// Befehle des letzten Zyklus übernehmen (nicht blockierend).
     fn submit(&mut self, cmds: &[Command]) -> Result<(), AdapterError>;
-    /// Eingegangene Meldungen in den Puffer der Runtime schreiben.
     fn drain(&mut self, sink: &mut InputSink);
-    /// Verbindungszustand je Element – Grundlage für die Heartbeat-Überwachung.
     fn health(&self) -> AdapterHealth;
 }
 ```
 
-Sicherheitsrelevante Kommunikation folgt **EN 50159** (Sequenznummern, Zeitstempel,
-Sicherheitscode, Timeouts). Adapter laufen asynchron (Tokio) in der Hülle, getrennt vom
-synchronen Kernzyklus.
+---
+
+## 13. Plattformen: Server und Embedded
+
+Damit der Kern auf beiden Plattformen läuft, gelten diese Regeln:
+
+- `railit-types`, `railit-plan`, `railit-rules`, `railit-kernel`, `railit-movement` und
+  `railit-safety` sind `#![no_std]` **ohne `alloc`**.
+- Das Plan-Image wird ohne Kopie gelesen, auf Embedded direkt aus dem Flash. Beim Laden werden
+  Struktur, Grenzen, Hash und Signatur geprüft.
+- Den Zustandsspeicher stellt der Aufrufer. Auf Embedded sind das statische Puffer, deren
+  Größe der Plan-Header vorgibt. Auf dem Server sind es `Vec`s.
+- Die Runtime gibt es in zwei Varianten: `std` (Threads und Tokio für I/O) und `embedded`
+  (Zyklus über einen Timer-Interrupt).
+
+| Ziel | Target | Verwendung |
+|------|--------|------------|
+| Linux-Server | `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` | Gesamtsystem, Simulation, Leitstelle |
+| Sicherer Rechner | `armv7r-none-eabihf` (Cortex-R, Lockstep) | Kern mit Safety in 2-von-2- oder 2-von-3-Konfiguration |
+| Element-Controller | `thumbv7em-none-eabihf` (Cortex-M) | Objektcontroller, Prüfstände |
+
+**Einsatzvarianten**
+
+1. **Alles auf dem Server:** `railitd` mit internen Kanälen. Für Simulation, Ausbildung und
+   Labor.
+2. **Verteilt:** Kern und Safety laufen auf sicheren Rechnern. `railitd` läuft auf Linux mit
+   Betriebsführung und API. Die Verbindung erfolgt über RaSTA.
 
 ---
 
-## 10. Zuverlässigkeit & Redundanz (`railit-safety`, `railit-journal`)
+## 14. Dienst, API und CLI
 
-- **Deterministische Kanäle:** Zwei (oder drei) Instanzen des Kerns berechnen jeden Zyklus
-  aus identischen Eingaben. Der Voter vergleicht Befehle *und* den Hash des Zustands.
-  - 2-von-2: Abweichung ⇒ sicherer Zustand (Sicherheit vor Verfügbarkeit).
-  - 2-von-3: Mehrheitsentscheid, abweichender Kanal wird abgeschaltet (Verfügbarkeit).
-  - Optional **diversitär**: zweiter Kanal mit anderem Compiler-Ziel/Optimierungsstufe oder
-    unabhängiger Implementierung.
-- **Watchdog:** Überschreitet ein Zyklus seine Deadline, geht die Runtime in den sicheren Zustand.
-- **Journal:** Append-only, jeder Eintrag enthält den Hash des Vorgängers (Hash-Kette),
-  periodische Snapshots. Replay eines Betriebstags in Sekunden.
-- **Neustart:** Nach einem Neustart gelten alle Elemente als *unbekannt*, alle Signale Halt,
-  alle Fahrstraßen aufgelöst. Gleisfreimeldung muss neu bestätigt werden (ggf. Grundstellung
-  als Hilfshandlung). Der Journal-Zustand dient der Diagnose, wird aber **nicht** blind
-  wiederhergestellt – die Wirklichkeit draußen hat Vorrang.
-- **Hot Standby:** Ein zweiter Server konsumiert dasselbe Journal und kann bei Ausfall
-  übernehmen.
+### 14.1 API-first
 
----
+Der Vertrag ist **Protobuf** im Paket `railit.v1`, versioniert und mit Prüfung auf
+Abwärtskompatibilität in der CI. Er wird auf drei Wegen angeboten:
 
-## 11. Performance
+- **gRPC** (`tonic`) als Hauptschnittstelle,
+- **REST/JSON** mit generierter OpenAPI für einfache Integrationen,
+- **Event-Streams** über gRPC-Server-Streaming bzw. WebSocket für Zustandsänderungen, Alarme
+  und Journal.
 
-| Kennzahl                                   | Ziel |
-|--------------------------------------------|------|
-| Kernzyklus bei 5 000 Elementen             | < 1 ms (p99) |
-| Zulassungsprüfung einer Fahrstraße         | < 10 µs |
-| Allokationen im Kernzyklus                 | 0 |
-| Laden + Prüfen eines Plans (großer Knoten) | < 1 s |
-| Replay 24 h Betrieb                        | < 60 s |
+| Service | Aufgaben |
+|---------|----------|
+| `InfrastructureService` | Netz, Elemente und Spurplan-Geometrie abfragen |
+| `PlanningService` | Plan hochladen, validieren, kompilieren, vergleichen; Aktivierung mit zwei Personen |
+| `InterlockingService` | Fahrstraßen einstellen und zurücknehmen, Elemente bedienen, Hilfshandlungen anfordern und bestätigen, Zustand abfragen |
+| `OperationsService` | Züge, Zugnummern, Fahrplan, Disposition, Zuglenkung ein/aus |
+| `EtcsService` | Angemeldete Züge, Movement Authorities, Positionsmeldungen |
+| `SimulationService` | Zeit steuern, Züge einsetzen, Störungen injizieren |
+| `EventService` | Abonnements auf Zustand, Alarme, Journal |
+| `DiagnosticsService` | Health, Versionen, Metriken (zusätzlich Prometheus `/metrics`) |
+| `AdminService` | Benutzer, Rollen, Schlüssel, Freigaben |
 
-Mittel zum Zweck:
+Sicherheit: mTLS, Rollen (Fahrdienstleiter, Disponent, Instandhaltung, Projektierer,
+Administration, Beobachter), vollständiges Audit und ein Zonenmodell nach IEC 62443 /
+CLC/TS 50701.
 
-- **Arenen und `u32`-Indizes** statt Pointer-Graphen.
-- **Bitsets** für Belegung, Verschlüsse, Feindlichkeiten (SIMD-freundlich).
-- **Vorberechnung** aller Fahrstraßen offline; zur Laufzeit nur Tabellenzugriffe.
-- **Inkrementelle Auswertung:** Nur Fahrstraßen, deren Elemente sich geändert haben,
-  werden neu bewertet (Abhängigkeitsindex Element → Fahrstraßen).
-- **Partitionierung:** Große Netze werden in Stellbereiche zerlegt; jeder Bereich hat einen
-  eigenen, single-threaded Kern. Parallelität entsteht *zwischen* Bereichen, die über eine
-  definierte Nachbarstellwerk-Schnittstelle kommunizieren – nicht durch Locks im Kern.
-- **Benchmarks** mit `criterion` in der CI, Regressionen > 10 % brechen den Build.
+### 14.2 CLI `railit`
 
----
+Die CLI hat zwei Betriebsarten: **offline** für Projektierung und Analyse, **online** als Client
+von `railitd`.
 
-## 12. Betriebsführung (`railit-ops`)
+```
+# offline
+railit net validate examples/beispielstadt.toml
+railit net info     examples/beispielstadt.toml
+railit plan compile examples/beispielstadt.toml --rules de-estw -o beispielstadt.rplan
+railit plan verify  beispielstadt.rplan
+railit scenario run tests/scenarios/einfahrt.toml
+railit journal replay betrieb.rjl --until 2026-10-11T12:00:00Z
 
-Nicht sicherheitsrelevant, darf also „klug“ sein:
-
-- **Zugnummernmeldung:** Verfolgung von Zugnummern über die Gleisfreimeldung.
-- **Automatische Zuglenkung (ARS):** stellt Fahrstraßen nach Fahrplan an – als normale
-  Anforderung an den Kern, der sie genauso prüft wie eine manuelle.
-- **Konflikterkennung/-lösung:** Vorausschau auf Belegungskonflikte, Vorschläge für
-  Gleiswechsel oder Reihenfolgen.
-- **Erweiterungen:** Betriebsführungs-Plugins dürfen auch dynamisch geladen werden
-  (z. B. WebAssembly-Sandbox), da sie keine Sicherheitsverantwortung tragen.
-
----
-
-## 13. Schnittstellen & IT-Sicherheit (`railit-api`)
-
-- **gRPC** (`tonic`) für Systeme, **WebSocket** für die HMI (Zustandsbild als Diff-Stream).
-- **mTLS** zwischen allen Komponenten, signierte Konfiguration und Projektierungsdaten.
-- **Rollen (RBAC):** Fahrdienstleiter, Zuglenker, Instandhaltung, Administration, Beobachter.
-  Hilfshandlungen erfordern zwei unterschiedliche, berechtigte Personen.
-- **Audit:** Jede Bedienhandlung mit Person, Zeit und Ergebnis im Journal.
-- **Zonenmodell nach IEC 62443 / CLC/TS 50701:** Kern-Zone (kein Netzwerkzugang außer
-  zur Runtime), Feld-Zone, Betriebs-Zone, Bedien-Zone; Übergänge nur über definierte Conduits.
-- **Supply Chain:** `cargo-deny` (Lizenzen, Advisories), `cargo-vet`/`cargo-audit`,
-  SBOM (CycloneDX), reproduzierbare Builds, gepinnte Toolchain.
-
----
-
-## 14. Qualitätssicherung & Nachweis
-
-| Ebene | Werkzeug | Zweck |
-|-------|----------|-------|
-| Lints | `clippy` mit `unwrap_used`, `expect_used`, `panic`, `indexing_slicing`, `arithmetic_side_effects` = deny im Kern | Keine Panikpfade |
-| Unit | `cargo test` / `nextest` | Einzelfunktionen |
-| Property-Based | `proptest` | Invarianten für zufällige Ereignisfolgen |
-| Szenarien | `tests/scenarios/*.toml` | Fachliche Abläufe, lesbar für Bahnexperten |
-| Formal | `kani` (Bounded Model Checking) | Invarianten, Bitset-Logik, Zustandsübergänge |
-| Fuzzing | `cargo-fuzz` | Importer, Protokolladapter |
-| Mutation | `cargo-mutants` | Qualität der Tests |
-| Differential | zweiter Planprüfer, Replay realer Logs | Unabhängige Bestätigung |
-| Coverage | `cargo-llvm-cov` | Abdeckungsnachweis |
-| Miri | `cargo miri` | UB in Hilfs-Crates (falls je `unsafe`) |
-
-Beispiel eines Szenarios:
-
-```toml
-[scenario]
-name  = "Einfahrt Gleis 2 mit Teilauflösung"
-plan  = "examples/beispielstadt.toml"
-rules = "generic"
-
-[[step]]
-request = { route = "A-N2" }
-expect  = { points = { W1 = "rechts", W2 = "links" }, signal = { A = "Halt" } }
-
-[[step]]
-report = { points = { W1 = "rechts", W2 = "links" } }
-expect = { route = { "A-N2" = "SignalFahrt" }, signal = { A = "Fahrt" } }
-
-[[step]]
-report = { tvd = { "1A" = "besetzt" } }
-expect = { signal = { A = "Halt" } }
+# online
+railit route set A-N2
+railit route cancel A-N2
+railit state points --area beispielstadt
+railit aux request hilfsaufloesung --route A-N2
+railit aux confirm 42
+railit watch events --filter alarms
+railit sim train add --number ICE577 --at A --speed 80
 ```
 
-**Rückverfolgbarkeit:** Anforderungen erhalten IDs (`REQ-IXL-012`), die in Code-Kommentaren,
-Tests und Nachweisen referenziert werden; ein CI-Schritt erzeugt daraus eine Matrix.
-Langfristig: qualifizierte Toolchain (z. B. Ferrocene) für den Kern.
+Alle Ausgaben gibt es wahlweise als Text oder mit `--output json`, damit sich die CLI in
+Skripten verwenden lässt.
+
+### 14.3 Später: UI
+
+Die UI ist ein weiterer API-Client, etwa eine Web-Spurplandarstellung. Ein Punkt braucht
+dabei Sorgfalt: Hilfshandlungen verlangen eine **sichere Anzeige- und Bestätigungskette**, zum
+Beispiel durch Rückmeldung mit Prüfcode. Die API ist darauf von Beginn an ausgelegt.
 
 ---
 
-## 15. Erweiterbarkeit – Übersicht
+## 15. Zuverlässigkeit & Performance
 
-| Erweiterungspunkt     | Mechanismus                        | Im Sicherheitskern? |
-|-----------------------|------------------------------------|---------------------|
-| Regelwerk             | `RuleSet`-Trait, statisch          | ja (geprüft)        |
-| Elementtyp            | Enum-Erweiterung + Plan-Daten      | ja (geprüft)        |
-| Feldprotokoll         | `FieldAdapter`-Trait, Feature-Flag | nein                |
-| Importformat          | `Importer`-Trait                   | nein                |
-| Betriebsführung       | Trait oder WASM-Plugin             | nein                |
-| Bedienoberfläche      | API-Client                         | nein                |
+**Redundanz**
+
+- 2-von-2 oder 2-von-3 deterministische Kanäle. Der Voter vergleicht die Befehle und den Hash
+  des Zustands.
+- Optional diversitär (anderes Target, andere Optimierungsstufe).
+- Ein Watchdog überwacht die Zyklus-Deadline.
+- Hot Standby, indem ein zweiter Rechner das Journal mitliest.
+
+**Neustart**
+
+Nach einem Neustart gelten alle Elemente als unbekannt, alle Fahrerlaubnisse sind
+zurückgenommen. Das Journal dient der Diagnose. Es wird nicht blind wiederhergestellt, denn
+der tatsächliche Zustand draußen hat Vorrang.
+
+**Performance**
+
+| Kennzahl | Ziel |
+|----------|------|
+| Kernzyklus bei 5 000 Elementen | < 1 ms (p99) |
+| Zulassungsprüfung einer Fahrstraße | < 10 µs |
+| Allokationen im Kernzyklus | 0 |
+| Replay von 24 h Betrieb | < 60 s |
+
+Die Mittel dafür:
+
+- Arenen mit `u32`-Indizes,
+- Bitsets,
+- Vorberechnung offline,
+- inkrementelle Auswertung über einen Index von Element zu Fahrstraßen,
+- Partitionierung in Stellbereiche,
+- `criterion`-Benchmarks in der CI.
 
 ---
 
-## 16. Roadmap
+## 16. Sicherheitslebenszyklus & Qualitätssicherung
+
+### 16.1 Prozess (EN 50126 / EN 50716 / EN 50129)
+
+| Artefakt | Ort | Ab Phase |
+|----------|-----|----------|
+| Systemdefinition, Betriebsszenarien | `docs/` | 0 |
+| Gefährdungsliste (Hazard Log) | `docs/safety/hazard-log.md` | 0 |
+| Anforderungen mit IDs (`REQ-…`) | `docs/requirements/` | 0 |
+| Rückverfolgbarkeit Anforderung → Code → Test | CI-Bericht | 1 |
+| Architektur- und Modulentwürfe | `docs/` | 1 |
+| Verifikations- und Validierungsberichte | CI-Artefakte | 2 |
+| Sicherheitsnachweis (Safety Case) | `docs/safety/` | 5 |
+
+**Hinweis zur Organisation:** Die Normen verlangen unabhängige Rollen für Implementierung,
+Verifikation, Validierung und Begutachtung (ISA). Diese Rollen müssen vor einer Zulassung
+besetzt werden.
+
+### 16.2 Werkzeuge
+
+| Ebene | Werkzeug |
+|-------|----------|
+| Lints | `clippy` mit `unwrap_used`, `expect_used`, `panic`, `indexing_slicing` und `arithmetic_side_effects` auf `deny` in allen Crates mit SIL 4 |
+| Tests | `cargo test`, `proptest` (Invarianten), deklarative Szenarien |
+| Formal | `kani` (Bounded Model Checking) für Invarianten und Zustandsübergänge |
+| Robustheit | `cargo-fuzz` (Importer, Plan-Image, Protokolle), `cargo-mutants` |
+| Lieferkette | `cargo-deny` (Lizenzen, Advisories), `cargo-audit`, SBOM, gepinnte Toolchain |
+| Toolchain | Langfristig eine qualifizierte Toolchain (z. B. Ferrocene) für die Crates mit SIL 4 |
+
+---
+
+## 17. Lizenz und Abhängigkeiten
+
+rail-it steht unter der **Non-Commercial Source License (NCSL) v1.0**. Nicht-kommerzielle
+Nutzung ist frei. Kommerzielle Nutzung, also auch der Einsatz durch ein Eisenbahnunternehmen,
+erfordert eine schriftliche Lizenz des Lizenzgebers.
+
+Daraus folgen diese Regeln:
+
+- **Abhängigkeiten** dürfen nur freizügige Lizenzen haben (MIT, Apache-2.0, BSD, ISC, Zlib,
+  Unicode). Copyleft-Lizenzen (GPL, LGPL, AGPL) sind ausgeschlossen. `deny.toml` setzt das
+  durch.
+- **Beiträge Dritter** stehen nach NCSL §11.2 ebenfalls unter NCSL. Für eine spätere
+  kommerzielle Doppellizenzierung empfiehlt sich ein Contributor License Agreement (CLA).
+- In Cargo wird `license-file = "LICENSE"` verwendet, weil NCSL keine SPDX-Kennung hat.
+
+---
+
+## 18. Roadmap
 
 | Phase | Inhalt | Ergebnis |
 |-------|--------|----------|
-| **0 – Fundament** | Workspace, CI (fmt, clippy, test, deny), `types`, `topology`, TOML-Format, Validierung | Netz laden, prüfen, visualisieren (CLI) |
-| **1 – Minimaler Kern** | Fahrstraßengenerator, Kern mit Weichen/Signalen/TVD, Simulator-Adapter, Szenario-Runner | Bahnhof „Beispielstadt“ (2 Gleise, 4 Weichen, 6 Signale) fährt sicher in der Simulation |
-| **2 – Vollständige Logik** | Durchrutschwege, Flankenschutz, Teilauflösung, Zeitverschluss, Hilfshandlungen, Journal & Replay | Fachlich vollständiges Einzelstellwerk |
-| **3 – Bedienung** | API, Web-HMI mit Spurplan, RBAC, Zugnummernmeldung, einfache Zuglenkung | Bedienbares System für Ausbildung/Simulation |
-| **4 – Robustheit** | Redundanzkanäle + Voter, Kani-Nachweise, Fuzzing, Mutationstests, Benchmarks | Nachweisbar robuster Kern |
-| **5 – Integration** | railML-3/PlanPro-Import, EULYNX/RaSTA-Adapter, Nachbarstellwerke, Partitionierung | Anbindung an reale Daten und Prüfstände |
+| **0 – Fundament** | Workspace, CI, Lizenz, `types`, `topology`, rail-it-TOML, `railit net validate/info`, erste Gefährdungsliste und Anforderungen | Netz laden, prüfen und beschreiben |
+| **1 – Minimaler Kern** | Plan-Image, Fahrstraßengenerator mit Gegenprüfung, Kern mit Weichen, Signalen und TVD, Simulator, Szenarien, `railitd` mit erster API | Bahnhof „Beispielstadt“ fährt sicher in der Simulation, bedienbar über die CLI |
+| **2 – ESTW vollständig** | Durchrutschwege, Flankenschutz, Teilauflösung, Zeitverschluss, Hilfshandlungen, Ks und H/V, BÜ, Journal und Replay | Fachlich vollständiges Einzelstellwerk nach `de-estw` |
+| **3 – Netz & Betrieb** | Mehrere Stellbereiche, Streckenblock, Zugnummern, Fahrplan, Zuglenkung, Disposition, vollständige API | Betrieb eines Netzes mit mehreren Bahnhöfen in der Simulation |
+| **4 – Europa** | ETCS Level 2 (MA-Erzeugung, RBC-Funktion), EULYNX SCI-* über RaSTA, Import von railML 3 und PlanPro | Mischbetrieb ESTW/ETCS, Anbindung an Prüfstände |
+| **5 – Sicherheit & Embedded** | Redundante Kanäle, Voter, Cortex-R-Runtime, Kani-Nachweise, Fuzzing, Safety Case | Zulassungsreifer Kandidat für das Labor |
+| **6 – UI** | Spurplan-UI als API-Client mit sicherer Anzeige- und Bestätigungskette | Bedienplatz |
 
 ---
 
-## 17. Offene Entscheidungen
+## 19. Noch offene Punkte
 
-1. **Primärer Einsatzzweck:** Simulation/Ausbildung, Prüfstand, Modellbahn – oder
-   langfristig Zulassung für realen Betrieb? (Bestimmt Strenge von Prozess und Dokumentation.)
-2. **Erstes Regelwerk:** Deutsches ESTW mit Ks-Signalen, H/V, oder zunächst generisch?
-3. **Datenformat:** Eigenes TOML zuerst und railML/PlanPro später – oder direkt railML 3?
-4. **Zielplattform des Kerns:** Nur Linux-Server oder auch `no_std` auf Mikrocontroller
-   (z. B. für Modellbahn/Lehranlage)?
-5. **HMI:** Web-basiert (z. B. Leptos/Yew oder TypeScript) oder nativ?
-6. **Lizenz:** GPL-3.0 bleibt? Für Einbindung in industrielle Systeme wäre ggf. eine
-   duale Lizenz oder MPL/Apache zu prüfen.
+1. **Lizenzangaben:** Gerichtsstand, anwendbares Recht und Kontakt für kommerzielle Lizenzen.
+   Vorbelegt sind Deutschland, Norderstedt und https://josunlp.de; bitte bestätigen.
+2. **Konkrete Embedded-Hardware** für den sicheren Rechner (wichtig ab Phase 5).
+3. **Besetzung der unabhängigen Rollen** (Verifikation, Validierung, ISA) mit Blick auf eine
+   spätere Zulassung.
+4. **Beitragsmodell:** CLA ja oder nein.
