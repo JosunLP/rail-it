@@ -40,7 +40,12 @@ mod view;
 pub use ed25519_dalek::{SigningKey, VerifyingKey};
 pub use error::PlanError;
 #[cfg(feature = "alloc")]
-pub use model::{Plan, PointDef, RouteDef, SignalDef, TvdDef};
-pub use view::{PlanView, PointEntries, RouteEnd, RouteView, TvdEntries};
+pub use model::{LxDef, Plan, PointDef, RouteDef, SignalDef, TvdDef};
+pub use view::{
+    Flank, FlankEntries, LxEntries, PlanView, PointEntries, Protection, RouteEnd, RouteView,
+    TvdEntries,
+};
 
-pub use railit_types::{PointId, PointPosition, RouteId, SignalId, TvdId};
+pub use railit_types::{
+    LxId, PointId, PointPosition, RouteId, SignalId, SignalKind, SignalSystem, Speed, TvdId,
+};

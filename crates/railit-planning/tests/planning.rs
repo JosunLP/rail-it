@@ -5,10 +5,10 @@
 use std::collections::BTreeSet;
 
 use proptest::prelude::*;
-use railit_plan::{PlanView, RouteEnd, SigningKey};
-use railit_planning::{PlanningError, compile, generate, verify};
+use railit_plan::{Flank, PlanView, Protection, RouteEnd, SigningKey};
+use railit_planning::{PlanningConfig, PlanningError, compile, compile_with, generate, verify};
 use railit_topology::*;
-use railit_types::{RouteId, TvdId};
+use railit_types::{LxId, RouteId, SignalId, Speed, TrackId, TvdId};
 
 type Tamper = (&'static str, fn(&mut railit_plan::Plan));
 
@@ -43,22 +43,103 @@ fn example_routes_are_generated() {
     assert_eq!(plan.routes[2].end, RouteEnd::Boundary);
 
     // REQ-PLN-012
-    let conflicts: BTreeSet<&str> = a_n1
-        .conflicts
-        .iter()
-        .map(|c| plan.routes[c.index().unwrap()].name.as_str())
-        .collect();
+    let names_of = |ids: &[RouteId]| -> BTreeSet<String> {
+        ids.iter()
+            .map(|c| plan.routes[c.index().unwrap()].name.clone())
+            .collect()
+    };
+    let set = |v: &[&str]| v.iter().map(|s| (*s).to_string()).collect::<BTreeSet<_>>();
     assert_eq!(
-        conflicts,
-        BTreeSet::from(["A-N2", "F-P1", "P1-GW", "P2-GW"])
+        names_of(&a_n1.conflicts),
+        set(&["A-N2", "N2-GE", "F-P1", "F-P2", "P1-GW", "P2-GW"]),
+        "N1-GE setzt A-N1 fort und ist verträglich"
     );
-    let n1_ge = &plan.routes[2];
-    let conflicts: BTreeSet<&str> = n1_ge
-        .conflicts
+    assert_eq!(
+        names_of(&plan.routes[2].conflicts),
+        set(&["A-N2", "N2-GE", "F-P1", "F-P2"])
+    );
+}
+
+/// REQ-PLN-015 … REQ-PLN-018: Durchrutschweg, Flankenschutz, Vorsignale, Bahnübergänge.
+#[test]
+fn example_phase2_data() {
+    let net = example();
+    let plan = generate(&net).unwrap();
+    let tvd = |name: &str| {
+        TvdId::from_index(plan.tvds.iter().position(|t| t.name == name).unwrap()).unwrap()
+    };
+    let signal = |name: &str| {
+        SignalId::from_index(plan.signals.iter().position(|s| s.name == name).unwrap()).unwrap()
+    };
+    let route = |name: &str| plan.routes.iter().find(|r| r.name == name).unwrap();
+
+    // Durchrutschweg hinter N1: über W2 (stumpf, links) bis zum Ende von TE.
+    let a_n1 = route("A-N1");
+    assert_eq!(a_n1.overlap_tvds, [tvd("TW2"), tvd("TE")]);
+    assert_eq!(
+        a_n1.overlap_points,
+        [(PointId::new(1), PointPosition::Left)]
+    );
+    // Flankenschutz: W1 links ⇒ P2 auf Halt; W2 links (Durchrutschweg) ⇒ N2 auf Halt.
+    assert_eq!(
+        a_n1.flank,
+        [
+            Flank {
+                protection: Protection::Signal(signal("P2")),
+                protects: tvd("TW1")
+            },
+            Flank {
+                protection: Protection::Signal(signal("N2")),
+                protects: tvd("TW2")
+            },
+        ]
+    );
+    // Geschwindigkeit nur über den abzweigenden Strang.
+    assert_eq!(a_n1.speed, None);
+    assert_eq!(route("A-N2").speed, Some(Speed::from_kmh(40)));
+    // BÜ1 liegt im Fahrweg der Ausfahrten nach Osten, nicht im 100-m-Durchrutschweg von A-N1.
+    let bue = LxId::new(0);
+    assert_eq!(route("N1-GE").level_crossings, [bue]);
+    assert!(a_n1.level_crossings.is_empty());
+    assert!(route("F-P1").level_crossings.is_empty());
+    // Ausfahrten an die Netzgrenze haben keinen Durchrutschweg.
+    assert!(route("N1-GE").overlap_tvds.is_empty());
+
+    // Vorsignale.
+    assert_eq!(
+        plan.signals[signal("a").index().unwrap()].announces,
+        Some(signal("A"))
+    );
+    assert_eq!(
+        plan.signals[signal("f").index().unwrap()].announces,
+        Some(signal("F"))
+    );
+    assert_eq!(plan.signals[signal("A").index().unwrap()].announces, None);
+
+    // Einfahrabschnitte an den Netzgrenzen.
+    let entries: Vec<&str> = plan
+        .tvds
         .iter()
-        .map(|c| plan.routes[c.index().unwrap()].name.as_str())
+        .filter(|t| t.entry)
+        .map(|t| t.name.as_str())
         .collect();
-    assert_eq!(conflicts, BTreeSet::from(["N2-GE", "F-P1", "F-P2"]));
+    assert_eq!(entries, ["TW", "TE"]);
+}
+
+/// Mit längerem Durchrutschweg liegt BÜ1 im Durchrutschweg von A-N1.
+#[test]
+fn level_crossing_within_long_overlap() {
+    let cfg = PlanningConfig {
+        overlap_length: Length::from_m(600).unwrap(),
+    };
+    let compiled = compile_with(&example(), None, &cfg).unwrap();
+    let a_n1 = compiled
+        .plan
+        .routes
+        .iter()
+        .find(|r| r.name == "A-N1")
+        .unwrap();
+    assert_eq!(a_n1.level_crossings, [LxId::new(0)]);
 }
 
 #[test]
@@ -81,7 +162,7 @@ fn verification_detects_tampering() {
     let plan = generate(&net).unwrap();
     verify(&net, &plan).unwrap();
 
-    let tamper: [Tamper; 6] = [
+    let tamper: [Tamper; 11] = [
         ("Fahrstraße entfernt", |p| {
             p.routes.remove(7);
             for r in &mut p.routes {
@@ -101,6 +182,19 @@ fn verification_detects_tampering() {
         }),
         ("Weiche im falschen Abschnitt", |p| {
             p.points[0].tvd = TvdId::new(0);
+        }),
+        ("Durchrutschweg verkürzt", |p| {
+            p.routes[0].overlap_tvds.pop();
+        }),
+        ("Flankenschutz fehlt", |p| {
+            p.routes[0].flank.pop();
+        }),
+        ("Geschwindigkeit fehlt", |p| p.routes[1].speed = None),
+        ("Bahnübergang fehlt", |p| {
+            p.routes[2].level_crossings.clear();
+        }),
+        ("Vorsignal falsch", |p| {
+            p.signals[6].announces = Some(SignalId::new(3));
         }),
     ];
     for (what, f) in tamper {
@@ -301,4 +395,113 @@ proptest! {
             }
         }
     }
+}
+
+/// Gabelung: S ─ t0 ─X▶ W ┬─ t1 ─ t1b ─ E1
+///                         └─ t2 ─ E2
+fn fork(with_flank_signal: bool, distant_before_fork: bool) -> Topology {
+    let mut b = TopologyBuilder::new("Gabel");
+    let m = |m| Length::from_m(m).unwrap();
+    let ends: Vec<NodeRef> = ["S", "E1", "E2"]
+        .iter()
+        .map(|n| NodeRef::Terminal(b.add_terminal(*n, TerminalKind::Boundary).unwrap()))
+        .collect();
+    let tracks: Vec<TrackId> = ["t0", "t1", "t1b", "t2"]
+        .iter()
+        .map(|n| b.add_track(*n, m(300)).unwrap())
+        .collect();
+    let w = b.add_point("W").unwrap();
+    let (t0, t1, t1b, t2) = (
+        NodeRef::Track(tracks[0]),
+        NodeRef::Track(tracks[1]),
+        NodeRef::Track(tracks[2]),
+        NodeRef::Track(tracks[3]),
+    );
+    let pw = NodeRef::Point(w);
+    for (x, y) in [
+        (port(ends[0], Port::End), port(t0, Port::A)),
+        (port(t0, Port::B), port(pw, Port::Tip)),
+        (port(pw, Port::Left), port(t1, Port::A)),
+        (port(t1, Port::B), port(t1b, Port::A)),
+        (port(t1b, Port::B), port(ends[1], Port::End)),
+        (port(pw, Port::Right), port(t2, Port::A)),
+        (port(t2, Port::B), port(ends[2], Port::End)),
+    ] {
+        b.connect(x, y).unwrap();
+    }
+    b.add_signal("X", tracks[0], m(300), Direction::AToB, SignalKind::Main)
+        .unwrap();
+    b.add_signal("Y", tracks[1], m(300), Direction::AToB, SignalKind::Main)
+        .unwrap();
+    if with_flank_signal {
+        for (name, track) in [("Z1", tracks[1]), ("Z2", tracks[3])] {
+            b.add_signal(name, track, m(100), Direction::BToA, SignalKind::Shunting)
+                .unwrap();
+        }
+    }
+    if distant_before_fork {
+        b.add_signal(
+            "v",
+            tracks[0],
+            Length::ZERO,
+            Direction::BToA,
+            SignalKind::Distant,
+        )
+        .unwrap();
+        b.add_signal(
+            "v2",
+            tracks[2],
+            Length::ZERO,
+            Direction::BToA,
+            SignalKind::Distant,
+        )
+        .unwrap();
+    }
+    for (i, t) in tracks.iter().enumerate() {
+        b.add_tvd(format!("T{i}"), &[TvdMember::Track(*t)]).unwrap();
+    }
+    b.add_tvd("TW", &[TvdMember::Point(w)]).unwrap();
+    b.build().unwrap().topology
+}
+
+/// REQ-PLN-016
+#[test]
+fn flanks_must_be_protectable() {
+    let report = generate(&fork(false, false)).unwrap_err();
+    assert!(
+        report.errors.iter().any(|e| matches!(e, PlanningError::UnprotectedFlank { route, point, .. } if route == "X-Y" && point == "W")),
+        "{report}"
+    );
+    assert!(
+        report
+            .errors
+            .iter()
+            .all(|e| e.requirement() == "REQ-PLN-016")
+    );
+
+    // Rangiersignale auf beiden Strängen schützen die Flanken.
+    let compiled = compile(&fork(true, false), None).unwrap();
+    let x_y = compiled
+        .plan
+        .routes
+        .iter()
+        .find(|r| r.name == "X-Y")
+        .unwrap();
+    assert!(matches!(x_y.flank[0].protection, Protection::Signal(_)));
+}
+
+/// REQ-PLN-017
+#[test]
+fn distant_signals_need_a_unique_main_signal() {
+    let report = generate(&fork(true, true)).unwrap_err();
+    let names: Vec<&str> = report
+        .errors
+        .iter()
+        .filter_map(|e| match e {
+            PlanningError::DistantSignal { signal, .. } => Some(signal.as_str()),
+            _ => None,
+        })
+        .collect();
+    // v zeigt zur Netzgrenze S, v2 über die spitz befahrene Weiche W.
+    assert_eq!(names, ["v", "v2"], "{report}");
 }

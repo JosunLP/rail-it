@@ -121,10 +121,11 @@ fn conflicting_routes_are_rejected() {
     assert_eq!(rejected(&h.set_route("F-P1")), Some(Rejection::Conflict));
     assert_eq!(rejected(&h.set_route("P2-GW")), Some(Rejection::Conflict));
     assert_eq!(rejected(&h.set_route("A-N1")), Some(Rejection::RouteActive));
-    // N2-GE hat keine gemeinsamen Elemente mit A-N1.
-    h.clear_route("N2-GE");
+    // N2-GE kreuzt den Durchrutschweg von A-N1; N1-GE setzt A-N1 fort und ist verträglich.
+    assert_eq!(rejected(&h.set_route("N2-GE")), Some(Rejection::Conflict));
+    h.clear_route("N1-GE");
     assert_eq!(h.aspect("A"), Aspect::Proceed);
-    assert_eq!(h.aspect("N2"), Aspect::Proceed);
+    assert_eq!(h.aspect("N1"), Aspect::Proceed);
 }
 
 /// REQ-IXL-003: Besetzte oder gestörte Abschnitte verhindern das Einstellen.
@@ -317,13 +318,13 @@ fn defective_and_mismatching_signals_are_alarmed() {
     );
     assert_eq!(h.aspect("A"), Aspect::Stop);
 
-    // Signal N2 bleibt nach Haltbefehl auf Fahrt stehen.
-    h.clear_route("N2-GE");
-    let n2 = h.signal("N2");
-    h.stuck_signals.push(n2);
-    h.cancel_route("N2-GE");
+    // Signal N1 bleibt nach Haltbefehl auf Fahrt stehen.
+    h.clear_route("N1-GE");
+    let n1 = h.signal("N1");
+    h.stuck_signals.push(n1);
+    h.cancel_route("N1-GE");
     let events = h.step_after(2_100, &[]);
-    assert!(events.contains(&Event::Alarm(Alarm::SignalMismatch(n2))));
+    assert!(events.contains(&Event::Alarm(Alarm::SignalMismatch(n1))));
 }
 
 /// REQ-IXL-008: Verletzte Invariante ⇒ sicherer Zustand.
@@ -336,10 +337,10 @@ fn invariant_violation_enters_safe_state() {
     let mut h = Harness::new();
     h.step(&[]);
     h.clear_route("A-N1");
-    h.clear_route("N2-GE");
+    h.clear_route("N1-GE");
 
     let mut plan = example_plan();
-    let (a, b) = (h.route("A-N1"), h.route("N2-GE"));
+    let (a, b) = (h.route("A-N1"), h.route("N1-GE"));
     plan.routes[a.index().unwrap()].conflicts.push(b);
     plan.routes[b.index().unwrap()].conflicts.push(a);
     h.kernel = Interlocking::new(leak(&plan), *h.kernel.rules());
@@ -347,7 +348,7 @@ fn invariant_violation_enters_safe_state() {
     h.step(&[]);
     assert_eq!(h.last, Err(SafeStateReason::ConflictingRoutes(a, b)));
     assert_eq!(h.aspect("A"), Aspect::Stop);
-    assert_eq!(h.aspect("N2"), Aspect::Stop);
+    assert_eq!(h.aspect("N1"), Aspect::Stop);
     let stops = h
         .out
         .commands

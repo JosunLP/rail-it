@@ -4,15 +4,19 @@ use core::fmt;
 
 use ed25519_dalek::{Signature, VerifyingKey};
 use railit_types::bitset::{BitSet, WORD_BITS, words_for};
-use railit_types::{PointId, PointPosition, RouteId, SignalId, TvdId};
+use railit_types::{
+    LxId, PointId, PointPosition, RouteId, SignalId, SignalKind, SignalSystem, Speed, TvdId,
+};
 use sha2::{Digest, Sha256};
 
 use crate::error::PlanError;
 use crate::format::{
-    DIGEST_LEN, END_BOUNDARY, END_BUFFER_STOP, END_SIGNAL, FLAG_SIGNED, H_BODY_LEN, H_CONFLICT_OFF,
-    H_FLAGS, H_NAMES_LEN, H_NAMES_OFF, H_POINT_TVD_OFF, H_POINTS, H_POOL_OFF, H_POOL_WORDS,
-    H_ROUTE_OFF, H_ROUTES, H_SIGNALS, H_TVDS, H_VERSION, HEADER_LEN, MAGIC, NO_SIGNAL, ROUTE_LEN,
-    SIGNATURE_LEN, VERSION, decode_point, read_u32, read_u64, read_word,
+    DIGEST_LEN, END_BOUNDARY, END_BUFFER_STOP, END_SIGNAL, FLAG_SIGNED, FLANK_POINT, FLANK_SIGNAL,
+    FLANK_WORDS, H_BODY_LEN, H_CONFLICT_OFF, H_FLAGS, H_LX_TVD_OFF, H_LXS, H_NAMES_LEN,
+    H_NAMES_OFF, H_POINT_TVD_OFF, H_POINTS, H_POOL_OFF, H_POOL_WORDS, H_ROUTE_OFF, H_ROUTES,
+    H_SIGNAL_OFF, H_SIGNALS, H_TVD_FLAGS_OFF, H_TVDS, H_VERSION, HEADER_LEN, MAGIC, NONE,
+    ROUTE_LEN, SIGNAL_WORDS, SIGNATURE_LEN, TVD_ENTRY, VERSION, decode_point, r, read_u32,
+    read_u64, read_word,
 };
 
 /// Ziel einer Fahrstraße.
@@ -24,6 +28,24 @@ pub enum RouteEnd {
     Boundary,
     /// Prellbock.
     BufferStop,
+}
+
+/// Flankenschutzmaßnahme.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Protection {
+    /// Schutzweiche: Die Weiche muss in dieser Lage liegen und verschlossen sein.
+    Point(PointId, PointPosition),
+    /// Schutzsignal: Das Signal muss Halt zeigen und darf nicht auf Fahrt gestellt werden.
+    Signal(SignalId),
+}
+
+/// Flankenschutz-Eintrag einer Fahrstraße.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Flank {
+    /// Maßnahme.
+    pub protection: Protection,
+    /// Abschnitt der Fahrstraße, den die Maßnahme schützt. Sie wird mit ihm aufgelöst.
+    pub protects: TvdId,
 }
 
 fn add(a: usize, b: usize) -> Result<usize, PlanError> {
@@ -38,12 +60,33 @@ fn to_usize(v: u32) -> Result<usize, PlanError> {
     usize::try_from(v).map_err(|_| PlanError::TooLarge)
 }
 
+/// Bereich einer Liste im Pool.
+#[derive(Copy, Clone, Debug, Default)]
+struct Range {
+    start: usize,
+    len: usize,
+}
+
+#[derive(Copy, Clone, Debug)]
+struct RawRoute {
+    start: u32,
+    end_kind: u32,
+    end_signal: u32,
+    speed: u32,
+    points: Range,
+    tvds: Range,
+    overlap_tvds: Range,
+    overlap_points: Range,
+    flank: Range,
+    lxs: Range,
+}
+
 /// Geprüfte, unveränderliche Sicht auf ein Plan-Image.
 ///
 /// Eine `PlanView` existiert nur, wenn [`PlanView::parse`] Struktur, Prüfsumme und alle
-/// Verweise erfolgreich geprüft hat (REQ-PLN-002). Die Zugriffsmethoden geben trotzdem
-/// `Option` zurück, damit der Kern nie in einen Panikpfad gerät; nach erfolgreicher Prüfung
-/// liefern sie für gültige IDs immer `Some`.
+/// Verweise erfolgreich geprüft hat (REQ-PLN-001, REQ-PLN-002). Die Zugriffsmethoden geben
+/// trotzdem `Option` zurück, damit der Kern nie in einen Panikpfad gerät; nach erfolgreicher
+/// Prüfung liefern sie für gültige IDs immer `Some`.
 #[derive(Copy, Clone)]
 pub struct PlanView<'a> {
     bytes: &'a [u8],
@@ -52,12 +95,16 @@ pub struct PlanView<'a> {
     signals: usize,
     tvds: usize,
     routes: usize,
+    lxs: usize,
     route_off: usize,
     pool_off: usize,
     pool_words: usize,
     conflict_off: usize,
     conflict_words: usize,
     point_tvd_off: usize,
+    signal_off: usize,
+    tvd_flags_off: usize,
+    lx_tvd_off: usize,
     names_off: usize,
     names_data_off: usize,
     names_end: usize,
@@ -73,6 +120,7 @@ impl fmt::Debug for PlanView<'_> {
             .field("signals", &self.signals)
             .field("tvds", &self.tvds)
             .field("routes", &self.routes)
+            .field("level_crossings", &self.lxs)
             .field("signed", &self.signed)
             .finish_non_exhaustive()
     }
@@ -99,8 +147,8 @@ impl<'a> PlanView<'a> {
         if version != VERSION {
             return Err(PlanError::UnsupportedVersion(version));
         }
-        let flags = h(H_FLAGS)?;
-        let signed = flags & FLAG_SIGNED != 0;
+
+        let signed = h(H_FLAGS)? & FLAG_SIGNED != 0;
         let body_len = to_usize(h(H_BODY_LEN)?)?;
         let trailer = if signed {
             add(DIGEST_LEN, SIGNATURE_LEN)?
@@ -115,8 +163,11 @@ impl<'a> PlanView<'a> {
         let signals = to_usize(h(H_SIGNALS)?)?;
         let tvds = to_usize(h(H_TVDS)?)?;
         let routes = to_usize(h(H_ROUTES)?)?;
-        let conflict_words = words_for(routes);
-        let names_count = add(add(add(add(1, points)?, signals)?, tvds)?, routes)?;
+        let lxs = to_usize(h(H_LXS)?)?;
+        let names_count = add(
+            add(add(add(add(1, points)?, signals)?, tvds)?, routes)?,
+            lxs,
+        )?;
 
         let mut view = Self {
             bytes,
@@ -125,12 +176,16 @@ impl<'a> PlanView<'a> {
             signals,
             tvds,
             routes,
+            lxs,
             route_off: to_usize(h(H_ROUTE_OFF)?)?,
             pool_off: to_usize(h(H_POOL_OFF)?)?,
             pool_words: to_usize(h(H_POOL_WORDS)?)?,
             conflict_off: to_usize(h(H_CONFLICT_OFF)?)?,
-            conflict_words,
+            conflict_words: words_for(routes),
             point_tvd_off: to_usize(h(H_POINT_TVD_OFF)?)?,
+            signal_off: to_usize(h(H_SIGNAL_OFF)?)?,
+            tvd_flags_off: to_usize(h(H_TVD_FLAGS_OFF)?)?,
+            lx_tvd_off: to_usize(h(H_LX_TVD_OFF)?)?,
             names_off: to_usize(h(H_NAMES_OFF)?)?,
             names_data_off: 0,
             names_end: 0,
@@ -142,9 +197,16 @@ impl<'a> PlanView<'a> {
         view.check_section("Pool", view.pool_off, mul(view.pool_words, 4)?)?;
         view.check_section("Weichen-TVD", view.point_tvd_off, mul(points, 4)?)?;
         view.check_section(
+            "Signale",
+            view.signal_off,
+            mul(mul(signals, SIGNAL_WORDS)?, 4)?,
+        )?;
+        view.check_section("TVD-Merkmale", view.tvd_flags_off, mul(tvds, 4)?)?;
+        view.check_section("BÜ-TVD", view.lx_tvd_off, mul(lxs, 4)?)?;
+        view.check_section(
             "Feindlichkeiten",
             view.conflict_off,
-            mul(mul(routes, conflict_words)?, 8)?,
+            mul(mul(routes, view.conflict_words)?, 8)?,
         )?;
         let names_len = to_usize(h(H_NAMES_LEN)?)?;
         view.check_section("Namen", view.names_off, names_len)?;
@@ -156,7 +218,7 @@ impl<'a> PlanView<'a> {
         view.names_end = add(view.names_off, names_len)?;
 
         view.check_digest()?;
-        view.check_points()?;
+        view.check_tables()?;
         view.check_routes()?;
         view.check_conflicts()?;
         view.check_names()?;
@@ -217,80 +279,187 @@ impl<'a> PlanView<'a> {
         Ok(())
     }
 
-    fn check_points(&self) -> Result<(), PlanError> {
+    fn valid_tvd(&self, raw: u32) -> bool {
+        to_usize(raw).is_ok_and(|t| t < self.tvds)
+    }
+
+    fn check_tables(&self) -> Result<(), PlanError> {
         for index in 0..self.points {
             let tvd = read_word(self.bytes, self.point_tvd_off, index);
-            if !tvd.is_some_and(|t| to_usize(t).is_ok_and(|t| t < self.tvds)) {
+            if !tvd.is_some_and(|t| self.valid_tvd(t)) {
                 return Err(PlanError::InvalidReference {
                     what: "TVD einer Weiche",
                     index,
                 });
             }
         }
+        for index in 0..self.lxs {
+            let tvd = read_word(self.bytes, self.lx_tvd_off, index);
+            if !tvd.is_some_and(|t| self.valid_tvd(t)) {
+                return Err(PlanError::InvalidReference {
+                    what: "TVD eines Bahnübergangs",
+                    index,
+                });
+            }
+        }
+        for index in 0..self.tvds {
+            let flags = read_word(self.bytes, self.tvd_flags_off, index);
+            if flags.is_none_or(|f| f & !TVD_ENTRY != 0) {
+                return Err(PlanError::InvalidReference {
+                    what: "TVD-Merkmal",
+                    index,
+                });
+            }
+        }
+        for index in 0..self.signals {
+            let id = SignalId::from_index(index).ok_or(PlanError::TooLarge)?;
+            let bad = PlanError::InvalidReference {
+                what: "Signaleintrag",
+                index,
+            };
+            let kind = self.signal_kind(id).ok_or(bad)?;
+            self.signal_system(id).ok_or(bad)?;
+            let announces = self.signal_word(id, 2).ok_or(bad)?;
+            if announces != NONE {
+                let target = SignalId::new(announces);
+                let target_delimits = self
+                    .signal_kind(target)
+                    .is_some_and(SignalKind::delimits_routes);
+                if kind != SignalKind::Distant || !target_delimits {
+                    return Err(PlanError::InvalidReference {
+                        what: "angekündigtes Signal",
+                        index,
+                    });
+                }
+            }
+        }
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn check_routes(&self) -> Result<(), PlanError> {
         let bad = |what| move |index| PlanError::InvalidReference { what, index };
         for index in 0..self.routes {
             let raw = self
                 .raw_route(index)
                 .ok_or(PlanError::SectionOutOfBounds("Fahrstraßen"))?;
-            if to_usize(raw.start)? >= self.signals {
+            let delimits = |s: u32| {
+                self.signal_kind(SignalId::new(s))
+                    .is_some_and(SignalKind::delimits_routes)
+            };
+            if !delimits(raw.start) {
                 return Err(bad("Startsignal")(index));
             }
             match raw.end_kind {
-                END_SIGNAL if to_usize(raw.end_signal)? < self.signals => {}
-                END_BOUNDARY | END_BUFFER_STOP if raw.end_signal == NO_SIGNAL => {}
+                END_SIGNAL if delimits(raw.end_signal) => {}
+                END_BOUNDARY | END_BUFFER_STOP if raw.end_signal == NONE => {}
                 _ => return Err(bad("Ziel")(index)),
             }
-            if add(raw.points_start, raw.points_len)? > self.pool_words {
-                return Err(bad("Weichenliste")(index));
+            if u16::try_from(raw.speed).is_err() {
+                return Err(bad("Geschwindigkeit")(index));
             }
-            if add(raw.tvds_start, raw.tvds_len)? > self.pool_words {
-                return Err(bad("TVD-Liste")(index));
+            for (range, words) in [
+                (raw.points, 1),
+                (raw.tvds, 1),
+                (raw.overlap_tvds, 1),
+                (raw.overlap_points, 1),
+                (raw.flank, FLANK_WORDS),
+                (raw.lxs, 1),
+            ] {
+                if add(range.start, mul(range.len, words)?)? > self.pool_words {
+                    return Err(bad("Liste außerhalb des Pools")(index));
+                }
             }
-            if raw.tvds_len == 0 {
+            if raw.tvds.len == 0 {
                 return Err(PlanError::EmptyRoute(index));
             }
-            let points =
-                PointEntries::new(self.bytes, self.pool_off, raw.points_start, raw.points_len);
-            for (i, (point, _)) in points.clone().enumerate() {
-                if point.index().is_none_or(|p| p >= self.points) {
-                    return Err(bad("Weiche")(index));
-                }
-                // Jede Weiche höchstens einmal je Fahrstraße (sonst widersprüchliche Lagen).
-                if points
-                    .clone()
-                    .skip(i.saturating_add(1))
-                    .any(|(other, _)| other == point)
+            if raw.end_kind != END_SIGNAL && raw.overlap_tvds.len != 0 {
+                return Err(bad("Durchrutschweg ohne Zielsignal")(index));
+            }
+
+            let view = RouteView {
+                plan: *self,
+                id: RouteId::from_index(index).ok_or(PlanError::TooLarge)?,
+                raw,
+            };
+            let path_tvd = |t: TvdId| view.tvds().any(|x| x == t);
+            let overlap_tvd = |t: TvdId| view.overlap_tvds().any(|x| x == t);
+
+            // Abschnitte: gültig, eindeutig, Fahrweg und Durchrutschweg disjunkt.
+            for (i, t) in view.tvds().enumerate() {
+                if !self.valid_tvd(t.raw()) || view.tvds().skip(i.saturating_add(1)).any(|x| x == t)
                 {
-                    return Err(bad("doppelte Weiche")(index));
+                    return Err(bad("TVD")(index));
                 }
             }
-            let tvds = TvdEntries::new(self.bytes, self.pool_off, raw.tvds_start, raw.tvds_len);
-            // Jede Weiche liegt in einem Abschnitt der Fahrstraße; sonst wäre sie ohne
-            // Gleisfreimeldung verschlossen und könnte nie aufgelöst werden.
-            for (point, _) in points.clone() {
-                let point_tvd = read_word(
-                    self.bytes,
-                    self.point_tvd_off,
-                    point.index().unwrap_or(usize::MAX),
-                );
-                if !point_tvd.is_some_and(|pt| tvds.clone().any(|t| t.raw() == pt)) {
+            for (i, t) in view.overlap_tvds().enumerate() {
+                if !self.valid_tvd(t.raw())
+                    || path_tvd(t)
+                    || view
+                        .overlap_tvds()
+                        .skip(i.saturating_add(1))
+                        .any(|x| x == t)
+                {
+                    return Err(bad("TVD des Durchrutschwegs")(index));
+                }
+            }
+
+            // Weichen: gültig, eindeutig über Fahrweg und Durchrutschweg, im eigenen Abschnitt.
+            let all_points = || view.points().chain(view.overlap_points());
+            for (i, (p, _)) in all_points().enumerate() {
+                if p.index().is_none_or(|x| x >= self.points)
+                    || all_points().skip(i.saturating_add(1)).any(|(o, _)| o == p)
+                {
+                    return Err(bad("doppelte oder ungültige Weiche")(index));
+                }
+            }
+            for (p, _) in view.points() {
+                if !self.point_tvd(p).is_some_and(path_tvd) {
                     return Err(bad("Weiche außerhalb der Abschnitte")(index));
                 }
             }
-            for (i, tvd) in tvds.clone().enumerate() {
-                if tvd.index().is_none_or(|t| t >= self.tvds) {
-                    return Err(bad("TVD")(index));
+            for (p, _) in view.overlap_points() {
+                if !self.point_tvd(p).is_some_and(overlap_tvd) {
+                    return Err(bad("Weiche außerhalb des Durchrutschwegs")(index));
                 }
-                if tvds
-                    .clone()
-                    .skip(i.saturating_add(1))
-                    .any(|other| other == tvd)
+            }
+
+            // Flankenschutz.
+            let mut flank_count = 0usize;
+            for f in view.flank() {
+                flank_count = flank_count.saturating_add(1);
+                if !(path_tvd(f.protects) || overlap_tvd(f.protects)) {
+                    return Err(bad("Flankenschutz schützt fremden Abschnitt")(index));
+                }
+                match f.protection {
+                    Protection::Point(p, _) => {
+                        if p.index().is_none_or(|x| x >= self.points)
+                            || all_points().any(|(o, _)| o == p)
+                        {
+                            return Err(bad("Schutzweiche")(index));
+                        }
+                    }
+                    Protection::Signal(s) => {
+                        if s.index().is_none_or(|x| x >= self.signals) || s.raw() == raw.start {
+                            return Err(bad("Schutzsignal")(index));
+                        }
+                    }
+                }
+            }
+            if flank_count != raw.flank.len {
+                return Err(bad("Flankenschutz-Eintrag")(index));
+            }
+
+            // Bahnübergänge.
+            for (i, lx) in view.level_crossings().enumerate() {
+                let tvd = self.lx_tvd(lx);
+                if !tvd.is_some_and(|t| path_tvd(t) || overlap_tvd(t))
+                    || view
+                        .level_crossings()
+                        .skip(i.saturating_add(1))
+                        .any(|o| o == lx)
                 {
-                    return Err(bad("doppelter TVD")(index));
+                    return Err(bad("Bahnübergang")(index));
                 }
             }
         }
@@ -313,7 +482,6 @@ impl<'a> PlanView<'a> {
 
     fn check_conflicts(&self) -> Result<(), PlanError> {
         for a in 0..self.routes {
-            // Keine Bits jenseits der letzten Fahrstraße.
             let used_in_last = self.routes.checked_rem(WORD_BITS).unwrap_or(0);
             if used_in_last != 0 {
                 let last = self.conflict_words.saturating_sub(1);
@@ -370,15 +538,36 @@ impl<'a> PlanView<'a> {
         }
         let base = self.route_off.checked_add(index.checked_mul(ROUTE_LEN)?)?;
         let w = |i| read_word(self.bytes, base, i);
+        let range = |i: usize| -> Option<Range> {
+            Some(Range {
+                start: usize::try_from(w(i)?).ok()?,
+                len: usize::try_from(w(i.checked_add(1)?)?).ok()?,
+            })
+        };
         Some(RawRoute {
-            start: w(0)?,
-            end_kind: w(1)?,
-            end_signal: w(2)?,
-            points_start: usize::try_from(w(3)?).ok()?,
-            points_len: usize::try_from(w(4)?).ok()?,
-            tvds_start: usize::try_from(w(5)?).ok()?,
-            tvds_len: usize::try_from(w(6)?).ok()?,
+            start: w(r::START)?,
+            end_kind: w(r::END_KIND)?,
+            end_signal: w(r::END_SIGNAL)?,
+            speed: w(r::SPEED)?,
+            points: range(r::POINTS)?,
+            tvds: range(r::TVDS)?,
+            overlap_tvds: range(r::OVERLAP_TVDS)?,
+            overlap_points: range(r::OVERLAP_POINTS)?,
+            flank: range(r::FLANK)?,
+            lxs: range(r::LXS)?,
         })
+    }
+
+    fn signal_word(&self, id: SignalId, word: usize) -> Option<u32> {
+        let index = id.index()?;
+        if index >= self.signals {
+            return None;
+        }
+        read_word(
+            self.bytes,
+            self.signal_off,
+            index.checked_mul(SIGNAL_WORDS)?.checked_add(word)?,
+        )
     }
 
     /// SHA-256-Prüfsumme des Plans; identifiziert den Plan eindeutig.
@@ -423,6 +612,11 @@ impl<'a> PlanView<'a> {
         self.routes
     }
 
+    /// Anzahl Bahnübergänge.
+    pub const fn lx_count(&self) -> usize {
+        self.lxs
+    }
+
     /// Anzahl `u64`-Wörter einer Bitmenge über alle Fahrstraßen.
     pub const fn route_set_words(&self) -> usize {
         self.conflict_words
@@ -435,7 +629,7 @@ impl<'a> PlanView<'a> {
 
     fn name_at(
         &self,
-        group_start: usize,
+        group_start: Option<usize>,
         index: Option<usize>,
         group_len: usize,
     ) -> Option<&'a str> {
@@ -443,36 +637,39 @@ impl<'a> PlanView<'a> {
         if index >= group_len {
             return None;
         }
-        self.name(group_start.checked_add(index)?)
+        self.name(group_start?.checked_add(index)?)
+    }
+
+    fn group_start(&self, group: usize) -> Option<usize> {
+        [self.points, self.signals, self.tvds, self.routes]
+            .iter()
+            .take(group)
+            .try_fold(1usize, |acc, n| acc.checked_add(*n))
     }
 
     /// Name einer Weiche.
     pub fn point_name(&self, id: PointId) -> Option<&'a str> {
-        self.name_at(1, id.index(), self.points)
+        self.name_at(self.group_start(0), id.index(), self.points)
     }
 
     /// Name eines Signals.
     pub fn signal_name(&self, id: SignalId) -> Option<&'a str> {
-        self.name_at(self.points.checked_add(1)?, id.index(), self.signals)
+        self.name_at(self.group_start(1), id.index(), self.signals)
     }
 
     /// Name eines Gleisfreimeldeabschnitts.
     pub fn tvd_name(&self, id: TvdId) -> Option<&'a str> {
-        self.name_at(
-            self.points.checked_add(1)?.checked_add(self.signals)?,
-            id.index(),
-            self.tvds,
-        )
+        self.name_at(self.group_start(2), id.index(), self.tvds)
     }
 
     /// Name einer Fahrstraße.
     pub fn route_name(&self, id: RouteId) -> Option<&'a str> {
-        let start = self
-            .points
-            .checked_add(1)?
-            .checked_add(self.signals)?
-            .checked_add(self.tvds)?;
-        self.name_at(start, id.index(), self.routes)
+        self.name_at(self.group_start(3), id.index(), self.routes)
+    }
+
+    /// Name eines Bahnübergangs.
+    pub fn lx_name(&self, id: LxId) -> Option<&'a str> {
+        self.name_at(self.group_start(4), id.index(), self.lxs)
     }
 
     fn find(name: &str, count: usize, get: impl Fn(usize) -> Option<&'a str>) -> Option<usize> {
@@ -511,6 +708,14 @@ impl<'a> PlanView<'a> {
         .and_then(RouteId::from_index)
     }
 
+    /// Bahnübergang mit dem Namen `name`.
+    pub fn find_lx(&self, name: &str) -> Option<LxId> {
+        Self::find(name, self.lxs, |i| {
+            LxId::from_index(i).and_then(|id| self.lx_name(id))
+        })
+        .and_then(LxId::from_index)
+    }
+
     /// Gleisfreimeldeabschnitt, in dem eine Weiche liegt.
     pub fn point_tvd(&self, id: PointId) -> Option<TvdId> {
         let index = id.index()?;
@@ -520,20 +725,48 @@ impl<'a> PlanView<'a> {
         read_word(self.bytes, self.point_tvd_off, index).map(TvdId::new)
     }
 
+    /// Gleisfreimeldeabschnitt, in dem ein Bahnübergang liegt.
+    pub fn lx_tvd(&self, id: LxId) -> Option<TvdId> {
+        let index = id.index()?;
+        if index >= self.lxs {
+            return None;
+        }
+        read_word(self.bytes, self.lx_tvd_off, index).map(TvdId::new)
+    }
+
+    /// Art eines Signals.
+    pub fn signal_kind(&self, id: SignalId) -> Option<SignalKind> {
+        SignalKind::from_code(self.signal_word(id, 0)?)
+    }
+
+    /// Signalsystem eines Signals.
+    pub fn signal_system(&self, id: SignalId) -> Option<SignalSystem> {
+        SignalSystem::from_code(self.signal_word(id, 1)?)
+    }
+
+    /// Hauptsignal, das ein Vorsignal ankündigt.
+    pub fn signal_announces(&self, id: SignalId) -> Option<SignalId> {
+        match self.signal_word(id, 2)? {
+            NONE => None,
+            s => Some(SignalId::new(s)),
+        }
+    }
+
+    /// Ist der Abschnitt ein Einfahrabschnitt an einer Netzgrenze? Dort dürfen Züge ohne
+    /// Fahrstraße erscheinen.
+    pub fn tvd_is_entry(&self, id: TvdId) -> bool {
+        id.index()
+            .filter(|i| *i < self.tvds)
+            .and_then(|i| read_word(self.bytes, self.tvd_flags_off, i))
+            .is_some_and(|f| f & TVD_ENTRY != 0)
+    }
+
     /// Fahrstraße `id`.
     pub fn route(&self, id: RouteId) -> Option<RouteView<'a>> {
         let raw = self.raw_route(id.index()?)?;
-        let end = match raw.end_kind {
-            END_SIGNAL => RouteEnd::Signal(SignalId::new(raw.end_signal)),
-            END_BOUNDARY => RouteEnd::Boundary,
-            END_BUFFER_STOP => RouteEnd::BufferStop,
-            _ => return None,
-        };
         Some(RouteView {
             plan: *self,
             id,
-            start: SignalId::new(raw.start),
-            end,
             raw,
         })
     }
@@ -546,24 +779,11 @@ impl<'a> PlanView<'a> {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-struct RawRoute {
-    start: u32,
-    end_kind: u32,
-    end_signal: u32,
-    points_start: usize,
-    points_len: usize,
-    tvds_start: usize,
-    tvds_len: usize,
-}
-
 /// Sicht auf eine Fahrstraße.
 #[derive(Copy, Clone)]
 pub struct RouteView<'a> {
     plan: PlanView<'a>,
     id: RouteId,
-    start: SignalId,
-    end: RouteEnd,
     raw: RawRoute,
 }
 
@@ -572,13 +792,22 @@ impl fmt::Debug for RouteView<'_> {
         f.debug_struct("RouteView")
             .field("id", &self.id)
             .field("name", &self.name())
-            .field("start", &self.start)
-            .field("end", &self.end)
+            .field("start", &self.start())
+            .field("end", &self.end())
             .finish_non_exhaustive()
     }
 }
 
 impl<'a> RouteView<'a> {
+    fn words(&self, range: Range) -> Words<'a> {
+        Words {
+            bytes: self.plan.bytes,
+            base: self.plan.pool_off,
+            next: range.start,
+            end: range.start.saturating_add(range.len),
+        }
+    }
+
     /// ID der Fahrstraße.
     pub const fn id(&self) -> RouteId {
         self.id
@@ -591,32 +820,65 @@ impl<'a> RouteView<'a> {
 
     /// Startsignal.
     pub const fn start(&self) -> SignalId {
-        self.start
+        SignalId::new(self.raw.start)
     }
 
     /// Ziel.
     pub const fn end(&self) -> RouteEnd {
-        self.end
+        match self.raw.end_kind {
+            END_SIGNAL => RouteEnd::Signal(SignalId::new(self.raw.end_signal)),
+            END_BOUNDARY => RouteEnd::Boundary,
+            _ => RouteEnd::BufferStop,
+        }
     }
 
-    /// Erforderliche Weichenlagen.
+    /// Zulässige Geschwindigkeit, falls die Fahrstraße beschränkt ist (z. B. über einen
+    /// abzweigenden Weichenstrang).
+    pub fn speed(&self) -> Option<Speed> {
+        u16::try_from(self.raw.speed)
+            .ok()
+            .filter(|v| *v != 0)
+            .map(Speed::from_kmh)
+    }
+
+    /// Erforderliche Weichenlagen im Fahrweg.
     pub fn points(&self) -> PointEntries<'a> {
-        PointEntries::new(
-            self.plan.bytes,
-            self.plan.pool_off,
-            self.raw.points_start,
-            self.raw.points_len,
-        )
+        PointEntries(self.words(self.raw.points))
     }
 
-    /// Gleisfreimeldeabschnitte in Fahrreihenfolge.
+    /// Gleisfreimeldeabschnitte des Fahrwegs in Fahrreihenfolge.
     pub fn tvds(&self) -> TvdEntries<'a> {
-        TvdEntries::new(
-            self.plan.bytes,
-            self.plan.pool_off,
-            self.raw.tvds_start,
-            self.raw.tvds_len,
-        )
+        TvdEntries(self.words(self.raw.tvds))
+    }
+
+    /// Gleisfreimeldeabschnitte des Durchrutschwegs in Fahrreihenfolge.
+    pub fn overlap_tvds(&self) -> TvdEntries<'a> {
+        TvdEntries(self.words(self.raw.overlap_tvds))
+    }
+
+    /// Erforderliche Weichenlagen im Durchrutschweg.
+    pub fn overlap_points(&self) -> PointEntries<'a> {
+        PointEntries(self.words(self.raw.overlap_points))
+    }
+
+    /// Flankenschutzmaßnahmen.
+    pub fn flank(&self) -> FlankEntries<'a> {
+        let words = Words {
+            bytes: self.plan.bytes,
+            base: self.plan.pool_off,
+            next: self.raw.flank.start,
+            end: self
+                .raw
+                .flank
+                .start
+                .saturating_add(self.raw.flank.len.saturating_mul(FLANK_WORDS)),
+        };
+        FlankEntries(words)
+    }
+
+    /// Bahnübergänge im Fahrweg und Durchrutschweg.
+    pub fn level_crossings(&self) -> LxEntries<'a> {
+        LxEntries(self.words(self.raw.lxs))
     }
 
     /// Ist diese Fahrstraße mit `other` feindlich?
@@ -652,82 +914,110 @@ impl<'a> RouteView<'a> {
     }
 }
 
-/// Iterator über die Weichenlagen einer Fahrstraße.
+/// Wörter einer Liste im Pool.
 #[derive(Clone, Debug)]
-pub struct PointEntries<'a> {
+struct Words<'a> {
     bytes: &'a [u8],
     base: usize,
     next: usize,
     end: usize,
 }
 
-impl<'a> PointEntries<'a> {
-    fn new(bytes: &'a [u8], pool_off: usize, start: usize, len: usize) -> Self {
-        Self {
-            bytes,
-            base: pool_off,
-            next: start,
-            end: start.saturating_add(len),
+impl Iterator for Words<'_> {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<u32> {
+        if self.next >= self.end {
+            return None;
         }
+        let word = read_word(self.bytes, self.base, self.next)?;
+        self.next = self.next.saturating_add(1);
+        Some(word)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = self.end.saturating_sub(self.next);
+        (n, Some(n))
     }
 }
+
+/// Iterator über Weichenlagen.
+#[derive(Clone, Debug)]
+pub struct PointEntries<'a>(Words<'a>);
 
 impl Iterator for PointEntries<'_> {
     type Item = (PointId, PointPosition);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.next >= self.end {
-            return None;
-        }
-        let entry = read_word(self.bytes, self.base, self.next)?;
-        self.next = self.next.saturating_add(1);
-        Some(decode_point(entry))
+        self.0.next().map(decode_point)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let n = self.end.saturating_sub(self.next);
-        (n, Some(n))
+        self.0.size_hint()
     }
 }
 
 impl ExactSizeIterator for PointEntries<'_> {}
 
-/// Iterator über die Gleisfreimeldeabschnitte einer Fahrstraße.
+/// Iterator über Gleisfreimeldeabschnitte.
 #[derive(Clone, Debug)]
-pub struct TvdEntries<'a> {
-    bytes: &'a [u8],
-    base: usize,
-    next: usize,
-    end: usize,
-}
-
-impl<'a> TvdEntries<'a> {
-    fn new(bytes: &'a [u8], pool_off: usize, start: usize, len: usize) -> Self {
-        Self {
-            bytes,
-            base: pool_off,
-            next: start,
-            end: start.saturating_add(len),
-        }
-    }
-}
+pub struct TvdEntries<'a>(Words<'a>);
 
 impl Iterator for TvdEntries<'_> {
     type Item = TvdId;
 
     fn next(&mut self) -> Option<TvdId> {
-        if self.next >= self.end {
-            return None;
-        }
-        let entry = read_word(self.bytes, self.base, self.next)?;
-        self.next = self.next.saturating_add(1);
-        Some(TvdId::new(entry))
+        self.0.next().map(TvdId::new)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let n = self.end.saturating_sub(self.next);
-        (n, Some(n))
+        self.0.size_hint()
     }
 }
 
 impl ExactSizeIterator for TvdEntries<'_> {}
+
+/// Iterator über Bahnübergänge.
+#[derive(Clone, Debug)]
+pub struct LxEntries<'a>(Words<'a>);
+
+impl Iterator for LxEntries<'_> {
+    type Item = LxId;
+
+    fn next(&mut self) -> Option<LxId> {
+        self.0.next().map(LxId::new)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+}
+
+impl ExactSizeIterator for LxEntries<'_> {}
+
+/// Iterator über Flankenschutzmaßnahmen. Ungültige Einträge beenden die Iteration; sie
+/// kommen in einem geprüften Plan nicht vor.
+#[derive(Clone, Debug)]
+pub struct FlankEntries<'a>(Words<'a>);
+
+impl Iterator for FlankEntries<'_> {
+    type Item = Flank;
+
+    fn next(&mut self) -> Option<Flank> {
+        let kind = self.0.next()?;
+        let element = self.0.next()?;
+        let protects = TvdId::new(self.0.next()?);
+        let protection = match kind {
+            FLANK_POINT => {
+                let (p, pos) = decode_point(element);
+                Protection::Point(p, pos)
+            }
+            FLANK_SIGNAL => Protection::Signal(SignalId::new(element)),
+            _ => return None,
+        };
+        Some(Flank {
+            protection,
+            protects,
+        })
+    }
+}

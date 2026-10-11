@@ -144,7 +144,7 @@ fn keygen_compile_verify_info() {
     let out = railit(&["plan", "info", &s(&plan), "-o", "json"]);
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["routes"][0]["name"], "A-N1");
-    assert_eq!(json["routes"][0]["conflicts"].as_array().unwrap().len(), 4);
+    assert_eq!(json["routes"][0]["conflicts"].as_array().unwrap().len(), 6);
 
     // Verfälschtes Image wird abgewiesen.
     let mut bytes = std::fs::read(&plan).unwrap();

@@ -43,6 +43,22 @@ pub enum PlanningError {
     },
     /// Ein Element des Netzes ist inkonsistent (z. B. ohne Gleisfreimeldeabschnitt).
     Inconsistent(String),
+    /// Für eine Weiche lässt sich kein Flankenschutz bestimmen.
+    UnprotectedFlank {
+        /// Fahrstraße.
+        route: String,
+        /// Weiche, deren Flanke ungeschützt bleibt.
+        point: String,
+        /// Grund.
+        reason: String,
+    },
+    /// Ein Vorsignal kündigt kein eindeutiges Hauptsignal an.
+    DistantSignal {
+        /// Vorsignal.
+        signal: String,
+        /// Grund.
+        reason: String,
+    },
     /// Die unabhängige Gegenprüfung weicht vom Generator ab.
     Verification(String),
     /// Das Plan-Image konnte nicht geschrieben oder gelesen werden.
@@ -60,6 +76,8 @@ impl PlanningError {
             Self::Loop { .. } | Self::RepeatedTvd { .. } => "REQ-PLN-014",
             Self::Inconsistent(_) => "REQ-PLN-011",
             Self::Verification(_) => "REQ-PLN-013",
+            Self::UnprotectedFlank { .. } => "REQ-PLN-016",
+            Self::DistantSignal { .. } => "REQ-PLN-017",
             Self::Image(_) => "REQ-PLN-002",
         }
     }
@@ -95,6 +113,17 @@ impl fmt::Display for PlanningError {
                 "Fahrstraße „{route}“ befährt Gleisfreimeldeabschnitt „{tvd}“ mehrfach"
             ),
             Self::Inconsistent(msg) => write!(f, "Netz inkonsistent: {msg}"),
+            Self::UnprotectedFlank {
+                route,
+                point,
+                reason,
+            } => write!(
+                f,
+                "Fahrstraße „{route}“: Flanke der Weiche „{point}“ ist nicht schützbar ({reason})"
+            ),
+            Self::DistantSignal { signal, reason } => {
+                write!(f, "Vorsignal „{signal}“: {reason}")
+            }
             Self::Verification(msg) => write!(f, "Gegenprüfung fehlgeschlagen: {msg}"),
             Self::Image(e) => write!(f, "Plan-Image: {e}"),
         }

@@ -7,10 +7,72 @@ fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
-/// Plan für Beispielstadt mit drei Fahrstraßen: A-N1, A-N2 (feindlich über W1) und F-P1
-/// (feindlich mit A-N1 über T1).
+fn route(
+    name: &str,
+    start: u32,
+    end: RouteEnd,
+    points: Vec<(PointId, PointPosition)>,
+    tvds: Vec<u32>,
+    conflicts: Vec<u32>,
+) -> RouteDef {
+    RouteDef {
+        name: name.into(),
+        start: SignalId::new(start),
+        end,
+        speed: None,
+        points,
+        tvds: tvds.into_iter().map(TvdId::new).collect(),
+        overlap_tvds: vec![],
+        overlap_points: vec![],
+        flank: vec![],
+        level_crossings: vec![],
+        conflicts: conflicts.into_iter().map(RouteId::new).collect(),
+    }
+}
+
+fn signal(name: &str, kind: SignalKind) -> SignalDef {
+    SignalDef {
+        name: name.into(),
+        kind,
+        system: SignalSystem::Ks,
+        announces: None,
+    }
+}
+
+/// Plan für Beispielstadt mit drei Fahrstraßen: A-N1 (mit Durchrutschweg, Flankenschutz und
+/// BÜ), A-N2 (feindlich über W1, 40 km/h) und F-P1 (feindlich mit A-N1 über T1).
 fn sample() -> Plan {
-    let tvd = |i| TvdId::new(i);
+    let tvd = TvdId::new;
+    let mut a_n1 = route(
+        "A-N1",
+        0,
+        RouteEnd::Signal(SignalId::new(1)),
+        vec![(PointId::new(0), PointPosition::Left)],
+        vec![1, 2],
+        vec![1, 2],
+    );
+    a_n1.overlap_tvds = vec![tvd(4)];
+    a_n1.overlap_points = vec![(PointId::new(1), PointPosition::Left)];
+    a_n1.flank = vec![
+        Flank {
+            protection: Protection::Signal(SignalId::new(5)),
+            protects: tvd(1),
+        },
+        Flank {
+            protection: Protection::Signal(SignalId::new(2)),
+            protects: tvd(4),
+        },
+    ];
+    a_n1.level_crossings = vec![LxId::new(0)];
+    let mut a_n2 = route(
+        "A-N2",
+        0,
+        RouteEnd::Signal(SignalId::new(2)),
+        vec![(PointId::new(0), PointPosition::Right)],
+        vec![1, 3],
+        vec![0],
+    );
+    a_n2.speed = Some(Speed::from_kmh(40));
     Plan {
         network: "Beispielstadt".into(),
         points: vec![
@@ -23,37 +85,42 @@ fn sample() -> Plan {
                 tvd: tvd(4),
             },
         ],
-        signals: ["A", "N1", "N2", "F", "P1", "P2"]
-            .map(|n| SignalDef { name: n.into() })
-            .to_vec(),
+        signals: vec![
+            signal("A", SignalKind::Combined),
+            signal("N1", SignalKind::Main),
+            signal("N2", SignalKind::Main),
+            signal("F", SignalKind::Main),
+            signal("P1", SignalKind::Main),
+            signal("P2", SignalKind::Main),
+            SignalDef {
+                name: "a".into(),
+                kind: SignalKind::Distant,
+                system: SignalSystem::Hv,
+                announces: Some(SignalId::new(0)),
+            },
+        ],
         tvds: ["TW", "TW1", "T1", "T2", "TW2", "TE"]
-            .map(|n| TvdDef { name: n.into() })
-            .to_vec(),
+            .iter()
+            .map(|n| TvdDef {
+                name: (*n).into(),
+                entry: *n == "TW" || *n == "TE",
+            })
+            .collect(),
+        level_crossings: vec![LxDef {
+            name: "BÜ1".into(),
+            tvd: tvd(4),
+        }],
         routes: vec![
-            RouteDef {
-                name: "A-N1".into(),
-                start: SignalId::new(0),
-                end: RouteEnd::Signal(SignalId::new(1)),
-                points: vec![(PointId::new(0), PointPosition::Left)],
-                tvds: vec![tvd(1), tvd(2)],
-                conflicts: vec![RouteId::new(1), RouteId::new(2)],
-            },
-            RouteDef {
-                name: "A-N2".into(),
-                start: SignalId::new(0),
-                end: RouteEnd::Signal(SignalId::new(2)),
-                points: vec![(PointId::new(0), PointPosition::Right)],
-                tvds: vec![tvd(1), tvd(3)],
-                conflicts: vec![RouteId::new(0)],
-            },
-            RouteDef {
-                name: "F-P1".into(),
-                start: SignalId::new(3),
-                end: RouteEnd::Signal(SignalId::new(4)),
-                points: vec![(PointId::new(1), PointPosition::Left)],
-                tvds: vec![tvd(4), tvd(2)],
-                conflicts: vec![RouteId::new(0)],
-            },
+            a_n1,
+            a_n2,
+            route(
+                "F-P1",
+                3,
+                RouteEnd::Signal(SignalId::new(4)),
+                vec![(PointId::new(1), PointPosition::Left)],
+                vec![4, 2],
+                vec![0],
+            ),
         ],
     }
 }
@@ -185,7 +252,7 @@ fn inconsistent_plans_are_rejected() {
     assert!(matches!(
         p.to_image(),
         Err(PlanError::InvalidReference {
-            what: "doppelte Weiche",
+            what: "doppelte oder ungültige Weiche",
             index: 0
         })
     ));
@@ -198,7 +265,7 @@ fn inconsistent_plans_are_rejected() {
     ));
 
     let mut p = sample();
-    p.routes[0].start = SignalId::new(6);
+    p.routes[0].start = SignalId::new(9);
     assert!(matches!(
         p.to_image(),
         Err(PlanError::InvalidReference {
@@ -208,11 +275,81 @@ fn inconsistent_plans_are_rejected() {
     ));
 }
 
+/// REQ-PLN-002: Durchrutschweg, Flankenschutz, Bahnübergänge und Signaltabelle.
+#[test]
+fn inconsistent_phase2_data_is_rejected() {
+    let reject = |f: fn(&mut Plan), what: &str| {
+        let mut p = sample();
+        f(&mut p);
+        assert!(p.to_image().is_err(), "nicht abgewiesen: {what}");
+    };
+    reject(
+        |p| p.routes[0].overlap_tvds.push(TvdId::new(2)),
+        "Durchrutschweg überschneidet Fahrweg",
+    );
+    reject(
+        |p| {
+            p.routes[0]
+                .overlap_points
+                .push((PointId::new(0), PointPosition::Left));
+        },
+        "Weiche doppelt",
+    );
+    reject(
+        |p| p.routes[0].overlap_points = vec![(PointId::new(0), PointPosition::Left)],
+        "Weiche außerhalb",
+    );
+    reject(
+        |p| p.routes[0].flank[0].protects = TvdId::new(5),
+        "Flankenschutz für fremden Abschnitt",
+    );
+    reject(
+        |p| p.routes[0].flank[0].protection = Protection::Signal(SignalId::new(0)),
+        "Startsignal als Schutzsignal",
+    );
+    reject(
+        |p| {
+            p.routes[0].flank[0].protection =
+                Protection::Point(PointId::new(0), PointPosition::Right);
+        },
+        "Fahrwegweiche als Schutzweiche",
+    );
+    reject(
+        |p| p.routes[0].level_crossings.push(LxId::new(0)),
+        "Bahnübergang doppelt",
+    );
+    reject(
+        |p| p.routes[1].level_crossings.push(LxId::new(0)),
+        "Bahnübergang außerhalb",
+    );
+    reject(
+        |p| p.signals[1].announces = Some(SignalId::new(0)),
+        "Hauptsignal kündigt an",
+    );
+    reject(
+        |p| p.signals[6].announces = Some(SignalId::new(6)),
+        "Vorsignal kündigt Vorsignal an",
+    );
+    reject(
+        |p| p.routes[0].start = SignalId::new(6),
+        "Vorsignal als Startsignal",
+    );
+    reject(
+        |p| p.routes[0].end = RouteEnd::Boundary,
+        "Durchrutschweg ohne Zielsignal",
+    );
+    reject(
+        |p| p.level_crossings[0].tvd = TvdId::new(9),
+        "BÜ-Abschnitt ungültig",
+    );
+}
+
 #[test]
 fn many_routes_span_multiple_conflict_words() {
     // 130 Fahrstraßen ⇒ drei u64-Wörter je Zeile; Konflikte quer über Wortgrenzen.
     let mut p = sample();
     p.routes.clear();
+    p.level_crossings.clear();
     for i in 0..130u32 {
         p.routes.push(RouteDef {
             name: format!("R{i}"),
@@ -221,6 +358,7 @@ fn many_routes_span_multiple_conflict_words() {
             points: vec![],
             tvds: vec![TvdId::new(0)],
             conflicts: vec![],
+            ..route("", 0, RouteEnd::Boundary, vec![], vec![], vec![])
         });
     }
     for (a, b) in [(0usize, 129usize), (63, 64), (5, 70)] {

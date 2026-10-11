@@ -18,11 +18,16 @@ set_route = "F-P1"
 expect = { rejected = "conflict" }
 
 [[step]]
-note = "N2-GE ist verträglich"
+note = "N2-GE kreuzt den Durchrutschweg von A-N1 (W2 rechts statt links)"
 set_route = "N2-GE"
-until = { route = { "N2-GE" = "proceed" } }
+expect = { rejected = "conflict" }
+
+[[step]]
+note = "N1-GE setzt A-N1 fort und ist verträglich"
+set_route = "N1-GE"
+until = { route = { "N1-GE" = "proceed" } }
 timeout_s = 15
-expect = { signal = { A = "proceed", N2 = "proceed" } }
+expect = { signal = { A = "proceed", N1 = "proceed" } }
 
 [[step]]
 note = "Rücknahme mit Fahrt: Zeitverschluss läuft"
@@ -30,14 +35,15 @@ cancel_route = "A-N1"
 expect = { accepted = true, route = { "A-N1" = "cancelling" }, signal = { A = "stop" } }
 
 [[step]]
-note = "Abschnitt hinter W2 wird besetzt gemeldet: N2 fällt auf Halt"
+note = "Abschnitt hinter W2 wird besetzt gemeldet: N1 fällt auf Halt"
 fault = { kind = "tvd_occupied", element = "TE" }
-expect = { route = { "N2-GE" = "halted" }, signal = { N2 = "stop" }, alarm = ["signal_dropped"] }
+expect = { route = { "N1-GE" = "halted" }, signal = { N1 = "stop" }, alarm = ["signal_dropped"] }
 
 [[step]]
-note = "Zeitverschluss von A-N1 läuft ab"
+note = "N1-GE zurücknehmen; beide Zeitverschlüsse laufen ab"
+cancel_route = "N1-GE"
 wait_s = 61
-expect = { route = { "A-N1" = "idle" } }
+expect = { route = { "A-N1" = "idle", "N1-GE" = "idle" } }
 
 [[step]]
 note = "Gleis 2 ist besetzt: A-N2 nicht möglich"

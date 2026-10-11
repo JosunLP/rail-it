@@ -1,26 +1,24 @@
 //! Fahrstraßengenerator.
 //!
 //! Tiefensuche über Ports ab jedem Startsignal. Die unabhängige Gegenprüfung in
-//! [`crate::verify`] arbeitet bewusst anders (deterministische Läufe je Weichenkombination).
+//! [`crate::verify`] arbeitet bewusst anders (deterministische Läufe je Weichenkombination,
+//! eigene Durchfahrregeln, Mengen statt Bitsets).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
-use railit_plan::{Plan, PointDef, RouteDef, RouteEnd, SignalDef, TvdDef};
+use railit_plan::{
+    Flank, LxDef, Plan, PointDef, Protection, RouteDef, RouteEnd, SignalDef, TvdDef,
+};
 use railit_topology::{
     Direction, NodeRef, Port, PortRef, SignalKind, TerminalKind, Topology, TvdMember,
 };
 use railit_types::bitset::{BitSet, BitSetMut, words_for};
-use railit_types::{PointId, PointPosition, RouteId, SignalId, TrackId, TvdId};
+use railit_types::{
+    Length, LxId, PointId, PointPosition, RouteId, SignalId, Speed, TrackId, TvdId,
+};
 
+use crate::PlanningConfig;
 use crate::error::{PlanningError, PlanningReport};
-
-/// Signalarten, an denen Fahrstraßen beginnen und enden.
-pub(crate) const fn delimits_routes(kind: SignalKind) -> bool {
-    matches!(
-        kind,
-        SignalKind::Main | SignalKind::Combined | SignalKind::EtcsStopMarker
-    )
-}
 
 /// Port, über den ein Zug ein Gleis in `direction` verlässt.
 pub(crate) const fn exit_port(direction: Direction) -> Port {
@@ -38,6 +36,12 @@ struct Draft {
     end_name: String,
     points: Vec<(PointId, PointPosition)>,
     tvds: Vec<TvdId>,
+    tracks: Vec<TrackId>,
+    overlap_tvds: Vec<TvdId>,
+    overlap_points: Vec<(PointId, PointPosition)>,
+    flank: Vec<Flank>,
+    level_crossings: Vec<LxId>,
+    speed: Option<Speed>,
 }
 
 /// Teilweg während der Suche.
@@ -61,6 +65,21 @@ fn signal_name(net: &Topology, id: SignalId) -> String {
     net.signal(id).map(|s| s.name.clone()).unwrap_or_default()
 }
 
+fn point_name(net: &Topology, id: PointId) -> String {
+    net.point(id).map(|p| p.name.clone()).unwrap_or_default()
+}
+
+const fn other(pos: PointPosition) -> PointPosition {
+    pos.other()
+}
+
+const fn branch_port(pos: PointPosition) -> Port {
+    match pos {
+        PointPosition::Left => Port::Left,
+        PointPosition::Right => Port::Right,
+    }
+}
+
 /// REQ-PLN-010: Hauptsignale stehen am Gleisende an einer Gleisfreimeldegrenze.
 /// Liefert die Zielsignale je (Gleis, Fahrtrichtung).
 fn check_signals(
@@ -68,7 +87,7 @@ fn check_signals(
     errors: &mut Vec<PlanningError>,
 ) -> HashMap<(TrackId, Direction), SignalId> {
     let mut ends = HashMap::new();
-    for (id, s) in net.signals().filter(|(_, s)| delimits_routes(s.kind)) {
+    for (id, s) in net.signals().filter(|(_, s)| s.kind.delimits_routes()) {
         let Some(track) = net.track(s.track) else {
             errors.push(PlanningError::Inconsistent(format!(
                 "Signal „{}“ ohne Gleis",
@@ -110,6 +129,85 @@ fn check_signals(
         }
     }
     ends
+}
+
+/// REQ-PLN-017: Jedes Vorsignal kündigt genau ein Hauptsignal an, das ohne spitz befahrene
+/// Weiche erreicht wird.
+fn announced_signals(
+    net: &Topology,
+    errors: &mut Vec<PlanningError>,
+) -> HashMap<SignalId, SignalId> {
+    let mut out = HashMap::new();
+    for (id, s) in net.signals().filter(|(_, s)| s.kind == SignalKind::Distant) {
+        let fail = |reason: &str| PlanningError::DistantSignal {
+            signal: s.name.clone(),
+            reason: reason.into(),
+        };
+        // Erst auf dem eigenen Gleis vor dem Vorsignal suchen.
+        let own = net
+            .signals_on(s.track)
+            .filter(|(_, m)| m.direction == s.direction && m.kind.delimits_routes())
+            .filter(|(_, m)| match s.direction {
+                Direction::AToB => m.position > s.position,
+                Direction::BToA => m.position < s.position,
+            })
+            .min_by_key(|(_, m)| match s.direction {
+                Direction::AToB => m.position.as_mm(),
+                Direction::BToA => u32::MAX - m.position.as_mm(),
+            })
+            .map(|(m, _)| m);
+        if let Some(main) = own {
+            out.insert(id, main);
+            continue;
+        }
+        let mut port = PortRef::new(NodeRef::Track(s.track), exit_port(s.direction));
+        let mut found = None;
+        for _ in 0..=net.tracks().len() + net.points().len() {
+            let Some(entry) = net.linked(port) else { break };
+            match (entry.node, entry.port) {
+                (NodeRef::Terminal(_), _) => {
+                    errors.push(fail("kein Hauptsignal bis zum Netzende"));
+                    break;
+                }
+                (NodeRef::Point(_), Port::Tip) => {
+                    errors.push(fail(
+                        "Weg zum Hauptsignal führt über eine spitz befahrene Weiche",
+                    ));
+                    break;
+                }
+                (NodeRef::Point(p), _) => port = PortRef::new(NodeRef::Point(p), Port::Tip),
+                (NodeRef::Track(t), entered) => {
+                    let dir = if entered == Port::A {
+                        Direction::AToB
+                    } else {
+                        Direction::BToA
+                    };
+                    let main = net
+                        .signals_on(t)
+                        .filter(|(_, m)| m.direction == dir && m.kind.delimits_routes())
+                        .min_by_key(|(_, m)| match dir {
+                            Direction::AToB => m.position.as_mm(),
+                            Direction::BToA => u32::MAX - m.position.as_mm(),
+                        })
+                        .map(|(m, _)| m);
+                    if let Some(main) = main {
+                        found = Some(main);
+                        break;
+                    }
+                    port = PortRef::new(entry.node, exit_port(dir));
+                }
+            }
+        }
+        if let Some(main) = found {
+            out.insert(id, main);
+        } else if !errors
+            .iter()
+            .any(|e| matches!(e, PlanningError::DistantSignal { signal, .. } if signal == &s.name))
+        {
+            errors.push(fail("kein Hauptsignal gefunden"));
+        }
+    }
+    out
 }
 
 /// Alle Fahrwege ab Startsignal `start`.
@@ -163,21 +261,40 @@ fn explore(
             frame.tvds.push(tvd);
         }
 
+        let tracks = |visited: &[NodeRef]| -> Vec<TrackId> {
+            visited
+                .iter()
+                .skip(1)
+                .filter_map(|n| match n {
+                    NodeRef::Track(t) => Some(*t),
+                    _ => None,
+                })
+                .collect()
+        };
+        let finish = |frame: Frame, end: RouteEnd, end_name: String| Draft {
+            start,
+            end,
+            end_name,
+            tracks: tracks(&frame.visited),
+            points: frame.points,
+            tvds: frame.tvds,
+            overlap_tvds: Vec::new(),
+            overlap_points: Vec::new(),
+            flank: Vec::new(),
+            level_crossings: Vec::new(),
+            speed: None,
+        };
+
         match entry.node {
             NodeRef::Terminal(t) => {
                 let Some(terminal) = net.terminal(t) else {
                     continue;
                 };
-                drafts.push(Draft {
-                    start,
-                    end: match terminal.kind {
-                        TerminalKind::Boundary => RouteEnd::Boundary,
-                        TerminalKind::BufferStop => RouteEnd::BufferStop,
-                    },
-                    end_name: terminal.name.clone(),
-                    points: frame.points,
-                    tvds: frame.tvds,
-                });
+                let end = match terminal.kind {
+                    TerminalKind::Boundary => RouteEnd::Boundary,
+                    TerminalKind::BufferStop => RouteEnd::BufferStop,
+                };
+                drafts.push(finish(frame, end, terminal.name.clone()));
             }
             NodeRef::Track(t) => {
                 let direction = if entry.port == Port::A {
@@ -186,13 +303,7 @@ fn explore(
                     Direction::BToA
                 };
                 if let Some(&end) = ends.get(&(t, direction)) {
-                    drafts.push(Draft {
-                        start,
-                        end: RouteEnd::Signal(end),
-                        end_name: signal_name(net, end),
-                        points: frame.points,
-                        tvds: frame.tvds,
-                    });
+                    drafts.push(finish(frame, RouteEnd::Signal(end), signal_name(net, end)));
                 } else {
                     frame.exit = PortRef::new(entry.node, exit_port(direction));
                     stack.push(frame);
@@ -209,6 +320,177 @@ fn explore(
                     }
                     stack.push(branch);
                 }
+            }
+        }
+    }
+}
+
+/// REQ-PLN-015: Durchrutschweg hinter dem Zielsignal bis zur ersten Gleisfreimeldegrenze
+/// nach `length`. Spitz befahrene Weichen werden in den geraden Strang gelegt (bzw. links,
+/// wenn kein abzweigender Strang bekannt ist).
+#[allow(clippy::type_complexity)]
+fn overlap(
+    net: &Topology,
+    end: SignalId,
+    length: Length,
+) -> Result<
+    (
+        Vec<TvdId>,
+        Vec<(PointId, PointPosition)>,
+        Vec<(TrackId, u32, Direction)>,
+    ),
+    String,
+> {
+    let signal = net.signal(end).ok_or("Zielsignal fehlt")?;
+    let mut port = PortRef::new(NodeRef::Track(signal.track), exit_port(signal.direction));
+    let mut tvds: Vec<TvdId> = Vec::new();
+    let mut points = Vec::new();
+    // Gleise mit Strecke ab Signal bis zum Gleisanfang und Fahrtrichtung (für Bahnübergänge).
+    let mut tracks = Vec::new();
+    let mut covered: u64 = 0;
+    let need = u64::from(length.as_mm());
+    let mut visited = vec![NodeRef::Track(signal.track)];
+
+    while covered < need {
+        let Some(entry) = net.linked(port) else {
+            return Err("offener Port".into());
+        };
+        if visited.contains(&entry.node) {
+            return Err("Durchrutschweg bildet eine Schleife".into());
+        }
+        visited.push(entry.node);
+        if let Some(t) = member_tvd(net, entry.node)
+            && tvds.last() != Some(&t)
+        {
+            tvds.push(t);
+        }
+        match (entry.node, entry.port) {
+            (NodeRef::Terminal(_), _) => break,
+            (NodeRef::Track(t), entered) => {
+                let dir = if entered == Port::A {
+                    Direction::AToB
+                } else {
+                    Direction::BToA
+                };
+                tracks.push((t, u32::try_from(covered).unwrap_or(u32::MAX), dir));
+                covered += u64::from(net.track(t).map_or(0, |x| x.length.as_mm()));
+                port = PortRef::new(entry.node, exit_port(dir));
+            }
+            (NodeRef::Point(p), Port::Tip) => {
+                let pos = net
+                    .point(p)
+                    .and_then(|x| x.diverging)
+                    .map_or(PointPosition::Left, other);
+                points.push((p, pos));
+                port = PortRef::new(entry.node, branch_port(pos));
+            }
+            (NodeRef::Point(p), entered) => {
+                let pos = if entered == Port::Left {
+                    PointPosition::Left
+                } else {
+                    PointPosition::Right
+                };
+                points.push((p, pos));
+                port = PortRef::new(entry.node, Port::Tip);
+            }
+        }
+    }
+    Ok((tvds, points, tracks))
+}
+
+/// REQ-PLN-016: Flankenschutz für die Weiche `point`, deren Strang `pos` die Fahrstraße
+/// benutzt: Suche vom anderen Strang weg nach einem zur Weiche gerichteten Signal (Schutz-
+/// signal) oder einer gegen die Weiche umstellbaren Weiche (Schutzweiche).
+fn flank_for(
+    net: &Topology,
+    point: PointId,
+    pos: PointPosition,
+) -> Result<Vec<Protection>, String> {
+    let mut out = Vec::new();
+    let start = PortRef::new(NodeRef::Point(point), branch_port(other(pos)));
+    search_flank(net, start, 0, &mut vec![NodeRef::Point(point)], &mut out)?;
+    Ok(out)
+}
+
+fn search_flank(
+    net: &Topology,
+    from: PortRef,
+    depth: usize,
+    visited: &mut Vec<NodeRef>,
+    out: &mut Vec<Protection>,
+) -> Result<(), String> {
+    if depth > 16 {
+        return Err("Suchtiefe überschritten".into());
+    }
+    let mut port = from;
+    loop {
+        let entry = net.linked(port).ok_or("offener Port")?;
+        if visited.contains(&entry.node) {
+            return Err("Flankenweg bildet eine Schleife".into());
+        }
+        visited.push(entry.node);
+        match (entry.node, entry.port) {
+            (NodeRef::Terminal(t), _) => {
+                return match net.terminal(t).map(|x| x.kind) {
+                    Some(TerminalKind::BufferStop) => Ok(()),
+                    _ => Err("Flankenweg führt ungeschützt an die Netzgrenze".into()),
+                };
+            }
+            (NodeRef::Track(t), entered) => {
+                // Wir laufen von der Weiche weg; gesucht ist ein Signal, das zu ihr hin zeigt.
+                let walk = if entered == Port::A {
+                    Direction::AToB
+                } else {
+                    Direction::BToA
+                };
+                let toward = if walk == Direction::AToB {
+                    Direction::BToA
+                } else {
+                    Direction::AToB
+                };
+                let nearest = net
+                    .signals_on(t)
+                    .filter(|(_, s)| {
+                        s.direction == toward
+                            && (s.kind.delimits_routes() || s.kind == SignalKind::Shunting)
+                    })
+                    .min_by_key(|(_, s)| match walk {
+                        Direction::AToB => s.position.as_mm(),
+                        Direction::BToA => u32::MAX - s.position.as_mm(),
+                    })
+                    .map(|(id, _)| id);
+                if let Some(s) = nearest {
+                    out.push(Protection::Signal(s));
+                    return Ok(());
+                }
+                port = PortRef::new(entry.node, exit_port(walk));
+            }
+            (NodeRef::Point(_), Port::Tip) => {
+                // Von beiden Strängen kann ein Fahrzeug über die Spitze zu uns rollen.
+                search_flank(
+                    net,
+                    PortRef::new(entry.node, Port::Left),
+                    depth + 1,
+                    visited,
+                    out,
+                )?;
+                return search_flank(
+                    net,
+                    PortRef::new(entry.node, Port::Right),
+                    depth + 1,
+                    visited,
+                    out,
+                );
+            }
+            (NodeRef::Point(q), entered) => {
+                // Schutzweiche: in den anderen Strang legen, dann führt die Spitze von uns weg.
+                let came_from = if entered == Port::Left {
+                    PointPosition::Left
+                } else {
+                    PointPosition::Right
+                };
+                out.push(Protection::Point(q, other(came_from)));
+                return Ok(());
             }
         }
     }
@@ -233,13 +515,12 @@ fn route_names(net: &Topology, drafts: &[Draft]) -> Vec<String> {
                 .points
                 .iter()
                 .map(|(p, pos)| {
-                    let name = net.point(*p).map_or("?", |p| p.name.as_str());
                     let side = if *pos == PointPosition::Left {
                         "L"
                     } else {
                         "R"
                     };
-                    format!("{name}{side}")
+                    format!("{}{side}", point_name(net, *p))
                 })
                 .collect();
             format!("{b}[{}]", via.join(","))
@@ -247,41 +528,94 @@ fn route_names(net: &Topology, drafts: &[Draft]) -> Vec<String> {
         .collect()
 }
 
-/// REQ-PLN-012: feindlich bei gemeinsamem Startsignal, Gleisfreimeldeabschnitt oder Weiche.
-fn conflicts(net: &Topology, drafts: &[Draft]) -> Vec<Vec<RouteId>> {
-    let tvd_words = words_for(net.tvds().len());
-    let point_words = words_for(net.points().len());
-    let sets: Vec<(Vec<u64>, Vec<u64>)> = drafts
+fn bits(n: usize, items: impl IntoIterator<Item = Option<usize>>) -> Vec<u64> {
+    let mut words = vec![0u64; words_for(n)];
+    let mut set = BitSetMut::new(&mut words);
+    for i in items.into_iter().flatten() {
+        let _ = set.insert(i);
+    }
+    words
+}
+
+/// Mengen einer Fahrstraße für die Feindlichkeitsprüfung.
+struct Sets {
+    path: Vec<u64>,
+    overlap: Vec<u64>,
+    points: Vec<u64>,
+    positions: BTreeMap<PointId, PointPosition>,
+    flank_signals: Vec<SignalId>,
+    end: Option<SignalId>,
+}
+
+/// REQ-PLN-012: Feindlichkeiten.
+///
+/// Zwei Fahrstraßen sind feindlich bei
+/// 1. gleichem Startsignal,
+/// 2. gemeinsamem Abschnitt im Fahrweg,
+/// 3. gemeinsamer Weiche im Fahrweg,
+/// 4. Durchrutschweg der einen im Fahrweg der anderen – außer die andere beginnt am
+///    Zielsignal der einen (Fortsetzung),
+/// 5. gemeinsamem Abschnitt in den Durchrutschwegen,
+/// 6. verschiedenen geforderten Lagen derselben Weiche (Fahrweg, Durchrutschweg, Flanke),
+/// 7. Start der einen an einem Schutzsignal der anderen.
+fn conflicts(net: &Topology, routes: &[RouteDef]) -> Vec<Vec<RouteId>> {
+    let tvd_n = net.tvds().len();
+    let point_n = net.points().len();
+    let sets: Vec<Sets> = routes
         .iter()
-        .map(|d| {
-            let mut tvds = vec![0u64; tvd_words];
-            let mut points = vec![0u64; point_words];
-            for t in &d.tvds {
-                if let Some(i) = t.index() {
-                    let _ = BitSetMut::new(&mut tvds).insert(i);
+        .map(|r| {
+            let mut positions = BTreeMap::new();
+            for (p, pos) in r.points.iter().chain(&r.overlap_points) {
+                positions.insert(*p, *pos);
+            }
+            let mut flank_signals = Vec::new();
+            for f in &r.flank {
+                match f.protection {
+                    Protection::Point(p, pos) => {
+                        positions.insert(p, pos);
+                    }
+                    Protection::Signal(s) => flank_signals.push(s),
                 }
             }
-            for (p, _) in &d.points {
-                if let Some(i) = p.index() {
-                    let _ = BitSetMut::new(&mut points).insert(i);
-                }
+            Sets {
+                path: bits(tvd_n, r.tvds.iter().map(|t| t.index())),
+                overlap: bits(tvd_n, r.overlap_tvds.iter().map(|t| t.index())),
+                points: bits(point_n, r.points.iter().map(|(p, _)| p.index())),
+                positions,
+                flank_signals,
+                end: match r.end {
+                    RouteEnd::Signal(s) => Some(s),
+                    _ => None,
+                },
             }
-            (tvds, points)
         })
         .collect();
+    let hit = |a: &[u64], b: &[u64]| BitSet::new(a).intersects(&BitSet::new(b));
 
-    drafts
+    routes
         .iter()
         .enumerate()
-        .map(|(a, da)| {
-            drafts
+        .map(|(a, ra)| {
+            routes
                 .iter()
                 .enumerate()
-                .filter(|&(b, db)| {
-                    b != a
-                        && (da.start == db.start
-                            || BitSet::new(&sets[a].0).intersects(&BitSet::new(&sets[b].0))
-                            || BitSet::new(&sets[a].1).intersects(&BitSet::new(&sets[b].1)))
+                .filter(|&(b, rb)| {
+                    if a == b {
+                        return false;
+                    }
+                    let (sa, sb) = (&sets[a], &sets[b]);
+                    ra.start == rb.start
+                        || hit(&sa.path, &sb.path)
+                        || hit(&sa.points, &sb.points)
+                        || (hit(&sa.overlap, &sb.path) && sa.end != Some(rb.start))
+                        || (hit(&sb.overlap, &sa.path) && sb.end != Some(ra.start))
+                        || hit(&sa.overlap, &sb.overlap)
+                        || sa
+                            .positions
+                            .iter()
+                            .any(|(p, pos)| sb.positions.get(p).is_some_and(|o| o != pos))
+                        || sa.flank_signals.contains(&rb.start)
+                        || sb.flank_signals.contains(&ra.start)
                 })
                 .filter_map(|(b, _)| RouteId::from_index(b))
                 .collect()
@@ -289,23 +623,130 @@ fn conflicts(net: &Topology, drafts: &[Draft]) -> Vec<Vec<RouteId>> {
         .collect()
 }
 
-/// Erzeugt den Plan für ein Netz: Signalstandorte prüfen, Fahrstraßen erzeugen und benennen,
-/// Feindlichkeiten bestimmen.
+/// Ergänzt einen Fahrweg um Geschwindigkeit, Durchrutschweg, Flankenschutz und Bahnübergänge.
+fn complete(
+    net: &Topology,
+    cfg: PlanningConfig,
+    d: &mut Draft,
+    name: &str,
+    errors: &mut Vec<PlanningError>,
+) {
+    // Geschwindigkeit: kleinste Geschwindigkeit der abzweigend befahrenen Weichen.
+    d.speed = d
+        .points
+        .iter()
+        .filter_map(|(p, pos)| {
+            net.point(*p)
+                .filter(|x| x.diverging == Some(*pos))
+                .map(|x| x.diverging_speed)
+        })
+        .min();
+
+    let mut overlap_tracks = Vec::new();
+    if let RouteEnd::Signal(end) = d.end {
+        match overlap(net, end, cfg.overlap_length) {
+            Ok((tvds, points, tracks)) => {
+                if let Some(t) = tvds.iter().find(|t| d.tvds.contains(t)) {
+                    errors.push(PlanningError::RepeatedTvd {
+                        route: name.into(),
+                        tvd: net.tvd(*t).map(|x| x.name.clone()).unwrap_or_default(),
+                    });
+                }
+                d.overlap_tvds = tvds;
+                d.overlap_points = points;
+                overlap_tracks = tracks;
+            }
+            Err(reason) => errors.push(PlanningError::Inconsistent(format!(
+                "Durchrutschweg von „{name}“: {reason}"
+            ))),
+        }
+    }
+
+    // Flankenschutz für alle Weichen in Fahrweg und Durchrutschweg.
+    let route_points: Vec<PointId> = d
+        .points
+        .iter()
+        .chain(&d.overlap_points)
+        .map(|(p, _)| *p)
+        .collect();
+    for (p, pos) in d.points.clone().into_iter().chain(d.overlap_points.clone()) {
+        let Some(protects) = net.tvd_of(TvdMember::Point(p)) else {
+            continue;
+        };
+        match flank_for(net, p, pos) {
+            Ok(protections) => {
+                for protection in protections {
+                    let duplicate = d.flank.iter().any(|f| f.protection == protection);
+                    let own_point =
+                        matches!(protection, Protection::Point(q, _) if route_points.contains(&q));
+                    let own_start = protection == Protection::Signal(d.start);
+                    if own_point || own_start {
+                        errors.push(PlanningError::UnprotectedFlank {
+                            route: name.into(),
+                            point: point_name(net, p),
+                            reason: "Schutzelement gehört zur Fahrstraße selbst".into(),
+                        });
+                    } else if !duplicate {
+                        d.flank.push(Flank {
+                            protection,
+                            protects,
+                        });
+                    }
+                }
+            }
+            Err(reason) => errors.push(PlanningError::UnprotectedFlank {
+                route: name.into(),
+                point: point_name(net, p),
+                reason,
+            }),
+        }
+    }
+
+    // Bahnübergänge: alle im Fahrweg, im Durchrutschweg nur innerhalb seiner Länge.
+    for t in &d.tracks {
+        for (lx, _) in net.level_crossings_on(*t) {
+            if !d.level_crossings.contains(&lx) {
+                d.level_crossings.push(lx);
+            }
+        }
+    }
+    for (t, offset, dir) in overlap_tracks {
+        let Some(track) = net.track(t) else { continue };
+        for (lx, l) in net.level_crossings_on(t) {
+            let along = match dir {
+                Direction::AToB => l.position.as_mm(),
+                Direction::BToA => track.length.as_mm().saturating_sub(l.position.as_mm()),
+            };
+            if u64::from(offset) + u64::from(along) <= u64::from(cfg.overlap_length.as_mm())
+                && !d.level_crossings.contains(&lx)
+            {
+                d.level_crossings.push(lx);
+            }
+        }
+    }
+}
+
+/// Erzeugt den Plan für ein Netz.
 ///
 /// # Errors
 /// [`PlanningReport`] mit allen gefundenen Fehlern.
-pub fn generate(net: &Topology) -> Result<Plan, PlanningReport> {
+pub fn generate_with(net: &Topology, cfg: &PlanningConfig) -> Result<Plan, PlanningReport> {
     let mut errors = Vec::new();
     let ends = check_signals(net, &mut errors);
+    let announces = announced_signals(net, &mut errors);
     if !errors.is_empty() {
         return Err(PlanningReport { errors });
     }
 
     let mut drafts = Vec::new();
     for (id, s) in net.signals() {
-        if delimits_routes(s.kind) {
+        if s.kind.delimits_routes() {
             explore(net, id, &ends, &mut drafts, &mut errors);
         }
+    }
+    let names = route_names(net, &drafts);
+    for (d, name) in drafts.iter_mut().zip(&names) {
+        complete(net, *cfg, d, name, &mut errors);
     }
 
     let mut points = Vec::new();
@@ -321,24 +762,51 @@ pub fn generate(net: &Topology) -> Result<Plan, PlanningReport> {
             ))),
         }
     }
+    let mut level_crossings = Vec::new();
+    for (_, l) in net.level_crossings() {
+        match net.tvd_of(TvdMember::Track(l.track)) {
+            Some(tvd) => level_crossings.push(LxDef {
+                name: l.name.clone(),
+                tvd,
+            }),
+            None => errors.push(PlanningError::Inconsistent(format!(
+                "Bahnübergang „{}“ ohne Abschnitt",
+                l.name
+            ))),
+        }
+    }
     if !errors.is_empty() {
         return Err(PlanningReport { errors });
     }
 
-    let names = route_names(net, &drafts);
-    let conflicts = conflicts(net, &drafts);
-    let routes = drafts
+    let mut routes: Vec<RouteDef> = drafts
         .into_iter()
         .zip(names)
-        .zip(conflicts)
-        .map(|((d, name), conflicts)| RouteDef {
+        .map(|(d, name)| RouteDef {
             name,
             start: d.start,
             end: d.end,
+            speed: d.speed,
             points: d.points,
             tvds: d.tvds,
-            conflicts,
+            overlap_tvds: d.overlap_tvds,
+            overlap_points: d.overlap_points,
+            flank: d.flank,
+            level_crossings: d.level_crossings,
+            conflicts: Vec::new(),
         })
+        .collect();
+    let conflicts = conflicts(net, &routes);
+    for (r, c) in routes.iter_mut().zip(conflicts) {
+        r.conflicts = c;
+    }
+
+    // Einfahrabschnitte: Abschnitte mit einem Gleis an einer Netzgrenze.
+    let entry_tvds: Vec<TvdId> = net
+        .terminals()
+        .filter(|(_, t)| t.kind == TerminalKind::Boundary)
+        .filter_map(|(id, _)| net.linked(PortRef::new(NodeRef::Terminal(id), Port::End)))
+        .filter_map(|p| member_tvd(net, p.node))
         .collect();
 
     Ok(Plan {
@@ -346,16 +814,29 @@ pub fn generate(net: &Topology) -> Result<Plan, PlanningReport> {
         points,
         signals: net
             .signals()
-            .map(|(_, s)| SignalDef {
+            .map(|(id, s)| SignalDef {
                 name: s.name.clone(),
+                kind: s.kind,
+                system: s.system,
+                announces: announces.get(&id).copied(),
             })
             .collect(),
         tvds: net
             .tvds()
-            .map(|(_, t)| TvdDef {
+            .map(|(id, t)| TvdDef {
                 name: t.name.clone(),
+                entry: entry_tvds.contains(&id),
             })
             .collect(),
+        level_crossings,
         routes,
     })
+}
+
+/// Erzeugt den Plan mit der Standardkonfiguration.
+///
+/// # Errors
+/// Wie [`generate_with`].
+pub fn generate(net: &Topology) -> Result<Plan, PlanningReport> {
+    generate_with(net, &PlanningConfig::default())
 }
