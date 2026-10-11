@@ -1,0 +1,23 @@
+[package]
+name = "railit-topology"
+description = "Infrastrukturmodell von rail-it: Gleise, Weichen, Netzenden, Signale, Gleisfreimeldeabschnitte; Validierung und Navigation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+railit-types = { workspace = true }
+serde = { workspace = true, optional = true, features = ["alloc"] }
+
+[features]
+serde = ["dep:serde", "railit-types/serde"]
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,22 @@
+[package]
+name = "railit-types"
+description = "Grundtypen von rail-it: typsichere IDs, Einheiten, Zeit und Bitsets (no_std, ohne alloc)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { workspace = true, optional = true }
+
+[features]
+serde = ["dep:serde"]
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+proptest = { workspace = true }

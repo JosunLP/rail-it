@@ -1,0 +1,26 @@
+[package]
+name = "railit"
+description = "Kommandozeile von rail-it: Netze prüfen und beschreiben; später Client des Dienstes railitd."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "railit"
+path = "src/main.rs"
+
+[dependencies]
+railit-import = { workspace = true }
+railit-topology = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

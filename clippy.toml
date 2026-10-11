@@ -1,0 +1,9 @@
+# Tests dürfen unwrap/expect/panic/Indexierung verwenden; Produktionscode der
+# sicherheitsrelevanten Crates nicht (siehe `#![deny(...)]` in deren lib.rs).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+
+# Fachbegriffe, die in Doku-Kommentaren nicht als Code markiert werden müssen.
+doc-valid-idents = ["railML", "PlanPro", "RailTopoModel", "EULYNX", "RaSTA", "ETCS", ".."]
