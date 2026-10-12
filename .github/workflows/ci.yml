@@ -33,7 +33,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   properties:
-    name: Eigenschaftstests des Kerns
+    name: Eigenschaftstests (Kern, RaSTA)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,6 +44,10 @@ jobs:
         run: >
           cargo test --release --locked -p railit-kernel --all-features
           --test invariants --test borders
+        env:
+          PROPTEST_CASES: "5000"
+      - name: RaSTA unter Verlust, Verdopplung und Vertauschung (5000 Fälle)
+        run: cargo test --release --locked -p railit-rasta --test rasta
         env:
           PROPTEST_CASES: "5000"
 
@@ -59,7 +63,7 @@ jobs:
         run: >
           cargo build --locked --target thumbv7em-none-eabihf
           -p railit-types -p railit-topology -p railit-plan -p railit-rules -p railit-kernel
-          -p railit-movement
+          -p railit-movement -p railit-rasta
 
   deny:
     name: Lizenzen & Advisories

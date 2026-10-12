@@ -19,11 +19,12 @@ mod runtime;
 pub mod scenario;
 
 pub use directory::Directory;
-pub use field::FieldAdapter;
+pub use field::{DynField, FieldAdapter, SimulatedField};
 pub use names::{
     AreaSnapshot, AuxKind, AuxSnapshot, BorderSnapshot, LxSnapshot, NamedAux, NamedEvent,
     PointSnapshot, RouteSnapshot, SignalSnapshot, Snapshot, TvdSnapshot,
 };
+pub use railit_adapters;
 pub use railit_etcs;
 pub use railit_ops;
 pub use runtime::{Addressed, AreaEvent, CycleOutput, OPS_REQUEST_BASE, Runtime};
@@ -62,10 +63,24 @@ pub fn simulation(
     sim: railit_sim::SimConfig,
     cycle: railit_types::Duration,
 ) -> Result<Runtime<railit_sim::Simulator>, String> {
+    simulation_with(net, rules, sim, cycle, Ok)
+}
+
+/// Wie [`simulation`], das Feld um den Simulator legt `field` (z. B. EULYNX über RaSTA).
+///
+/// # Errors
+/// Beschreibung, wenn die Projektierung oder der Aufbau des Felds fehlschlägt.
+pub fn simulation_with<F: FieldAdapter>(
+    net: Topology,
+    rules: railit_rules::GenericRules,
+    sim: railit_sim::SimConfig,
+    cycle: railit_types::Duration,
+    field: impl FnOnce(railit_sim::Simulator) -> Result<F, String>,
+) -> Result<Runtime<F>, String> {
     if net.areas().len() == 0 {
         let compiled = railit_planning::compile(&net, None).map_err(|e| e.to_string())?;
         let plan = load_plan(compiled.image, None).map_err(|e| e.to_string())?;
-        let field = railit_sim::Simulator::new(net, sim);
+        let field = field(railit_sim::Simulator::new(net, sim))?;
         return Ok(Runtime::new(plan, rules, field, cycle));
     }
     let compiled =
@@ -76,7 +91,7 @@ pub fn simulation(
         let plan = load_plan(a.compiled.image, None).map_err(|e| e.to_string())?;
         areas.push((plan, a.cut));
     }
-    let field = railit_sim::Simulator::new(net.clone(), sim);
+    let field = field(railit_sim::Simulator::new(net.clone(), sim))?;
     Runtime::for_network(&net, areas, rules, field, cycle)
 }
 

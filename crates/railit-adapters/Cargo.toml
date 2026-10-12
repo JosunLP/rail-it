@@ -1,0 +1,21 @@
+[package]
+name = "railit-adapters"
+description = "Feldanbindung von rail-it: EULYNX-SCI-Telegramme über RaSTA zu Objektsteuerungen (hier vor dem Simulator), mit Störungseinspeisung auf der Übertragungsstrecke."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+railit-types = { workspace = true, features = ["serde"] }
+railit-topology = { workspace = true }
+railit-kernel = { workspace = true, features = ["alloc", "serde"] }
+railit-sim = { workspace = true }
+railit-rasta = { workspace = true }
+serde = { workspace = true, features = ["std"] }
+
+[lints]
+workspace = true

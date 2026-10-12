@@ -33,7 +33,9 @@ use auth::{AuthMode, Users};
 use clap::Parser;
 use railit_plan::{PlanView, VerifyingKey};
 use railit_rules::GenericRules;
+use railit_runtime::DynField;
 use railit_runtime::keys::{read_verifying_key, to_hex};
+use railit_runtime::railit_adapters::EulynxField;
 use railit_runtime::railit_ops::{OpsConfig, Timetable};
 use railit_runtime::{Runtime, check_correspondence, load_plan};
 use railit_sim::{SimConfig, Simulator};
@@ -81,6 +83,9 @@ struct Args {
     /// Abstand der Zustands-Prüfpunkte im Journal (Zyklen).
     #[arg(long, default_value_t = 600)]
     checkpoint_every: u64,
+    /// Anbindung der (simulierten) Feldebene: direkt oder über EULYNX SCI und RaSTA.
+    #[arg(long, value_enum, default_value_t = FieldArg::Direct)]
+    field: FieldArg,
     /// Fahrplan (TOML, siehe `railit_ops`); setzt Züge nach Plan ein.
     #[arg(long)]
     timetable: Option<PathBuf>,
@@ -112,6 +117,15 @@ struct Args {
     tls_client_ca: Option<PathBuf>,
 }
 
+/// Anbindung der Feldebene.
+#[derive(Copy, Clone, Debug, clap::ValueEnum)]
+enum FieldArg {
+    /// Simulator direkt am Kern.
+    Direct,
+    /// Objektsteuerungen über EULYNX SCI und RaSTA vor dem Simulator.
+    Eulynx,
+}
+
 fn fail(msg: &str) -> ExitCode {
     eprintln!("railitd: {msg}");
     ExitCode::from(2)
@@ -137,7 +151,7 @@ fn read_plan(path: &Path, key: Option<&VerifyingKey>) -> Result<PlanView<'static
 ///
 /// Hat das Netz Stellbereiche, ist `--plan` ein Verzeichnis mit `<Bereich>.rplan` je
 /// Stellbereich (`railit plan compile --out <Verzeichnis>`).
-fn load(args: &Args) -> Result<(Topology, Runtime<Simulator>), String> {
+fn load(args: &Args) -> Result<(Topology, Runtime<DynField>), String> {
     let source = std::fs::read_to_string(&args.network)
         .map_err(|e| format!("{}: {e}", args.network.display()))?;
     let net = railit_import::toml_format::parse(&source)
@@ -156,6 +170,10 @@ fn load(args: &Args) -> Result<(Topology, Runtime<Simulator>), String> {
     }
     let cycle = railit_types::Duration::from_millis(args.cycle_ms.max(1));
     let sim = Simulator::new(net.clone(), SimConfig::default());
+    let sim: DynField = match args.field {
+        FieldArg::Direct => Box::new(sim),
+        FieldArg::Eulynx => Box::new(EulynxField::new(sim)?),
+    };
     let rt = if net.areas().len() == 0 {
         let plan = read_plan(&args.plan, key.as_ref())?;
         check_correspondence(&plan, &net).map_err(|e| format!("Plan passt nicht zum Netz: {e}"))?;
@@ -200,7 +218,7 @@ fn load(args: &Args) -> Result<(Topology, Runtime<Simulator>), String> {
 
 /// Startet die Journale: eine Datei bei einem Stellbereich, sonst ein Verzeichnis mit
 /// `<Bereich>.journal` je Stellbereich.
-fn start_journals(rt: &mut Runtime<Simulator>, path: &Path, every: u64) -> Result<(), String> {
+fn start_journals(rt: &mut Runtime<DynField>, path: &Path, every: u64) -> Result<(), String> {
     let files: Vec<(usize, PathBuf)> = if rt.area_count() == 1 {
         vec![(0, path.to_path_buf())]
     } else {
@@ -229,7 +247,7 @@ fn start_journals(rt: &mut Runtime<Simulator>, path: &Path, every: u64) -> Resul
 async fn serve(
     args: Args,
     net: Topology,
-    rt: Runtime<Simulator>,
+    rt: Runtime<DynField>,
     security: Security,
 ) -> Result<(), String> {
     let period = std::time::Duration::from_micros(

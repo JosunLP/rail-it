@@ -22,6 +22,7 @@ railit-sim = { workspace = true }
 railit-journal = { workspace = true }
 railit-ops = { workspace = true }
 railit-etcs = { workspace = true }
+railit-adapters = { workspace = true }
 serde = { workspace = true, features = ["std"] }
 toml = { workspace = true }
 getrandom = { workspace = true }

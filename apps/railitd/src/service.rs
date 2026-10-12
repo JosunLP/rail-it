@@ -23,6 +23,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::auth::{Permission, Principal};
 use crate::engine::{Answer, EngineMsg, OpsCommand, SimCommand, SimReply};
+use railit_runtime::railit_adapters::{LinkFaults, LinkStatus};
 
 /// Fehler einer Operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -386,7 +387,7 @@ impl Service {
     async fn sim_done(&self, command: SimCommand) -> Res<()> {
         match self.sim(command).await? {
             SimReply::Error(e) => Err(ServiceError::BadRequest(e)),
-            SimReply::Done | SimReply::Trains(_) => Ok(()),
+            SimReply::Done | SimReply::Trains(_) | SimReply::Links(_) => Ok(()),
         }
     }
 
@@ -394,7 +395,7 @@ impl Service {
         match self.sim(SimCommand::Trains).await? {
             SimReply::Trains(t) => Ok(t),
             SimReply::Error(e) => Err(ServiceError::BadRequest(e)),
-            SimReply::Done => Ok(Vec::new()),
+            SimReply::Done | SimReply::Links(_) => Ok(Vec::new()),
         }
     }
 
@@ -430,6 +431,34 @@ impl Service {
             who,
             Permission::Simulate,
             "remove_train",
+            &target,
+            self.sim_done(command),
+        )
+        .await
+    }
+
+    /// Zustand der Übertragungsstrecken zu den Objektsteuerungen (EULYNX/RaSTA).
+    pub(crate) async fn links(&self) -> Res<Vec<LinkStatus>> {
+        match self.sim(SimCommand::Links).await? {
+            SimReply::Links(l) => Ok(l),
+            SimReply::Error(e) => Err(ServiceError::BadRequest(e)),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    /// Störungen einer Übertragungsstrecke setzen (Simulation, Prüfstand).
+    pub(crate) async fn link_faults(
+        &self,
+        who: &Principal,
+        controller: String,
+        faults: LinkFaults,
+    ) -> Res<()> {
+        let target = format!("{controller} {faults:?}");
+        let command = SimCommand::Link(controller, faults);
+        self.act(
+            who,
+            Permission::Simulate,
+            "link_faults",
             &target,
             self.sim_done(command),
         )

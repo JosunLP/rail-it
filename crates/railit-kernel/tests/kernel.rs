@@ -446,3 +446,24 @@ fn kernel_is_deterministic() {
     };
     assert_eq!(run(), run());
 }
+
+/// REQ-IXL-005: Ohne aktuelle Meldung ist das Signal nicht überwacht und fällt auf Halt.
+#[test]
+fn unsupervised_signal_falls_to_stop() {
+    let mut h = Harness::new();
+    h.step(&[]);
+    assert!(accepted(&h.set_route("A-N1")));
+    h.run(10);
+    assert_eq!(h.phase("A-N1"), RoutePhase::Proceed);
+    let a = h.signal("A");
+    h.silent_signals.push(a);
+    h.step_after(1_000, &[]);
+    assert_eq!(h.aspect("A"), Aspect::Proceed, "innerhalb der Meldefrist");
+    h.step_after(1_500, &[]);
+    assert_eq!(h.aspect("A"), Aspect::Stop);
+    assert_ne!(h.phase("A-N1"), RoutePhase::Proceed);
+    // Mit wiederkehrender Meldung ist das Signal nicht von selbst wieder auf Fahrt.
+    h.silent_signals.clear();
+    h.run(5);
+    assert_ne!(h.phase("A-N1"), RoutePhase::Proceed);
+}

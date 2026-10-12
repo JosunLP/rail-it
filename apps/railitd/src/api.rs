@@ -28,6 +28,8 @@
 //! | DELETE | `/v1/sim/trains/{name}` | Zug entfernen |
 //! | POST | `/v1/sim/faults` | Störung setzen/aufheben |
 //!
+//! | GET | `/v1/field/links` | Übertragungsstrecken zu den Objektsteuerungen (EULYNX/RaSTA) |
+//! | POST | `/v1/field/links/{oc}` | Strecke stören (`{"down":true,"loss_percent":20,…}`) |
 //! | GET | `/v1/etcs` | ETCS: angemeldete Züge mit Betriebsart und Fahrerlaubnis |
 //! | GET | `/v1/whoami` | Angemeldeter Benutzer mit Rollen |
 //! | GET | `/v1/audit` | Auditprotokoll prüfen, letzte Einträge (`?last=50`) |
@@ -125,6 +127,8 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/v1/sim/trains/{name}", delete(remove_train))
         .route("/v1/sim/faults", post(fault))
         .route("/v1/etcs", get(etcs))
+        .route("/v1/field/links", get(links))
+        .route("/v1/field/links/{controller}", post(link_faults))
         .route("/v1/whoami", get(whoami))
         .route("/v1/audit", get(audit))
         .with_state(state.clone())
@@ -514,6 +518,20 @@ async fn fault(
 
 async fn etcs(State(state): State<AppState>) -> Json<Value> {
     Json(json!(state.service.snapshot().etcs))
+}
+
+async fn links(State(state): State<AppState>) -> ApiResult {
+    Ok(Json(state.service.links().await?).into_response())
+}
+
+async fn link_faults(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Path(controller): Path<String>,
+    Json(faults): Json<railit_runtime::railit_adapters::LinkFaults>,
+) -> ApiResult {
+    state.service.link_faults(&who, controller, faults).await?;
+    Ok(done())
 }
 
 async fn whoami(Extension(who): Extension<Principal>) -> Json<Principal> {

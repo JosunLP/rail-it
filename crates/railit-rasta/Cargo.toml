@@ -1,0 +1,16 @@
+[package]
+name = "railit-rasta"
+description = "Sichere Übertragung für rail-it: RaSTA-Sicherheits- und Wiederholschicht (DIN VDE V 0831-200) mit MD4-Sicherheitscode, ohne std und ohne Allokation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

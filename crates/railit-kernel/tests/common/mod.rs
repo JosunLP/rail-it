@@ -48,6 +48,8 @@ pub struct Harness {
     pub silent_tvds: Vec<TvdId>,
     /// Signale, die Befehle ignorieren.
     pub stuck_signals: Vec<SignalId>,
+    /// Signale, die nicht mehr melden.
+    pub silent_signals: Vec<SignalId>,
     pub out: VecOutputs,
     pub last: Result<(), SafeStateReason>,
     next_request: u64,
@@ -75,6 +77,7 @@ impl Harness {
             stuck_points: Vec::new(),
             silent_tvds: Vec::new(),
             stuck_signals: Vec::new(),
+            silent_signals: Vec::new(),
             out: VecOutputs::default(),
             last: Ok(()),
             next_request: 0,
@@ -167,10 +170,10 @@ impl Harness {
             }
         }
         for (i, r) in self.signals.iter().enumerate() {
-            inputs.push(Input::Signal {
-                signal: SignalId::from_index(i).unwrap(),
-                report: *r,
-            });
+            let signal = SignalId::from_index(i).unwrap();
+            if !self.silent_signals.contains(&signal) {
+                inputs.push(Input::Signal { signal, report: *r });
+            }
         }
         for (i, r) in self.lxs.iter().enumerate() {
             inputs.push(Input::LevelCrossing {

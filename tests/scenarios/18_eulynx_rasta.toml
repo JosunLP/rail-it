@@ -1,0 +1,75 @@
+[scenario]
+name = "EULYNX über RaSTA: Betrieb, gestörte Übertragung, Verbindungsausfall"
+description = """
+Alle Stellbefehle und Meldungen laufen als EULYNX-SCI-Telegramme über RaSTA zu
+Objektsteuerungen vor dem Simulator. Verlust und Verfälschung auf der Strecke gleicht RaSTA aus
+(Sicherheitscode, Wiederholung). Fällt die Verbindung zur Objektsteuerung der Weichen aus,
+fehlen ihre Meldungen: Der Kern behandelt die Weichen als gestört und nimmt die Fahrt zurück.
+Nach dem Wiederaufbau ist alles wieder bedienbar.
+"""
+network = "../../examples/beispielstadt.toml"
+field = "eulynx"
+
+[[step]]
+note = "Verbindungen stehen nach dem Anlauf"
+until = { link_up = { "OC-Weichen" = true, "OC-Signale" = true, "OC-Gleisfrei" = true, "OC-BUe" = true } }
+timeout_s = 5
+
+[[step]]
+note = "Gestörte Strecke: 20 % Verlust, 5 % Verfälschung"
+link = { controller = "OC-Weichen", loss_percent = 20, corrupt_percent = 5 }
+wait_s = 0.1
+
+[[step]]
+link = { controller = "OC-Signale", loss_percent = 20, corrupt_percent = 5 }
+add_train = { name = "RE1", signal = "A", length_m = 120, speed_kmh = 60 }
+set_route = "A-N1"
+until = { route = { "A-N1" = "proceed" } }
+timeout_s = 30
+expect = { point = { W1 = "left" }, no_alarm = ["signal_mismatch"] }
+
+[[step]]
+note = "Der Zug fährt nach Signalbegriffen über EULYNX ein"
+until = { train = { RE1 = "waiting" }, tvd = { T1 = "occupied" } }
+timeout_s = 120
+expect = { no_alarm = ["unauthorized_occupancy", "signal_passed_at_danger"] }
+
+[[step]]
+note = "Strecken wieder ungestört, Einfahrt von Osten nach Gleis 2"
+link = { controller = "OC-Signale" }
+wait_s = 0.1
+
+[[step]]
+link = { controller = "OC-Weichen" }
+set_route = "F-P2"
+until = { route = { "F-P2" = "proceed" } }
+timeout_s = 20
+
+[[step]]
+note = "Verbindung zur Objektsteuerung der Weichen fällt aus: Fahrt wird zurückgenommen"
+link = { controller = "OC-Weichen", down = true }
+until = { link_up = { "OC-Weichen" = false }, signal = { F = "stop" } }
+timeout_s = 10
+expect = { alarm = ["signal_dropped"] }
+
+[[step]]
+note = "Ohne Meldungen der Weichen lässt sich keine Fahrstraße über sie einstellen"
+cancel_route = "F-P2"
+wait_s = 65
+
+[[step]]
+set_route = "F-P2"
+wait_s = 15
+expect = { alarm = ["setting_timeout"], route = { "F-P2" = "idle" } }
+
+[[step]]
+note = "Wiederaufbau der Verbindung: alles wieder bedienbar"
+link = { controller = "OC-Weichen" }
+until = { link_up = { "OC-Weichen" = true } }
+timeout_s = 10
+
+[[step]]
+set_route = "F-P2"
+until = { route = { "F-P2" = "proceed" } }
+timeout_s = 20
+expect = { safe_state = false }

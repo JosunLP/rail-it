@@ -1432,6 +1432,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "railit-adapters"
+version = "0.1.0"
+dependencies = [
+ "railit-kernel",
+ "railit-rasta",
+ "railit-sim",
+ "railit-topology",
+ "railit-types",
+ "serde",
+]
+
+[[package]]
 name = "railit-etcs"
 version = "0.1.0"
 dependencies = [
@@ -1532,6 +1544,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "railit-rasta"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "railit-rules"
 version = "0.1.0"
 dependencies = [
@@ -1543,6 +1562,7 @@ name = "railit-runtime"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
+ "railit-adapters",
  "railit-etcs",
  "railit-import",
  "railit-journal",

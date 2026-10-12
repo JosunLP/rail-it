@@ -12,6 +12,8 @@ members = [
     "crates/railit-sim",
     "crates/railit-ops",
     "crates/railit-etcs",
+    "crates/railit-rasta",
+    "crates/railit-adapters",
     "crates/railit-runtime",
     "crates/railit-import",
     "apps/railit",
@@ -40,6 +42,8 @@ railit-sim = { path = "crates/railit-sim" }
 railit-journal = { path = "crates/railit-journal" }
 railit-ops = { path = "crates/railit-ops" }
 railit-etcs = { path = "crates/railit-etcs" }
+railit-rasta = { path = "crates/railit-rasta" }
+railit-adapters = { path = "crates/railit-adapters" }
 railit-runtime = { path = "crates/railit-runtime" }
 
 serde = { version = "1", default-features = false, features = ["derive"] }

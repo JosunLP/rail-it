@@ -528,3 +528,52 @@ fn etcs_train_over_api() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+/// REQ-COM-006: Dienst mit Feldanbindung über EULYNX und RaSTA; Ausfall einer Strecke.
+#[test]
+fn field_over_eulynx_and_rasta() {
+    let (plan, public) = prepare("eulynx", true);
+    let d = start(&[
+        "--plan",
+        plan.to_str().unwrap(),
+        "--trusted-key",
+        public.to_str().unwrap(),
+        "--field",
+        "eulynx",
+    ]);
+    let links_up = |d: &Daemon| {
+        let (_, links) = get(d, "/v1/field/links", true);
+        links
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| {
+                (
+                    l["controller"].as_str().unwrap().to_string(),
+                    l["up"] == true,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !links_up(&d).iter().all(|(_, up)| *up) {
+        assert!(Instant::now() < deadline, "Verbindungen stehen nicht");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(links_up(&d).len(), 4);
+    assert_eq!(post(&d, "/v1/routes/A-N1/set", None).0, 200);
+    wait_for(&d, "A-N1", "proceed");
+
+    let down = json!({"down": true});
+    assert_eq!(post(&d, "/v1/field/links/OC-Signale", Some(down)).0, 200);
+    assert_eq!(
+        post(&d, "/v1/field/links/OC-Gibtsnicht", Some(json!({}))).0,
+        400
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while route_phase(&d, "A-N1") == "proceed" {
+        assert!(Instant::now() < deadline, "Signal fällt nicht auf Halt");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(links_up(&d).contains(&("OC-Signale".to_string(), false)));
+}

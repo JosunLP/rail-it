@@ -99,6 +99,18 @@ pub(crate) fn effective_position(
     }
 }
 
+/// Wird das Signal überwacht: aktuelle Meldung, die keinen Defekt anzeigt? Ohne Überwachung
+/// (Meldung fehlt oder veraltet, z. B. Ausfall der Verbindung zur Objektsteuerung) bleibt
+/// das Signal in Halt (REQ-IXL-005).
+pub(crate) fn signal_supervised(
+    s: &SignalState,
+    now: Tick,
+    timeout: railit_types::Duration,
+) -> bool {
+    matches!(s.report, Some(SignalReport::Stop | SignalReport::Proceed))
+        && fresh(s.reported_at, now, timeout)
+}
+
 /// Ist der Bahnübergang aktuell als geschlossen gemeldet?
 pub(crate) fn lx_closed(l: &LxState, now: Tick, timeout: railit_types::Duration) -> bool {
     l.report == Some(LxReport::Closed) && fresh(l.reported_at, now, timeout)
@@ -820,7 +832,11 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
         {
             return Ok(false);
         }
-        Ok(signal(st, view.start())?.report != Some(SignalReport::Defective))
+        Ok(signal_supervised(
+            &signal(st, view.start())?,
+            now,
+            self.rules.report_timeout(),
+        ))
     }
 
     /// Bedingungen für das Ersatzsignal: wie Fahrt, aber ohne Gleisfreimeldung und

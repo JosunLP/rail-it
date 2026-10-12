@@ -45,7 +45,13 @@
 //! `at_stop` (Zugnummer → `"Betriebsstelle/Gleis"`), `ops_event` (Liste der Ereignisarten
 //! der Betriebsführung), `etcs` (Zug → Betriebsart des Fahrzeuggeräts: `stand_by`,
 //! `full_supervision`, `trip`), `etcs_end` (Zug → Ende der Fahrerlaubnis, z. B. Signalname
-//! oder `"Netzgrenze"`), `etcs_event` (Liste der Ereignisarten des RBC).
+//! oder `"Netzgrenze"`), `etcs_event` (Liste der Ereignisarten des RBC), `link_up`
+//! (Objektsteuerung → Verbindung steht).
+//!
+//! Feldanbindung: `[scenario] field = "eulynx"` führt alle Stellbefehle und Meldungen über
+//! EULYNX SCI und RaSTA zu Objektsteuerungen vor dem Simulator. Die Aktion
+//! `link = { controller = "OC-Weichen", down = true, loss_percent, corrupt_percent, delay_ms }`
+//! stört die Übertragungsstrecke.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -55,13 +61,15 @@ use railit_kernel::{
     Aspect, AuxId, LxReport, Occupancy, OperatorId, PointReport, Request, RequestId, RoutePhase,
 };
 use railit_rules::GenericRules;
-use railit_sim::{Fault, SimConfig, SimEvent, Simulator, TrainSpec, TrainState};
+use railit_sim::{Fault, SimConfig, SimEvent, TrainSpec, TrainState};
 use railit_topology::ElementRef;
 use railit_types::{Duration, Length, PointPosition, Speed};
 use serde::Deserialize;
 
+use railit_adapters::{EulynxField, LinkFaults};
 use railit_ops::{OpsConfig, OpsEvent, Timetable};
 
+use crate::field::SimulatedField;
 use crate::names::{NamedAux, NamedEvent};
 use crate::runtime::{Addressed, Runtime};
 
@@ -92,6 +100,8 @@ struct Header {
     rules: RulesEntry,
     #[serde(default)]
     timetable: Option<PathBuf>,
+    #[serde(default)]
+    field: FieldKind,
     #[serde(default)]
     ars: bool,
     #[serde(default)]
@@ -179,6 +189,8 @@ struct Step {
     #[serde(default)]
     set_ars: Option<bool>,
     #[serde(default)]
+    link: Option<LinkEntry>,
+    #[serde(default)]
     wait_s: Option<f64>,
     #[serde(default)]
     until: Option<Conditions>,
@@ -186,6 +198,25 @@ struct Step {
     timeout_s: f64,
     #[serde(default)]
     expect: Option<Conditions>,
+}
+
+/// Anbindung der Feldebene im Szenario.
+#[derive(Copy, Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FieldKind {
+    /// Simulator direkt am Kern.
+    #[default]
+    Direct,
+    /// Über EULYNX SCI und RaSTA mit Objektsteuerungen vor dem Simulator.
+    Eulynx,
+}
+
+// `deny_unknown_fields` verträgt sich nicht mit `flatten`.
+#[derive(Debug, Deserialize)]
+struct LinkEntry {
+    controller: String,
+    #[serde(flatten)]
+    faults: LinkFaults,
 }
 
 #[derive(Debug, Deserialize)]
@@ -308,6 +339,8 @@ struct Conditions {
     etcs_end: BTreeMap<String, String>,
     #[serde(default)]
     etcs_event: Vec<String>,
+    #[serde(default)]
+    link_up: BTreeMap<String, bool>,
 }
 
 /// Szenario konnte nicht ausgeführt werden (im Unterschied zu einem fehlgeschlagenen Schritt).
@@ -423,18 +456,32 @@ pub fn run_str(source: &str, base: &Path) -> Result<Outcome, ScenarioError> {
         cfg.lx_close_time = Duration::from_millis(ms);
     }
     let rules = header.rules.apply(GenericRules::default());
-    let mut rt = crate::simulation(
-        net,
-        rules,
-        cfg,
-        Duration::from_millis(header.cycle_ms.max(1)),
-    )
-    .map_err(ScenarioError::Planning)?;
+    let cycle = Duration::from_millis(header.cycle_ms.max(1));
+    match header.field {
+        FieldKind::Direct => {
+            let rt = crate::simulation(net, rules, cfg, cycle).map_err(ScenarioError::Planning)?;
+            run_with(rt, header, &file.step, base)
+        }
+        FieldKind::Eulynx => {
+            let rt = crate::simulation_with(net, rules, cfg, cycle, EulynxField::new)
+                .map_err(ScenarioError::Planning)?;
+            run_with(rt, header, &file.step, base)
+        }
+    }
+}
+
+/// Führt die Schritte mit einer fertig aufgebauten Runtime aus.
+fn run_with<F: SimulatedField>(
+    mut rt: Runtime<F>,
+    header: Header,
+    steps: &[Step],
+    base: &Path,
+) -> Result<Outcome, ScenarioError> {
     for (name, pos) in &header.points {
-        let Some(ElementRef::Point(id)) = rt.field().topology().lookup(name) else {
+        let Some(ElementRef::Point(id)) = rt.field().simulator().topology().lookup(name) else {
             return Err(ScenarioError::Syntax(format!("unbekannte Weiche „{name}“")));
         };
-        rt.field_mut().set_point_position(id, *pos);
+        rt.field_mut().simulator_mut().set_point_position(id, *pos);
     }
     if header.ops || header.ars || header.timetable.is_some() {
         let timetable = match &header.timetable {
@@ -447,7 +494,7 @@ pub fn run_str(source: &str, base: &Path) -> Result<Outcome, ScenarioError> {
             }
             None => Timetable::default(),
         };
-        let topology = rt.field().topology().clone();
+        let topology = rt.field().simulator().topology().clone();
         let cfg = OpsConfig {
             ars: header.ars,
             ..OpsConfig::default()
@@ -470,21 +517,21 @@ pub fn run_str(source: &str, base: &Path) -> Result<Outcome, ScenarioError> {
     // Erster Zyklus: Grundstellung (alle Signale Halt, Meldungen übernommen).
     ctx.cycle();
 
-    let mut steps = Vec::new();
-    for (i, step) in file.step.iter().enumerate() {
-        steps.push(ctx.run_step(i.saturating_add(1), step));
+    let mut outcomes = Vec::new();
+    for (i, step) in steps.iter().enumerate() {
+        outcomes.push(ctx.run_step(i.saturating_add(1), step));
     }
-    let passed = steps.iter().all(|s| s.passed);
+    let passed = outcomes.iter().all(|s| s.passed);
     Ok(Outcome {
         name: header.name,
         description: header.description,
-        steps,
+        steps: outcomes,
         passed,
     })
 }
 
-struct Ctx {
-    rt: Runtime<Simulator>,
+struct Ctx<F> {
+    rt: Runtime<F>,
     next_request: u64,
     pending: Vec<Addressed>,
     events: Vec<NamedEvent>,
@@ -528,7 +575,7 @@ fn millis(s: f64) -> u64 {
     ms
 }
 
-impl Ctx {
+impl<F: SimulatedField> Ctx<F> {
     fn cycle(&mut self) {
         let out = self.rt.cycle_addressed(&self.pending);
         self.pending.clear();
@@ -539,7 +586,8 @@ impl Ctx {
             }
             self.events.push(named);
         }
-        self.sim_events.extend(self.rt.field_mut().take_events());
+        self.sim_events
+            .extend(self.rt.field_mut().simulator_mut().take_events());
         self.ops_events.extend(out.ops);
         self.etcs_events.extend(out.etcs);
     }
@@ -556,7 +604,7 @@ impl Ctx {
 
     /// Element des Gesamtnetzes (für Simulator und Feldmeldungen).
     fn global(&self, name: &str) -> Option<ElementRef> {
-        self.rt.field().topology().lookup(name)
+        self.rt.field().simulator().topology().lookup(name)
     }
 
     fn run_step(&mut self, index: usize, step: &Step) -> StepOutcome {
@@ -650,8 +698,8 @@ impl Ctx {
                 _ => None,
             };
             match (fault, on) {
-                (Some(f), true) => self.rt.field_mut().inject(f),
-                (Some(f), false) => self.rt.field_mut().clear(f),
+                (Some(f), true) => self.rt.field_mut().simulator_mut().inject(f),
+                (Some(f), false) => self.rt.field_mut().simulator_mut().clear(f),
                 (None, _) => failures.push(format!("unbekanntes Element „{}“", entry.element)),
             }
         }
@@ -668,6 +716,11 @@ impl Ctx {
             }
         }
         failures.extend(self.ops_actions(step));
+        if let Some(l) = &step.link
+            && let Err(e) = self.rt.field_mut().set_link_faults(&l.controller, l.faults)
+        {
+            failures.push(e);
+        }
         if let Some(c) = &step.confirm_aux {
             match self.last_aux {
                 Some((area, aux)) => self.request(
@@ -700,7 +753,7 @@ impl Ctx {
                 ignore_signals: t.ignore_signals,
                 etcs: t.etcs,
             });
-        match spec.map(|s| self.rt.field_mut().add_train(s)) {
+        match spec.map(|s| self.rt.field_mut().simulator_mut().add_train(s)) {
             Some(Ok(())) => {
                 if let Some(ops) = self.rt.ops_mut()
                     && let Err(e) = ops.describe(&t.name, &t.signal)
@@ -828,7 +881,7 @@ impl Ctx {
     fn check_elements(&self, c: &Conditions) -> Vec<String> {
         let mut failures = Vec::new();
         let rt = &self.rt;
-        let sim = rt.field();
+        let sim = rt.field().simulator();
 
         for (name, want) in &c.route {
             let got = rt.find_route(name).and_then(|(a, r)| {
@@ -928,6 +981,18 @@ impl Ctx {
         let mut failures = self.check_elements(c);
         failures.extend(self.check_ops(c));
         failures.extend(self.check_etcs(c));
+        let links = self.rt.field().links();
+        for (controller, want) in &c.link_up {
+            let got = links
+                .iter()
+                .find(|l| &l.controller == controller)
+                .map(|l| l.up);
+            if got != Some(*want) {
+                failures.push(format!(
+                    "Verbindung {controller}: erwartet {want}, ist {got:?}"
+                ));
+            }
+        }
         let states: Vec<&railit_kernel::OwnedState> = (0..self.rt.area_count())
             .filter_map(|a| self.rt.state_of(a))
             .collect();
