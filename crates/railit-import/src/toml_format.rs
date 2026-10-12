@@ -507,7 +507,7 @@ fn resolve_port(b: &TopologyBuilder, spec: &str) -> Result<PortRef, String> {
 
 /// Meter (Dezimalzahl) → [`Length`] in Millimetern; `None` bei negativen, nicht endlichen
 /// oder zu großen Werten.
-fn metres(value: f64) -> Option<Length> {
+pub(crate) fn metres(value: f64) -> Option<Length> {
     if !value.is_finite() || value < 0.0 {
         return None;
     }
@@ -528,7 +528,7 @@ fn invalid_metres(context: String, field: &str, value: f64) -> Diagnostic {
     }
 }
 
-fn model_error(context: String, e: &TopologyError) -> Diagnostic {
+pub(crate) fn model_error(context: String, e: &TopologyError) -> Diagnostic {
     Diagnostic {
         context,
         message: e.to_string(),

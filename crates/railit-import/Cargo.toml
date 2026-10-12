@@ -1,6 +1,6 @@
 [package]
 name = "railit-import"
-description = "Import von Netzbeschreibungen in das rail-it-Netzmodell (rail-it-TOML; später railML 3 und PlanPro)."
+description = "Import von Netzbeschreibungen in das rail-it-Netzmodell (rail-it-TOML, railML 3; später PlanPro)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,7 @@ publish.workspace = true
 railit-topology = { workspace = true }
 serde = { workspace = true, features = ["std"] }
 toml = { workspace = true }
+roxmltree = { workspace = true }
 
 [lints]
 workspace = true

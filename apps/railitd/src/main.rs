@@ -154,7 +154,7 @@ fn read_plan(path: &Path, key: Option<&VerifyingKey>) -> Result<PlanView<'static
 fn load(args: &Args) -> Result<(Topology, Runtime<DynField>), String> {
     let source = std::fs::read_to_string(&args.network)
         .map_err(|e| format!("{}: {e}", args.network.display()))?;
-    let net = railit_import::toml_format::parse(&source)
+    let net = railit_import::parse(&args.network.to_string_lossy(), &source)
         .map_err(|e| format!("Netz ungültig:\n{e}"))?
         .topology;
 

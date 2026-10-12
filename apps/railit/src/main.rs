@@ -248,13 +248,21 @@ enum AuthCommand {
 enum NetCommand {
     /// Prüft eine Netzbeschreibung vollständig und meldet alle Fehler.
     Validate {
-        /// Netzbeschreibung im rail-it-TOML-Format.
+        /// Netzbeschreibung: rail-it-TOML oder railML 3 (`.xml`, `.railml`).
         file: PathBuf,
     },
     /// Beschreibt ein gültiges Netz: Elemente, Signale, Gleisfreimeldeabschnitte.
     Info {
-        /// Netzbeschreibung im rail-it-TOML-Format.
+        /// Netzbeschreibung: rail-it-TOML oder railML 3 (`.xml`, `.railml`).
         file: PathBuf,
+    },
+    /// Schreibt ein gültiges Netz als railML 3.
+    Export {
+        /// Netzbeschreibung: rail-it-TOML oder railML 3.
+        file: PathBuf,
+        /// Zieldatei; ohne Angabe Standardausgabe.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -510,6 +518,7 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Net(NetCommand::Validate { file }) => net::validate(&file, output),
         Command::Net(NetCommand::Info { file }) => net::info(&file, output),
+        Command::Net(NetCommand::Export { file, out }) => net::export(&file, out.as_deref()),
         Command::Plan(PlanCommand::Keygen { prefix }) => plan::keygen(&prefix, output),
         Command::Plan(PlanCommand::Compile { network, out, key }) => {
             plan::compile(&network, &out, key.as_deref(), output)

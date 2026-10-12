@@ -658,3 +658,25 @@ fn route_and_overlap_lengths() {
         (1_500_000, 1_500_000)
     );
 }
+
+/// railML 3: Ein über railML ausgetauschtes Netz ergibt bitgleiche Plan-Images.
+#[test]
+fn railml_roundtrip_yields_identical_plans() {
+    for source in [EXAMPLE, NORDBAHN] {
+        let original = railit_import::toml_format::parse(source).unwrap().topology;
+        let xml = railit_import::railml::export(&original).unwrap();
+        let back = railit_import::railml::parse(&xml).unwrap().topology;
+        let cfg = PlanningConfig::default();
+        let images = |net: &Topology| {
+            if net.areas().len() == 0 {
+                return vec![(String::new(), compile(net, None).unwrap().image)];
+            }
+            railit_planning::compile_areas(net, None, &cfg)
+                .unwrap()
+                .into_iter()
+                .map(|a| (a.name, a.compiled.image))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(images(&original), images(&back));
+    }
+}

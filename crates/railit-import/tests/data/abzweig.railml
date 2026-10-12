@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Handgeschriebenes railML-3.2-Dokument ohne rail-it-Erweiterungen:
+     Strecke von der Netzgrenze West auf die Weiche W1, dahinter Stumpfgleise 1 und 2.
+     Achszähler: Mitte der Strecke (700 m), vor W1, hinter W1 in den Gleisen 1 und 2.
+     Gleis 2 hat keinen benannten Abschnitt. -->
+<railML xmlns="https://www.railml.org/schemas/3.2" version="3.2">
+  <infrastructure id="is_01">
+    <name name="Abzweig Kleinstadt" language="de"/>
+    <topology>
+      <netElements>
+        <netElement id="ne_s" length="1000"><name name="Strecke"/></netElement>
+        <netElement id="ne_1" length="450"><name name="1"/></netElement>
+        <netElement id="ne_2" length="400.0"><name name="2"/></netElement>
+        <!-- Mesoebene: wird übergangen -->
+        <netElement id="ne_meso"><elementCollectionUnordered><elementPart ref="ne_s"/></elementCollectionUnordered></netElement>
+      </netElements>
+      <netRelations>
+        <netRelation id="nr_1" positionOnA="1" positionOnB="0" navigability="Both"><elementA ref="ne_s"/><elementB ref="ne_1"/></netRelation>
+        <netRelation id="nr_2" positionOnA="1" positionOnB="0" navigability="Both"><elementA ref="ne_s"/><elementB ref="ne_2"/></netRelation>
+        <netRelation id="nr_3" positionOnA="0" positionOnB="0" navigability="None"><elementA ref="ne_1"/><elementB ref="ne_2"/></netRelation>
+      </netRelations>
+    </topology>
+    <functionalInfrastructure>
+      <borders>
+        <border id="bo_w" isOpenEnd="true" type="station"><name name="West"/><spotLocation netElementRef="ne_s" intrinsicCoord="0"/></border>
+      </borders>
+      <bufferStops>
+        <bufferStop id="bus_1"><name name="Ende 1"/><spotLocation netElementRef="ne_1" intrinsicCoord="1"/></bufferStop>
+        <bufferStop id="bus_2"><name name="Ende 2"/><spotLocation netElementRef="ne_2" intrinsicCoord="1"/></bufferStop>
+      </bufferStops>
+      <levelCrossingsIS>
+        <levelCrossingIS id="lc_1"><name name="BÜ km 0,2"/><spotLocation netElementRef="ne_s" pos="200"/></levelCrossingIS>
+      </levelCrossingsIS>
+      <signalsIS>
+        <signalIS id="sig_a" isSwitchable="true"><name name="A"/><spotLocation netElementRef="ne_s" applicationDirection="normal" intrinsicCoord="0.7"/><isTrainMovementSignal/></signalIS>
+        <signalIS id="sig_a_v" isSwitchable="true" belongsToParent="sig_a"><name name="A (Vorsignal)"/><spotLocation netElementRef="ne_s" applicationDirection="normal" intrinsicCoord="0.7"/><isTrainMovementSignal type="distant"/></signalIS>
+        <signalIS id="sig_n1" isSwitchable="true"><designator register="_Beispiel" entry="N1"/><spotLocation netElementRef="ne_1" applicationDirection="reverse" pos="0"/><isTrainMovementSignal type="main"/></signalIS>
+        <signalIS id="sig_n2" isSwitchable="true"><name name="N2"/><spotLocation netElementRef="ne_2" applicationDirection="reverse" pos="0"/><isTrainMovementSignal type="main"/></signalIS>
+        <signalIS id="sig_lf7" isSwitchable="false"><name name="Lf 7"/><spotLocation netElementRef="ne_s" applicationDirection="normal" pos="100"/><isSpeedSignal/></signalIS>
+      </signalsIS>
+      <switchesIS>
+        <switchIS id="sw_1" type="ordinarySwitch" continueCourse="left" branchCourse="right">
+          <name name="W1"/>
+          <spotLocation netElementRef="ne_s" intrinsicCoord="1"/>
+          <leftBranch netRelationRef="nr_1" branchingSpeed="100" joiningSpeed="100"/>
+          <rightBranch netRelationRef="nr_2" branchingSpeed="60" joiningSpeed="60"/>
+        </switchIS>
+      </switchesIS>
+      <trainDetectionElements>
+        <trainDetectionElement id="tde_mid" type="axleCounter"><spotLocation netElementRef="ne_s" pos="700"/></trainDetectionElement>
+        <trainDetectionElement id="tde_w" type="axleCounter"><spotLocation netElementRef="ne_s" intrinsicCoord="1"/></trainDetectionElement>
+        <trainDetectionElement id="tde_1" type="insulatedRailJoint"><spotLocation netElementRef="ne_1" intrinsicCoord="0"/></trainDetectionElement>
+        <trainDetectionElement id="tde_2" type="axleCounter"><spotLocation netElementRef="ne_2" pos="0"/></trainDetectionElement>
+      </trainDetectionElements>
+    </functionalInfrastructure>
+  </infrastructure>
+  <interlocking>
+    <assetsForInterlockings>
+      <assetsForInterlocking id="afi_1">
+        <tvdSections>
+          <tvdSection id="tvd_1101"><name name="1101"/><hasDemarcatingTraindetector ref="tde_mid"/></tvdSection>
+          <tvdSection id="tvd_1102"><name name="1102"/><hasDemarcatingTraindetector ref="tde_mid"/><hasDemarcatingTraindetector ref="tde_w"/></tvdSection>
+          <tvdSection id="tvd_1103"><name name="1103"/><hasDemarcatingTraindetector ref="tde_1"/></tvdSection>
+          <tvdSection id="tvd_1104"><name name="1104"/><hasDemarcatingTraindetector ref="tde_w"/><hasDemarcatingTraindetector ref="tde_1"/><hasDemarcatingTraindetector ref="tde_2"/></tvdSection>
+        </tvdSections>
+      </assetsForInterlocking>
+    </assetsForInterlockings>
+  </interlocking>
+</railML>

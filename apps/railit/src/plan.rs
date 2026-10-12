@@ -65,7 +65,7 @@ fn write_secret(path: &Path, hex: &str) -> std::io::Result<()> {
 fn load_network(path: &Path) -> Result<railit_topology::Topology, (u8, String)> {
     let source = std::fs::read_to_string(path)
         .map_err(|e| (crate::EXIT_USAGE, format!("{}: {e}", path.display())))?;
-    railit_import::toml_format::parse(&source)
+    railit_import::parse(&path.to_string_lossy(), &source)
         .map(|v| v.topology)
         .map_err(|e| (EXIT_INVALID, format!("Netz ungültig:\n{e}")))
 }

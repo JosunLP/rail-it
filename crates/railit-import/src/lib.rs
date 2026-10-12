@@ -1,12 +1,19 @@
 //! Import von Netzbeschreibungen in das rail-it-Netzmodell.
 //!
-//! Derzeit unterstützt: **rail-it-TOML** (siehe [`toml_format`]), das kompakte Format für
-//! handgeschriebene Netze, Tests und Beispiele. railML 3 und PlanPro folgen (Konzept,
-//! Abschnitt 6).
+//! Unterstützt:
+//!
+//! - **rail-it-TOML** (siehe [`toml_format`]), das kompakte Format für handgeschriebene
+//!   Netze, Tests und Beispiele;
+//! - **railML 3** (siehe [`railml`]), Import und Export der Infrastruktur.
+//!
+//! PlanPro folgt (Konzept, Abschnitt 6). [`parse`] wählt das Format nach der Dateiendung.
 //!
 //! Jeder Importer meldet **alle** Fehler auf einmal, jeweils mit Fundstelle.
 
+pub mod railml;
 pub mod toml_format;
+
+use toml_format::{metres, model_error};
 
 use std::fmt;
 
@@ -66,3 +73,33 @@ impl fmt::Display for ImportError {
 }
 
 impl std::error::Error for ImportError {}
+
+/// Format einer Netzbeschreibung.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Format {
+    /// rail-it-TOML.
+    Toml,
+    /// railML 3.
+    RailMl,
+}
+
+impl Format {
+    /// Format nach der Dateiendung: `.xml` und `.railml` sind railML, alles andere TOML.
+    pub fn of_path(path: &str) -> Self {
+        let railml = std::path::Path::new(path)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("xml") || e.eq_ignore_ascii_case("railml"));
+        if railml { Self::RailMl } else { Self::Toml }
+    }
+}
+
+/// Liest eine Netzbeschreibung im Format, das die Dateiendung von `path` angibt.
+///
+/// # Errors
+/// Wie [`toml_format::parse`] bzw. [`railml::parse`].
+pub fn parse(path: &str, source: &str) -> Result<railit_topology::Validated, ImportError> {
+    match Format::of_path(path) {
+        Format::Toml => toml_format::parse(source),
+        Format::RailMl => railml::parse(source),
+    }
+}

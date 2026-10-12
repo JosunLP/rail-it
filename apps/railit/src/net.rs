@@ -1,9 +1,9 @@
-//! Offline-Befehle für Netzbeschreibungen: `railit net validate|info`.
+//! Offline-Befehle für Netzbeschreibungen: `railit net validate|info|export`.
 
 use std::path::Path;
 use std::process::ExitCode;
 
-use railit_import::{ImportError, toml_format};
+use railit_import::{Format, ImportError, railml, toml_format};
 use railit_topology::{
     Direction, NodeRef, Port, PortRef, SignalKind, SignalSystem, TerminalKind, Topology, TvdMember,
     Validated,
@@ -12,18 +12,63 @@ use serde_json::{Value, json};
 
 use crate::{EXIT_INVALID, Output, fail_usage, print_json};
 
-/// Liest und importiert eine Netzbeschreibung.
-fn load(file: &Path) -> Result<Result<Validated, ImportError>, String> {
+/// Liest und importiert eine Netzbeschreibung (Format nach Dateiendung) samt Warnungen
+/// des Imports.
+fn load_with_warnings(
+    file: &Path,
+) -> Result<Result<(Validated, Vec<String>), ImportError>, String> {
     let source = std::fs::read_to_string(file)
         .map_err(|e| format!("{} kann nicht gelesen werden: {e}", file.display()))?;
-    Ok(toml_format::parse(&source))
+    Ok(match Format::of_path(&file.to_string_lossy()) {
+        Format::Toml => toml_format::parse(&source).map(|v| (v, Vec::new())),
+        Format::RailMl => railml::parse_with_warnings(&source),
+    })
+}
+
+/// Liest und importiert eine Netzbeschreibung.
+fn load(file: &Path) -> Result<Result<Validated, ImportError>, String> {
+    load_with_warnings(file).map(|r| r.map(|(v, _)| v))
+}
+
+/// Schreibt ein gültiges Netz als railML 3 nach `out` (ohne `out`: Standardausgabe).
+pub(crate) fn export(file: &Path, out: Option<&Path>) -> ExitCode {
+    let validated = match load(file) {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            print!("{e}");
+            return ExitCode::from(EXIT_INVALID);
+        }
+        Err(msg) => return fail_usage(&msg),
+    };
+    let xml = match railml::export(&validated.topology) {
+        Ok(xml) => xml,
+        Err(msg) => {
+            eprintln!("Fehler: {msg}");
+            return ExitCode::from(EXIT_INVALID);
+        }
+    };
+    match out {
+        None => print!("{xml}"),
+        Some(path) => {
+            if let Err(e) = std::fs::write(path, xml) {
+                return fail_usage(&format!("{}: {e}", path.display()));
+            }
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 pub(crate) fn validate(file: &Path, output: Output) -> ExitCode {
-    let result = match load(file) {
-        Ok(result) => result,
+    let (result, import_warnings) = match load_with_warnings(file) {
+        Ok(Ok((v, warnings))) => (Ok(v), warnings),
+        Ok(Err(e)) => (Err(e), Vec::new()),
         Err(msg) => return fail_usage(&msg),
     };
+    if output == Output::Text {
+        for w in &import_warnings {
+            println!("Warnung (Import): {w}");
+        }
+    }
     match (output, &result) {
         (Output::Json, _) => print_json(&validation_json(&result)),
         (Output::Text, Ok(v)) => {

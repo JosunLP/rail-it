@@ -445,7 +445,7 @@ pub fn run_str(source: &str, base: &Path) -> Result<Outcome, ScenarioError> {
     let net_path = base.join(&header.network);
     let net_source = std::fs::read_to_string(&net_path)
         .map_err(|e| ScenarioError::Io(format!("{}: {e}", net_path.display())))?;
-    let net = railit_import::toml_format::parse(&net_source)
+    let net = railit_import::parse(&header.network.to_string_lossy(), &net_source)
         .map_err(|e| ScenarioError::Network(e.to_string()))?
         .topology;
     let mut cfg = SimConfig::default();
