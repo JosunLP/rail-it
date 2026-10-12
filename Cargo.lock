@@ -1009,6 +1009,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "railit-ops"
+version = "0.1.0"
+dependencies = [
+ "railit-import",
+ "railit-kernel",
+ "railit-plan",
+ "railit-planning",
+ "railit-topology",
+ "railit-types",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "railit-plan"
 version = "0.1.0"
 dependencies = [
@@ -1045,6 +1059,7 @@ dependencies = [
  "railit-journal",
  "railit-kernel",
  "railit-movement",
+ "railit-ops",
  "railit-plan",
  "railit-planning",
  "railit-rules",

@@ -1,0 +1,27 @@
+# Fahrplan für die Nordbahn (examples/nordbahn.toml).
+#
+# Zwei Regionalzüge begegnen sich nicht auf der eingleisigen Strecke: Die Zuglenkung fordert
+# Fahrstraßen und Erlaubnisse an, die Stellwerkskerne entscheiden über die Reihenfolge.
+# Zeiten ab Betriebsbeginn.
+
+[timetable]
+name = "Nordbahn Grundtakt"
+
+[[train]]
+number = "RE1"
+enter = { signal = "AA", at = "00:00:10", length_m = 100, speed_kmh = 80 }
+stops = [
+    { station = "Adorf", platform = "1", arr = "00:00:40", dep = "00:01:30" },
+    { station = "Bstadt", platform = "2", arr = "00:06:00" },
+]
+
+# RE2 steht zu Betriebsbeginn (00:00:00) in Bstadt Gleis 1. Eine Einfahrt von Osten (BF) wäre erst
+# möglich, wenn Bstadt die Erlaubnis zur Strecke hält: Der Durchrutschweg hinter BP1 reicht
+# in den Annäherungsabschnitt (BTO1), den Bstadt für Züge von der Strecke verschlossen hält.
+[[train]]
+number = "RE2"
+enter = { signal = "BP1", at = "00:00:00", length_m = 100, speed_kmh = 80 }
+stops = [
+    { station = "Bstadt", platform = "1", arr = "00:00:50", dep = "00:02:00" },
+    { station = "Adorf", platform = "2", arr = "00:07:00" },
+]

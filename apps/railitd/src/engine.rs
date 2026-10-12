@@ -22,6 +22,24 @@ pub(crate) enum SimCommand {
     Fault(Fault, bool),
 }
 
+/// Befehl an die Betriebsführung (Zugnummern, Disposition).
+#[derive(Debug)]
+pub(crate) enum OpsCommand {
+    Describe {
+        train: String,
+        signal: String,
+    },
+    Erase(String),
+    Hold(String, bool),
+    Platform {
+        train: String,
+        station: String,
+        platform: String,
+    },
+    Delay(String, u32),
+    SetArs(bool),
+}
+
 /// Antwort auf einen Simulationsbefehl.
 #[derive(Debug)]
 pub(crate) enum SimReply {
@@ -54,6 +72,11 @@ pub(crate) enum EngineMsg {
     Sim {
         command: SimCommand,
         reply: oneshot::Sender<SimReply>,
+    },
+    /// Befehl an die Betriebsführung; Antwort sofort.
+    Ops {
+        command: OpsCommand,
+        reply: oneshot::Sender<Result<(), String>>,
     },
 }
 
@@ -139,6 +162,13 @@ impl Engine {
                 .events
                 .send(event_json(time_ms, multi.then_some(area.as_str()), value));
         }
+        for e in &out.ops {
+            let mut value = serde_json::to_value(e).unwrap_or(Value::Null);
+            if let Value::Object(map) = &mut value {
+                map.insert("source".into(), json!("ops"));
+            }
+            let _ = self.ch.events.send(event_json(time_ms, None, value));
+        }
         for e in self.rt.field_mut().take_events() {
             if matches!(
                 e,
@@ -181,7 +211,13 @@ impl Engine {
                 self.waiting.insert(self.next_id, reply);
             }
             EngineMsg::Sim { command, reply } => {
-                let _ = reply.send(sim_command(self.rt.field_mut(), command));
+                let _ = reply.send(sim_command(&mut self.rt, command));
+            }
+            EngineMsg::Ops { command, reply } => {
+                let result = ops_command(&mut self.rt, command);
+                // Wer nach der Antwort das Zustandsbild liest, sieht die Änderung.
+                self.ch.snapshot.send_replace(Arc::new(self.rt.snapshot()));
+                let _ = reply.send(result);
             }
         }
     }
@@ -211,13 +247,48 @@ pub(crate) async fn run(rt: Runtime<Simulator>, ch: Channels, period: Duration) 
     }
 }
 
-/// Führt einen Simulationsbefehl aus.
-fn sim_command(sim: &mut Simulator, command: SimCommand) -> SimReply {
+/// Führt einen Befehl an die Betriebsführung aus.
+fn ops_command(rt: &mut Runtime<Simulator>, command: OpsCommand) -> Result<(), String> {
+    let ops = rt.ops_mut().ok_or("Betriebsführung nicht eingeschaltet")?;
     match command {
-        SimCommand::AddTrain(spec) => match sim.add_train(spec) {
-            Ok(()) => SimReply::Done,
-            Err(e) => SimReply::Error(e.to_string()),
-        },
+        OpsCommand::Describe { train, signal } => ops.describe(&train, &signal),
+        OpsCommand::Erase(train) => ops.erase(&train),
+        OpsCommand::Hold(train, on) => ops.hold(&train, on),
+        OpsCommand::Platform {
+            train,
+            station,
+            platform,
+        } => ops.set_platform(&train, &station, &platform),
+        OpsCommand::Delay(train, s) => ops.delay(&train, s),
+        OpsCommand::SetArs(on) => {
+            ops.set_ars(on);
+            Ok(())
+        }
+    }
+}
+
+/// Führt einen Simulationsbefehl aus. Neue Züge erhalten ihre Zugnummer am Signal.
+fn sim_command(rt: &mut Runtime<Simulator>, command: SimCommand) -> SimReply {
+    if let SimCommand::AddTrain(spec) = command {
+        let name = spec.name.clone();
+        let signal = rt
+            .field()
+            .topology()
+            .signal(spec.signal)
+            .map(|s| s.name.clone());
+        if let Err(e) = rt.field_mut().add_train(spec) {
+            return SimReply::Error(e.to_string());
+        }
+        if let (Some(ops), Some(signal)) = (rt.ops_mut(), signal)
+            && let Err(e) = ops.describe(&name, &signal)
+        {
+            return SimReply::Error(e);
+        }
+        return SimReply::Done;
+    }
+    let sim = rt.field_mut();
+    match command {
+        SimCommand::AddTrain(_) => SimReply::Done,
         SimCommand::RemoveTrain(name) => {
             if sim.remove_train(&name) {
                 SimReply::Done

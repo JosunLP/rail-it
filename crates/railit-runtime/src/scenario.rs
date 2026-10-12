@@ -30,10 +30,20 @@
 //! `release_route`, `reset_tvd`, `substitute`, `force_point`),
 //! `confirm_aux = { operator }` (zuletzt angeforderte Hilfshandlung bestätigen).
 //!
+//! Betriebsführung: `[scenario] timetable = "…"` (Fahrplan, relativ zur Szenariodatei),
+//! `ars = true` (Zuglenkung) oder `ops = true` (nur Zugnummernmeldung und Selbstblock)
+//! schalten sie ein. Aktionen dazu: `describe = { train, signal }`, `erase = "RE1"`,
+//! `hold = "RE1"`, `release = "RE1"`, `platform = { train, station, platform }`,
+//! `delay = { train, s }`, `set_ars = true|false`. Mit eingeschalteter Betriebsführung
+//! trägt `add_train` die Zugnummer am Signal ein.
+//!
 //! **Bedingungen** (`until`, `expect`): `route`, `signal` (befohlener Begriff),
 //! `substitute` (Ersatzsignal ein/aus), `picture` (Signalbild, z. B. `"Ks1 Zs3(4)"`), `point`, `tvd` (Meldung des Felds), `lx` (Meldung
 //! des Bahnübergangs), `train`, `accepted`, `rejected` (Grund), `alarm` / `no_alarm`
-//! (Listen), `sim_event` (Liste), `aux_counter`, `safe_state`.
+//! (Listen), `sim_event` (Liste), `aux_counter`, `safe_state`, `permission` (Grenze →
+//! Erlaubnis gehalten), `berth` (Zugnummer → Signal, `"left"` nach Verlassen des Netzes),
+//! `at_stop` (Zugnummer → `"Betriebsstelle/Gleis"`), `ops_event` (Liste der Ereignisarten
+//! der Betriebsführung).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -47,6 +57,8 @@ use railit_sim::{Fault, SimConfig, SimEvent, Simulator, TrainSpec, TrainState};
 use railit_topology::ElementRef;
 use railit_types::{Duration, Length, PointPosition, Speed};
 use serde::Deserialize;
+
+use railit_ops::{OpsConfig, OpsEvent, Timetable};
 
 use crate::names::{NamedAux, NamedEvent};
 use crate::runtime::{Addressed, Runtime};
@@ -76,6 +88,12 @@ struct Header {
     points: BTreeMap<String, PointPosition>,
     #[serde(default)]
     rules: RulesEntry,
+    #[serde(default)]
+    timetable: Option<PathBuf>,
+    #[serde(default)]
+    ars: bool,
+    #[serde(default)]
+    ops: bool,
 }
 
 // Die Einheit gehört zum Feldnamen im Szenarioformat.
@@ -145,6 +163,20 @@ struct Step {
     #[serde(default)]
     confirm_aux: Option<ConfirmEntry>,
     #[serde(default)]
+    describe: Option<DescribeEntry>,
+    #[serde(default)]
+    erase: Option<String>,
+    #[serde(default)]
+    hold: Option<String>,
+    #[serde(default)]
+    release: Option<String>,
+    #[serde(default)]
+    platform: Option<PlatformEntry>,
+    #[serde(default)]
+    delay: Option<DelayEntry>,
+    #[serde(default)]
+    set_ars: Option<bool>,
+    #[serde(default)]
     wait_s: Option<f64>,
     #[serde(default)]
     until: Option<Conditions>,
@@ -184,6 +216,28 @@ struct AuxEntry {
 #[serde(deny_unknown_fields)]
 struct ConfirmEntry {
     operator: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DescribeEntry {
+    train: String,
+    signal: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlatformEntry {
+    train: String,
+    station: String,
+    platform: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DelayEntry {
+    train: String,
+    s: u32,
 }
 
 #[derive(Copy, Clone, Debug, Deserialize)]
@@ -238,6 +292,12 @@ struct Conditions {
     aux_counter: Option<u64>,
     #[serde(default)]
     safe_state: Option<bool>,
+    #[serde(default)]
+    berth: BTreeMap<String, String>,
+    #[serde(default)]
+    at_stop: BTreeMap<String, String>,
+    #[serde(default)]
+    ops_event: Vec<String>,
 }
 
 /// Szenario konnte nicht ausgeführt werden (im Unterschied zu einem fehlgeschlagenen Schritt).
@@ -366,6 +426,25 @@ pub fn run_str(source: &str, base: &Path) -> Result<Outcome, ScenarioError> {
         };
         rt.field_mut().set_point_position(id, *pos);
     }
+    if header.ops || header.ars || header.timetable.is_some() {
+        let timetable = match &header.timetable {
+            Some(path) => {
+                let path = base.join(path);
+                let source = std::fs::read_to_string(&path)
+                    .map_err(|e| ScenarioError::Io(format!("{}: {e}", path.display())))?;
+                Timetable::parse(&source)
+                    .map_err(|e| ScenarioError::Syntax(format!("{}: {e}", path.display())))?
+            }
+            None => Timetable::default(),
+        };
+        let topology = rt.field().topology().clone();
+        let cfg = OpsConfig {
+            ars: header.ars,
+            ..OpsConfig::default()
+        };
+        rt.enable_ops(&topology, cfg, timetable)
+            .map_err(ScenarioError::Planning)?;
+    }
 
     let mut ctx = Ctx {
         rt,
@@ -373,6 +452,7 @@ pub fn run_str(source: &str, base: &Path) -> Result<Outcome, ScenarioError> {
         pending: Vec::new(),
         events: Vec::new(),
         sim_events: Vec::new(),
+        ops_events: Vec::new(),
         requests: Vec::new(),
         last_aux: None,
     };
@@ -398,6 +478,7 @@ struct Ctx {
     pending: Vec<Addressed>,
     events: Vec<NamedEvent>,
     sim_events: Vec<SimEvent>,
+    ops_events: Vec<OpsEvent>,
     requests: Vec<u64>,
     /// Zuletzt angeforderte Hilfshandlung mit Bereich (für `confirm_aux`).
     last_aux: Option<(usize, u32)>,
@@ -446,6 +527,7 @@ impl Ctx {
             self.events.push(named);
         }
         self.sim_events.extend(self.rt.field_mut().take_events());
+        self.ops_events.extend(out.ops);
     }
 
     fn request(&mut self, area: usize, request: Request) {
@@ -466,6 +548,7 @@ impl Ctx {
     fn run_step(&mut self, index: usize, step: &Step) -> StepOutcome {
         self.events.clear();
         self.sim_events.clear();
+        self.ops_events.clear();
         self.requests.clear();
         let mut failures = self.actions(step);
 
@@ -533,27 +616,7 @@ impl Ctx {
             }
         }
         if let Some(t) = &step.add_train {
-            let signal = match self.global(&t.signal) {
-                Some(ElementRef::Signal(s)) => Some(s),
-                _ => None,
-            };
-            let spec = signal
-                .zip(metres(t.length_m))
-                .map(|(signal, length)| TrainSpec {
-                    name: t.name.clone(),
-                    signal,
-                    length,
-                    speed: Speed::from_kmh(t.speed_kmh),
-                    ignore_signals: t.ignore_signals,
-                });
-            match spec.map(|s| self.rt.field_mut().add_train(s)) {
-                Some(Ok(())) => {}
-                Some(Err(e)) => failures.push(format!("Zug „{}“: {e}", t.name)),
-                None => failures.push(format!(
-                    "Zug „{}“: unbekanntes Signal oder ungültige Länge",
-                    t.name
-                )),
-            }
+            failures.extend(self.add_train(t));
         }
         for (entry, on) in [(&step.fault, true), (&step.clear_fault, false)] {
             let Some(entry) = entry else { continue };
@@ -589,6 +652,7 @@ impl Ctx {
                 Err(e) => failures.push(format!("Hilfshandlung: {e}")),
             }
         }
+        failures.extend(self.ops_actions(step));
         if let Some(c) = &step.confirm_aux {
             match self.last_aux {
                 Some((area, aux)) => self.request(
@@ -599,6 +663,115 @@ impl Ctx {
                     },
                 ),
                 None => failures.push("keine Hilfshandlung angefordert".into()),
+            }
+        }
+        failures
+    }
+
+    /// Setzt einen Zug ein; mit Betriebsführung auch seine Zugnummer.
+    fn add_train(&mut self, t: &TrainEntry) -> Vec<String> {
+        let mut failures = Vec::new();
+        let signal = match self.global(&t.signal) {
+            Some(ElementRef::Signal(s)) => Some(s),
+            _ => None,
+        };
+        let spec = signal
+            .zip(metres(t.length_m))
+            .map(|(signal, length)| TrainSpec {
+                name: t.name.clone(),
+                signal,
+                length,
+                speed: Speed::from_kmh(t.speed_kmh),
+                ignore_signals: t.ignore_signals,
+            });
+        match spec.map(|s| self.rt.field_mut().add_train(s)) {
+            Some(Ok(())) => {
+                if let Some(ops) = self.rt.ops_mut()
+                    && let Err(e) = ops.describe(&t.name, &t.signal)
+                {
+                    failures.push(e);
+                }
+            }
+            Some(Err(e)) => failures.push(format!("Zug „{}“: {e}", t.name)),
+            None => failures.push(format!(
+                "Zug „{}“: unbekanntes Signal oder ungültige Länge",
+                t.name
+            )),
+        }
+        failures
+    }
+
+    /// Aktionen der Betriebsführung.
+    fn ops_actions(&mut self, step: &Step) -> Vec<String> {
+        let wanted = step.describe.is_some()
+            || step.erase.is_some()
+            || step.hold.is_some()
+            || step.release.is_some()
+            || step.platform.is_some()
+            || step.delay.is_some()
+            || step.set_ars.is_some();
+        if !wanted {
+            return Vec::new();
+        }
+        let Some(ops) = self.rt.ops_mut() else {
+            return vec!["Betriebsführung nicht eingeschaltet".into()];
+        };
+        let results = [
+            step.describe
+                .as_ref()
+                .map(|d| ops.describe(&d.train, &d.signal)),
+            step.erase.as_ref().map(|t| ops.erase(t)),
+            step.hold.as_ref().map(|t| ops.hold(t, true)),
+            step.release.as_ref().map(|t| ops.hold(t, false)),
+            step.platform
+                .as_ref()
+                .map(|p| ops.set_platform(&p.train, &p.station, &p.platform)),
+            step.delay.as_ref().map(|d| ops.delay(&d.train, d.s)),
+            step.set_ars.map(|on| {
+                ops.set_ars(on);
+                Ok(())
+            }),
+        ];
+        results
+            .into_iter()
+            .flatten()
+            .filter_map(Result::err)
+            .collect()
+    }
+
+    /// Prüft Bedingungen der Betriebsführung.
+    fn check_ops(&self, c: &Conditions) -> Vec<String> {
+        let mut failures = Vec::new();
+        if c.berth.is_empty() && c.at_stop.is_empty() && c.ops_event.is_empty() {
+            return failures;
+        }
+        let Some(ops) = self.rt.ops() else {
+            return vec!["Betriebsführung nicht eingeschaltet".into()];
+        };
+        let snap = ops.snapshot();
+        let train = |n: &str| snap.trains.iter().find(|t| t.number == n);
+        for (name, want) in &c.berth {
+            let got = train(name).map(|t| {
+                if t.left {
+                    "left".to_string()
+                } else {
+                    t.berth.clone().unwrap_or_default()
+                }
+            });
+            if got.as_deref() != Some(want.as_str()) {
+                failures.push(format!("Zugnummer {name}: erwartet {want}, ist {got:?}"));
+            }
+        }
+        for (name, want) in &c.at_stop {
+            let got = train(name).and_then(|t| t.at_stop.clone());
+            if got.as_deref() != Some(want.as_str()) {
+                failures.push(format!("Zug {name} am Halt: erwartet {want}, ist {got:?}"));
+            }
+        }
+        for kind in &c.ops_event {
+            let seen = self.ops_events.iter().any(|e| e.kind() == kind);
+            if !seen {
+                failures.push(format!("Ereignis der Betriebsführung „{kind}“ erwartet"));
             }
         }
         failures
@@ -707,6 +880,7 @@ impl Ctx {
     /// Prüft Bedingungen; gibt die Abweichungen zurück.
     fn check(&self, c: &Conditions) -> Vec<String> {
         let mut failures = self.check_elements(c);
+        failures.extend(self.check_ops(c));
         let states: Vec<&railit_kernel::OwnedState> = (0..self.rt.area_count())
             .filter_map(|a| self.rt.state_of(a))
             .collect();

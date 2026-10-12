@@ -18,6 +18,7 @@ use railit_kernel::{
     AuxOperation, BorderMessage, Command, Event, Input, Interlocking, OwnedState, Request,
     RequestId, SafeStateReason, VecOutputs,
 };
+use railit_ops::{Ops, OpsConfig, OpsEvent, OpsNet, OpsView, Timetable};
 use railit_plan::PlanView;
 use railit_rules::GenericRules;
 use railit_topology::{AreaCut, Topology};
@@ -58,6 +59,32 @@ pub struct CycleOutput {
     pub commands: Vec<Command>,
     /// Erster Bereich, dessen Kern im sicheren Zustand ist, mit Grund.
     pub safe_state: Option<(usize, SafeStateReason)>,
+    /// Ereignisse der Betriebsführung.
+    pub ops: Vec<OpsEvent>,
+}
+
+/// Kennungen ab diesem Wert gehören zu Anforderungen der Betriebsführung.
+pub const OPS_REQUEST_BASE: u64 = 1 << 62;
+
+/// Sicht der Betriebsführung auf die Kerne.
+struct AreasView<'a>(&'a [Area]);
+
+impl OpsView for AreasView<'_> {
+    fn route_phase(&self, area: usize, route: RouteId) -> Option<railit_kernel::RoutePhase> {
+        let a = self.0.get(area)?;
+        a.state
+            .routes()
+            .get(route.index()?)
+            .map(railit_kernel::RouteState::phase)
+    }
+
+    fn holding(&self, area: usize, border: BorderId) -> Option<bool> {
+        let a = self.0.get(area)?;
+        a.state
+            .borders()
+            .get(border.index()?)
+            .map(railit_kernel::BorderState::holding)
+    }
 }
 
 /// Abbildung lokaler IDs eines Bereichs auf das Gesamtnetz (Index = lokale ID).
@@ -168,6 +195,9 @@ pub struct Runtime<F> {
     tvds: Reverse,
     lxs: Reverse,
     field_inputs: Vec<Input>,
+    ops: Option<Ops>,
+    ops_pending: Vec<Addressed>,
+    ops_next: u64,
 }
 
 impl<F: FieldAdapter> Runtime<F> {
@@ -290,7 +320,95 @@ impl<F: FieldAdapter> Runtime<F> {
             tvds,
             lxs,
             field_inputs: Vec::new(),
+            ops: None,
+            ops_pending: Vec::new(),
+            ops_next: OPS_REQUEST_BASE,
         }
+    }
+
+    /// Schaltet die Betriebsführung ein (Zugnummernmeldung, Fahrplan, Zuglenkung,
+    /// Selbstblock). `topology` ist das Gesamtnetz (Betriebsstellen, Selbstblocksignale).
+    ///
+    /// # Errors
+    /// Abweichungen des Fahrplans vom Netz.
+    pub fn enable_ops(
+        &mut self,
+        topology: &Topology,
+        cfg: OpsConfig,
+        timetable: Timetable,
+    ) -> Result<(), String> {
+        let plans: Vec<(&str, &PlanView<'_>)> = self
+            .areas
+            .iter()
+            .map(|a| (a.name.as_str(), a.kernel.plan()))
+            .collect();
+        let peer = |area: usize, b: BorderId| {
+            self.areas
+                .get(area)
+                .and_then(|a| b.index().and_then(|i| a.peers.get(i)))
+                .copied()
+                .flatten()
+        };
+        let net = OpsNet::new(&plans, peer, topology);
+        let ops = Ops::new(net, cfg, timetable)
+            .map_err(|e| format!("Fahrplan passt nicht zum Netz:\n  {}", e.join("\n  ")))?;
+        self.ops = Some(ops);
+        // Züge, die bei Betriebsbeginn schon im Netz stehen, vor der ersten Meldung einsetzen:
+        // Ihre Besetzung ist dann Grundstellung, keine unerlaubte Besetzung.
+        if self.now == Tick::ZERO {
+            let events = self.run_ops(Tick::ZERO, &[]);
+            if let Some(ops) = &mut self.ops {
+                ops.requeue_events(events);
+            }
+        }
+        Ok(())
+    }
+
+    /// Betriebsführung, falls eingeschaltet.
+    pub fn ops(&self) -> Option<&Ops> {
+        self.ops.as_ref()
+    }
+
+    /// Betriebsführung zum Disponieren, falls eingeschaltet.
+    pub fn ops_mut(&mut self) -> Option<&mut Ops> {
+        self.ops.as_mut()
+    }
+
+    /// Globale Kennung eines Signals.
+    pub fn global_signal(&self, name: &str) -> Option<SignalId> {
+        global_signal(&self.directory, &self.areas, name)
+    }
+
+    /// Betriebsführung nach dem Zyklus: Ereignisse auswerten, Anforderungen für den nächsten
+    /// Zyklus und Züge für die Simulation planen.
+    fn run_ops(&mut self, now: Tick, events: &[AreaEvent]) -> Vec<OpsEvent>
+    where
+        F: FieldAdapter,
+    {
+        let Some(ops) = &mut self.ops else {
+            return Vec::new();
+        };
+        for e in events {
+            ops.observe(now, e.area, &e.event);
+        }
+        let actions = ops.plan(now, &AreasView(&self.areas));
+        for (area, request) in actions.requests {
+            self.ops_next = self.ops_next.wrapping_add(1).max(OPS_REQUEST_BASE);
+            self.ops_pending.push(Addressed {
+                area,
+                id: RequestId(self.ops_next),
+                request,
+            });
+        }
+        for spawn in actions.spawns {
+            let result = global_signal(&self.directory, &self.areas, &spawn.signal)
+                .ok_or_else(|| format!("Signal „{}“ nicht gefunden", spawn.signal))
+                .and_then(|signal| self.field.spawn_train(&spawn, signal));
+            if let Err(reason) = result {
+                ops.spawn_failed(&spawn.train, reason);
+            }
+        }
+        ops.take_events()
     }
 
     /// Beginnt das Journal eines Bereichs (REQ-JRN-001): Ab dem nächsten Zyklus werden
@@ -355,7 +473,9 @@ impl<F: FieldAdapter> Runtime<F> {
         self.field_inputs.clear();
         self.field.reports(&mut self.field_inputs);
 
-        self.distribute(requests);
+        let mut all = std::mem::take(&mut self.ops_pending);
+        all.extend_from_slice(requests);
+        self.distribute(&all);
 
         let mut events = Vec::new();
         let mut commands = Vec::new();
@@ -407,12 +527,14 @@ impl<F: FieldAdapter> Runtime<F> {
             }
         }
         self.field.apply(&commands);
+        let ops = self.run_ops(now, &events);
 
         CycleOutput {
             now,
             events,
             commands,
             safe_state,
+            ops,
         }
     }
 
@@ -614,7 +736,9 @@ impl<F: FieldAdapter> Runtime<F> {
             .iter()
             .map(|a| (a.name.as_str(), a.kernel.plan(), &a.state))
             .collect();
-        Snapshot::network(&self.network, self.now, &areas)
+        let mut snap = Snapshot::network(&self.network, self.now, &areas);
+        snap.ops = self.ops.as_ref().map(Ops::snapshot);
+        snap
     }
 
     /// Ereignis mit fachlichen Namen.
@@ -656,4 +780,10 @@ fn globalize(map: &AreaMap, command: Command) -> Option<Command> {
         }
         Command::Border { .. } => return None,
     })
+}
+
+/// Globale Kennung eines Signals über die Namensauflösung.
+fn global_signal(directory: &Directory, areas: &[Area], name: &str) -> Option<SignalId> {
+    let (area, local) = directory.find_signal(name)?;
+    areas.get(area)?.map.signals.get(local.index()?).copied()
 }

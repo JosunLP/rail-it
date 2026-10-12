@@ -1,0 +1,35 @@
+[scenario]
+name = "Nordbahn: Fahrplanbetrieb mit Zuglenkung"
+description = """
+Die Betriebsführung setzt zwei Züge nach Fahrplan ein und lenkt sie: RE1 von Adorf nach
+Bstadt, RE2 in Gegenrichtung. Die Zugnummern wandern mit den Fahrstraßen über die
+Bereichsgrenzen. Die Zuglenkung fordert Fahrstraßen und Erlaubnisse nur an; die
+Stellwerkskerne lassen die Züge nacheinander über die eingleisige Strecke.
+"""
+network = "../../examples/nordbahn.toml"
+timetable = "../../examples/nordbahn-fahrplan.toml"
+ars = true
+
+[[step]]
+note = "Einsetzen nach Fahrplan, Einfahrt in die Bahnhöfe"
+until = { at_stop = { RE1 = "Adorf/1", RE2 = "Bstadt/1" } }
+timeout_s = 120
+expect = { berth = { RE1 = "AN1", RE2 = "BP1" } }
+
+[[step]]
+note = "Abfahrt nicht vor der planmäßigen Zeit"
+until = { berth = { RE1 = "Sbk1" } }
+timeout_s = 120
+expect = { berth = { RE2 = "BP1" }, ops_event = ["departed"] }
+
+[[step]]
+note = "RE1 erreicht Bstadt Gleis 2, RE2 fährt erst danach über die Strecke"
+until = { at_stop = { RE1 = "Bstadt/2" } }
+timeout_s = 600
+expect = { no_alarm = ["unauthorized_occupancy", "signal_passed_at_danger", "permission_conflict"] }
+
+[[step]]
+note = "RE2 erreicht Adorf Gleis 2"
+until = { at_stop = { RE2 = "Adorf/2" } }
+timeout_s = 900
+expect = { no_alarm = ["unauthorized_occupancy", "signal_passed_at_danger", "permission_conflict"], sim_event = [], safe_state = false }

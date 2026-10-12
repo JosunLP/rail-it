@@ -1,0 +1,36 @@
+[scenario]
+name = "Nordbahn: Disposition verlegt die Kreuzung"
+description = """
+Der Disponent verfügt für RE1 eine Wartezeit von 90 s in Adorf. Damit fährt RE2 zuerst über
+die eingleisige Strecke; RE1 wird zusätzlich zurückgehalten, bis RE2 in Adorf steht, und
+erst dann freigegeben.
+"""
+network = "../../examples/nordbahn.toml"
+timetable = "../../examples/nordbahn-fahrplan.toml"
+ars = true
+
+[[step]]
+note = "Wartezeit für RE1 verfügen"
+delay = { train = "RE1", s = 90 }
+until = { at_stop = { RE1 = "Adorf/1", RE2 = "Bstadt/1" } }
+timeout_s = 120
+
+[[step]]
+note = "RE2 fährt planmäßig um 00:02:00 ab und erhält die Strecke"
+until = { berth = { RE2 = "Sbk2" } }
+timeout_s = 300
+expect = { berth = { RE1 = "AN1" }, permission = { "Strecke>Adorf" = true, "Bstadt>Strecke" = true } }
+
+[[step]]
+note = "RE1 zurückhalten, bis RE2 in Adorf angekommen ist"
+hold = "RE1"
+until = { at_stop = { RE2 = "Adorf/2" } }
+timeout_s = 400
+expect = { berth = { RE1 = "AN1" }, no_alarm = ["unauthorized_occupancy", "signal_passed_at_danger"] }
+
+[[step]]
+note = "Freigabe: RE1 fährt nach Bstadt Gleis 2"
+release = "RE1"
+until = { at_stop = { RE1 = "Bstadt/2" } }
+timeout_s = 600
+expect = { no_alarm = ["unauthorized_occupancy", "signal_passed_at_danger", "permission_conflict"], safe_state = false }

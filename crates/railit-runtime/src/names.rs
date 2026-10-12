@@ -432,6 +432,9 @@ pub struct Snapshot {
     pub pending_aux: Vec<AuxSnapshot>,
     /// Zählwerk der ausgeführten Hilfshandlungen (Summe aller Bereiche).
     pub aux_counter: u64,
+    /// Betriebsführung (Zugnummern, Fahrplanlage), falls eingeschaltet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ops: Option<railit_ops::OpsSnapshot>,
 }
 
 impl Snapshot {
@@ -459,6 +462,7 @@ impl Snapshot {
             level_crossings: Vec::new(),
             pending_aux: Vec::new(),
             aux_counter: 0,
+            ops: None,
         };
         let prefixed = areas.len() > 1;
         for (name, plan, state) in areas {

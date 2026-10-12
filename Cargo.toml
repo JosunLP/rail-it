@@ -10,6 +10,7 @@ members = [
     "crates/railit-movement",
     "crates/railit-journal",
     "crates/railit-sim",
+    "crates/railit-ops",
     "crates/railit-runtime",
     "crates/railit-import",
     "apps/railit",
@@ -36,6 +37,7 @@ railit-kernel = { path = "crates/railit-kernel" }
 railit-movement = { path = "crates/railit-movement" }
 railit-sim = { path = "crates/railit-sim" }
 railit-journal = { path = "crates/railit-journal" }
+railit-ops = { path = "crates/railit-ops" }
 railit-runtime = { path = "crates/railit-runtime" }
 
 serde = { version = "1", default-features = false, features = ["derive"] }

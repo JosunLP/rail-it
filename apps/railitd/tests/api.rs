@@ -419,3 +419,82 @@ fn network_with_areas_over_api() {
         assert!(railit_journal::verify(bytes.as_slice()).unwrap().cycles > 0);
     }
 }
+
+fn delete(d: &Daemon, path: &str) -> u16 {
+    agent()
+        .delete(format!("{}{path}", d.url))
+        .header("Authorization", format!("Bearer {TOKEN}"))
+        .call()
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+/// REQ-OPS-001 … 005: Fahrplanbetrieb mit Zuglenkung und Disposition über die API.
+#[test]
+fn timetable_and_dispatching_over_api() {
+    let (plans, public) = prepare_areas("nordbahn-ops");
+    let timetable = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/nordbahn-fahrplan.toml"
+    );
+    let d = start_for(
+        NORDBAHN,
+        &[
+            "--plan",
+            plans.to_str().unwrap(),
+            "--trusted-key",
+            public.to_str().unwrap(),
+            "--timetable",
+            timetable,
+            "--ars",
+        ],
+    );
+    let train = |name: &str| {
+        let (status, ops) = get(&d, "/v1/ops", true);
+        assert_eq!(status, 200);
+        ops["trains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["number"] == name)
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    assert_eq!(train("RE2")["berth"], "BP1", "steht bei Betriebsbeginn");
+
+    // Die Zuglenkung führt RE1 nach Adorf; dort hält der Disponent ihn zurück.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while train("RE1")["at_stop"] != "Adorf/1" {
+        assert!(Instant::now() < deadline, "RE1 erreicht Adorf nicht");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(post(&d, "/v1/ops/trains/RE1/hold", None).0, 200);
+    assert_eq!(train("RE1")["hold"], true);
+    assert_eq!(
+        post(&d, "/v1/ops/trains/RE1/delay", Some(json!({"s": 30}))).0,
+        200
+    );
+    assert_eq!(train("RE1")["extra_delay_s"], 30);
+    let wrong = json!({"station": "Bstadt", "platform": "9"});
+    assert_eq!(post(&d, "/v1/ops/trains/RE1/platform", Some(wrong)).0, 400);
+    let change = json!({"station": "Bstadt", "platform": "1"});
+    assert_eq!(post(&d, "/v1/ops/trains/RE1/platform", Some(change)).0, 200);
+    assert_eq!(train("RE1")["next_stop"], "Adorf/1");
+    assert_eq!(post(&d, "/v1/ops/trains/XX/hold", None).0, 400);
+
+    // Zugnummer eines Zuges ohne Fahrplan eintragen und löschen.
+    let describe = json!({"signal": "AN2"});
+    assert_eq!(
+        post(&d, "/v1/ops/trains/Lz9/describe", Some(describe)).0,
+        200
+    );
+    assert_eq!(train("Lz9")["berth"], "AN2");
+    assert_eq!(delete(&d, "/v1/ops/trains/Lz9"), 200);
+    assert_eq!(train("Lz9"), Value::Null);
+
+    assert_eq!(post(&d, "/v1/ops/ars", Some(json!({"on": false}))).0, 200);
+    let (_, ops) = get(&d, "/v1/ops", true);
+    assert_eq!(ops["ars"], false);
+    assert_eq!(ops["timetable"], "Nordbahn Grundtakt");
+}

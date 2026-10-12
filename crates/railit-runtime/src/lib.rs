@@ -24,7 +24,8 @@ pub use names::{
     AreaSnapshot, AuxKind, AuxSnapshot, BorderSnapshot, LxSnapshot, NamedAux, NamedEvent,
     PointSnapshot, RouteSnapshot, SignalSnapshot, Snapshot, TvdSnapshot,
 };
-pub use runtime::{Addressed, AreaEvent, CycleOutput, Runtime};
+pub use railit_ops;
+pub use runtime::{Addressed, AreaEvent, CycleOutput, OPS_REQUEST_BASE, Runtime};
 
 use railit_plan::{PlanError, PlanView, VerifyingKey};
 use railit_topology::Topology;

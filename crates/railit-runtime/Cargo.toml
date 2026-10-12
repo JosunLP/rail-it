@@ -20,6 +20,7 @@ railit-kernel = { workspace = true, features = ["alloc", "serde"] }
 railit-movement = { workspace = true, features = ["serde"] }
 railit-sim = { workspace = true }
 railit-journal = { workspace = true }
+railit-ops = { workspace = true }
 serde = { workspace = true, features = ["std"] }
 toml = { workspace = true }
 getrandom = { workspace = true }

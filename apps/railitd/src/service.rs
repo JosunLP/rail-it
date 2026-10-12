@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
-use crate::engine::{Answer, EngineMsg, SimCommand, SimReply};
+use crate::engine::{Answer, EngineMsg, OpsCommand, SimCommand, SimReply};
 
 /// Fehler einer Operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -249,6 +249,18 @@ impl Service {
 
     pub(crate) async fn remove_train(&self, name: String) -> Res<()> {
         self.sim_done(SimCommand::RemoveTrain(name)).await
+    }
+
+    /// Befehl an die Betriebsführung.
+    pub(crate) async fn ops(&self, command: OpsCommand) -> Res<()> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(EngineMsg::Ops { command, reply })
+            .await
+            .map_err(|_| ServiceError::Unavailable)?;
+        rx.await
+            .map_err(|_| ServiceError::Unavailable)?
+            .map_err(ServiceError::BadRequest)
     }
 
     pub(crate) async fn fault(&self, kind: FaultKind, element: &str, active: bool) -> Res<()> {

@@ -14,6 +14,14 @@
 //! | GET | `/v1/aux` | Offene Hilfshandlungen und Zählwerk |
 //! | POST | `/v1/aux` | Hilfshandlung anfordern (`{"kind":…,"element":…}`) |
 //! | POST | `/v1/aux/{id}/confirm` | Hilfshandlung bestätigen (`?area=` bei mehreren Bereichen) |
+//! | GET | `/v1/ops` | Betriebsführung: Züge, Zugnummern, nächster Halt, Verspätung |
+//! | POST | `/v1/ops/ars` | Zuglenkung ein/aus (`{"on":true}`) |
+//! | POST | `/v1/ops/trains/{train}/describe` | Zugnummer eintragen (`{"signal":"AA"}`) |
+//! | DELETE | `/v1/ops/trains/{train}` | Zugnummer löschen |
+//! | POST | `/v1/ops/trains/{train}/hold` | Zug zurückhalten |
+//! | POST | `/v1/ops/trains/{train}/release` | Zug freigeben |
+//! | POST | `/v1/ops/trains/{train}/platform` | Gleiswechsel (`{"station":…,"platform":…}`) |
+//! | POST | `/v1/ops/trains/{train}/delay` | Wartezeit verfügen (`{"s":60}`) |
 //! | GET | `/v1/events` | Ereignisstrom (SSE, JSON je Ereignis) |
 //! | GET | `/v1/sim/trains` | Züge der Simulation |
 //! | POST | `/v1/sim/trains` | Zug einsetzen |
@@ -44,7 +52,7 @@ use serde_json::{Value, json};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
-use crate::engine::Answer;
+use crate::engine::{Answer, OpsCommand};
 use crate::service::{FaultKind, NewTrain, Service, ServiceError};
 
 /// Gemeinsamer Zustand der Handler.
@@ -90,6 +98,14 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/v1/borders/{address}/withdraw", post(withdraw_permission))
         .route("/v1/aux", get(aux_list).post(aux_request))
         .route("/v1/aux/{id}/confirm", post(aux_confirm))
+        .route("/v1/ops", get(ops))
+        .route("/v1/ops/ars", post(ops_ars))
+        .route("/v1/ops/trains/{train}", delete(ops_erase))
+        .route("/v1/ops/trains/{train}/describe", post(ops_describe))
+        .route("/v1/ops/trains/{train}/hold", post(ops_hold))
+        .route("/v1/ops/trains/{train}/release", post(ops_release))
+        .route("/v1/ops/trains/{train}/platform", post(ops_platform))
+        .route("/v1/ops/trains/{train}/delay", post(ops_delay))
         .route("/v1/events", get(events))
         .route("/v1/sim/trains", get(trains).post(add_train))
         .route("/v1/sim/trains/{name}", delete(remove_train))
@@ -255,6 +271,101 @@ async fn aux_confirm(
             .aux_confirm(query.area.as_deref(), id, operator)
             .await?,
     ))
+}
+
+async fn ops(State(state): State<AppState>) -> ApiResult {
+    match &state.service.snapshot().ops {
+        Some(ops) => Ok(Json(ops).into_response()),
+        None => Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "Betriebsführung nicht eingeschaltet".into(),
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ArsBody {
+    on: bool,
+}
+
+async fn ops_ars(State(state): State<AppState>, Json(body): Json<ArsBody>) -> ApiResult {
+    state.service.ops(OpsCommand::SetArs(body.on)).await?;
+    Ok(done())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DescribeBody {
+    signal: String,
+}
+
+async fn ops_describe(
+    State(state): State<AppState>,
+    Path(train): Path<String>,
+    Json(body): Json<DescribeBody>,
+) -> ApiResult {
+    state
+        .service
+        .ops(OpsCommand::Describe {
+            train,
+            signal: body.signal,
+        })
+        .await?;
+    Ok(done())
+}
+
+async fn ops_erase(State(state): State<AppState>, Path(train): Path<String>) -> ApiResult {
+    state.service.ops(OpsCommand::Erase(train)).await?;
+    Ok(done())
+}
+
+async fn ops_hold(State(state): State<AppState>, Path(train): Path<String>) -> ApiResult {
+    state.service.ops(OpsCommand::Hold(train, true)).await?;
+    Ok(done())
+}
+
+async fn ops_release(State(state): State<AppState>, Path(train): Path<String>) -> ApiResult {
+    state.service.ops(OpsCommand::Hold(train, false)).await?;
+    Ok(done())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlatformBody {
+    station: String,
+    platform: String,
+}
+
+async fn ops_platform(
+    State(state): State<AppState>,
+    Path(train): Path<String>,
+    Json(body): Json<PlatformBody>,
+) -> ApiResult {
+    state
+        .service
+        .ops(OpsCommand::Platform {
+            train,
+            station: body.station,
+            platform: body.platform,
+        })
+        .await?;
+    Ok(done())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DelayBody {
+    s: u32,
+}
+
+async fn ops_delay(
+    State(state): State<AppState>,
+    Path(train): Path<String>,
+    Json(body): Json<DelayBody>,
+) -> ApiResult {
+    state.service.ops(OpsCommand::Delay(train, body.s)).await?;
+    Ok(done())
 }
 
 async fn events(

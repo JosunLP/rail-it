@@ -26,6 +26,7 @@ use clap::Parser;
 use railit_plan::{PlanView, VerifyingKey};
 use railit_rules::GenericRules;
 use railit_runtime::keys::{read_verifying_key, to_hex};
+use railit_runtime::railit_ops::{OpsConfig, Timetable};
 use railit_runtime::{Runtime, check_correspondence, load_plan};
 use railit_sim::{SimConfig, Simulator};
 use railit_topology::Topology;
@@ -72,6 +73,12 @@ struct Args {
     /// Abstand der Zustands-Prüfpunkte im Journal (Zyklen).
     #[arg(long, default_value_t = 600)]
     checkpoint_every: u64,
+    /// Fahrplan (TOML, siehe `railit_ops`); setzt Züge nach Plan ein.
+    #[arg(long)]
+    timetable: Option<PathBuf>,
+    /// Zuglenkung einschalten (Fahrstraßen für Züge mit Fahrplan selbsttätig anfordern).
+    #[arg(long)]
+    ars: bool,
     /// Zugangstoken der API (auch über `RAILIT_TOKEN`).
     #[arg(long, env = "RAILIT_TOKEN", hide_env_values = true)]
     token: Option<String>,
@@ -146,6 +153,20 @@ fn load(args: &Args) -> Result<(Topology, Runtime<Simulator>), String> {
         Runtime::for_network(&net, areas, GenericRules::default(), sim, cycle)
             .map_err(|e| format!("Pläne passen nicht zum Netz: {e}"))?
     };
+    let mut rt = rt;
+    let timetable = match &args.timetable {
+        Some(path) => {
+            let source =
+                std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            Timetable::parse(&source).map_err(|e| format!("Fahrplan {}: {e}", path.display()))?
+        }
+        None => Timetable::default(),
+    };
+    let cfg = OpsConfig {
+        ars: args.ars,
+        ..OpsConfig::default()
+    };
+    rt.enable_ops(&net, cfg, timetable)?;
     Ok((net, rt))
 }
 
