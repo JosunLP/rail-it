@@ -122,6 +122,13 @@ fn sample() -> Plan {
                 vec![0],
             ),
         ],
+        borders: vec![BorderDef {
+            name: ">Nachbar".into(),
+            initial: true,
+            entry_signal: SignalId::new(3),
+            approach_tvds: vec![tvd(5), tvd(4)],
+            approach_points: vec![(PointId::new(1), PointPosition::Left)],
+        }],
     }
 }
 
@@ -138,6 +145,14 @@ fn roundtrip_preserves_plan() {
     assert_eq!(view.find_signal("F"), Some(SignalId::new(3)));
     assert_eq!(view.find_point("W2"), Some(PointId::new(1)));
     assert_eq!(view.find_tvd("TE"), Some(TvdId::new(5)));
+    let border = view.find_border(">Nachbar").unwrap();
+    assert!(view.border_initial(border));
+    assert_eq!(view.border_entry_signal(border), Some(SignalId::new(3)));
+    assert_eq!(view.border_approach_tvds(border).count(), 2);
+    assert_eq!(
+        view.border_approach_points(border).collect::<Vec<_>>(),
+        [(PointId::new(1), PointPosition::Left)]
+    );
     assert_eq!(view.find_route("X"), None);
     assert_eq!(view.point_tvd(PointId::new(0)), Some(TvdId::new(1)));
     assert_eq!(view.point_tvd(PointId::new(2)), None);
@@ -341,6 +356,46 @@ fn inconsistent_phase2_data_is_rejected() {
     reject(
         |p| p.level_crossings[0].tvd = TvdId::new(9),
         "BÜ-Abschnitt ungültig",
+    );
+}
+
+#[test]
+fn inconsistent_border_data_is_rejected() {
+    let reject = |f: fn(&mut Plan), what: &str| {
+        let mut p = sample();
+        f(&mut p);
+        assert!(p.to_image().is_err(), "nicht abgewiesen: {what}");
+    };
+    reject(
+        |p| p.borders[0].entry_signal = SignalId::new(6),
+        "Vorsignal als Einfahrsignal",
+    );
+    reject(
+        |p| p.borders[0].approach_tvds.clear(),
+        "leerer Annäherungsabschnitt",
+    );
+    reject(
+        |p| p.borders[0].approach_tvds.push(TvdId::new(5)),
+        "Abschnitt doppelt",
+    );
+    reject(
+        |p| p.borders[0].approach_points = vec![(PointId::new(0), PointPosition::Left)],
+        "Weiche außerhalb des Annäherungsabschnitts",
+    );
+    reject(
+        |p| {
+            p.routes[2].end = RouteEnd::Border(BorderId::new(1));
+            p.routes[2].overlap_tvds.clear();
+        },
+        "unbekannte Grenze",
+    );
+    let mut ok = sample();
+    ok.routes[2].end = RouteEnd::Border(BorderId::new(0));
+    let image = ok.to_image().unwrap();
+    let view = PlanView::parse(&image).unwrap();
+    assert_eq!(
+        view.route(RouteId::new(2)).unwrap().end(),
+        RouteEnd::Border(BorderId::new(0))
     );
 }
 

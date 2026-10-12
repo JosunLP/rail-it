@@ -154,6 +154,7 @@ const fn terminal_kind_str(k: TerminalKind) -> &'static str {
     match k {
         TerminalKind::BufferStop => "buffer_stop",
         TerminalKind::Boundary => "boundary",
+        TerminalKind::Border { .. } => "border",
     }
 }
 
@@ -240,6 +241,7 @@ fn print_info_text(net: &Topology) {
         let kind = match t.kind {
             TerminalKind::BufferStop => "Prellbock",
             TerminalKind::Boundary => "Netzgrenze",
+            TerminalKind::Border { .. } => "Grenze zum Nachbarbereich",
         };
         println!("  {:<12} {kind}", t.name);
     }

@@ -4,7 +4,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
-use railit_types::{Length, LxId, PointId, SignalId, Speed, TerminalId, TrackId, TvdId};
+use railit_types::{AreaId, Length, LxId, PointId, SignalId, Speed, TerminalId, TrackId, TvdId};
 pub use railit_types::{PointPosition, SignalKind, SignalSystem};
 
 /// Gleisabschnitt mit den Ports `a` und `b`.
@@ -41,6 +41,19 @@ pub enum TerminalKind {
     BufferStop,
     /// Grenze des modellierten Netzes; das Gleis geht außerhalb weiter.
     Boundary,
+    /// Grenze zu einem benachbarten Stellbereich. Fahrten über die Grenze sichert der
+    /// Erlaubniswechsel mit dem Nachbarn (Streckenblock).
+    Border {
+        /// Dieser Bereich übernimmt beim Anlauf die Erlaubnis für die Grenze.
+        initial: bool,
+    },
+}
+
+impl TerminalKind {
+    /// Ist das Netzende eine Grenze zu einem anderen Stellbereich?
+    pub const fn is_border(self) -> bool {
+        matches!(self, Self::Border { .. })
+    }
 }
 
 /// Netzende mit dem einzigen Port `end`.
@@ -80,6 +93,9 @@ pub struct Signal {
     pub kind: SignalKind,
     /// Signalsystem (Ks oder H/V).
     pub system: SignalSystem,
+    /// Selbstblocksignal: Die Zuglenkung stellt Fahrstraßen ab diesem Signal selbsttätig,
+    /// sobald sich ein Zug nähert.
+    pub auto: bool,
 }
 
 /// Bahnübergang als Punktobjekt auf einem Gleisabschnitt.
@@ -92,6 +108,50 @@ pub struct LevelCrossing {
     pub track: TrackId,
     /// Position gemessen ab Port `a` des Gleisabschnitts.
     pub position: Length,
+}
+
+/// Stellbereich: Gleisfreimeldeabschnitte, die genau ein Sicherheitskern steuert.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct Area {
+    /// Fachlicher Name, z. B. `"Adorf"`.
+    pub name: String,
+    /// Zugehörige Gleisfreimeldeabschnitte.
+    pub tvds: Vec<TvdId>,
+}
+
+/// Bahnsteiggleis einer Betriebsstelle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct Platform {
+    /// Name, z. B. `"1"`.
+    pub name: String,
+    /// Signale, vor denen Züge an diesem Bahnsteig halten (je Fahrtrichtung eines).
+    pub signals: Vec<SignalId>,
+}
+
+/// Betriebsstelle (Bahnhof oder Haltepunkt).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct Station {
+    /// Fachlicher Name, z. B. `"Adorf"`.
+    pub name: String,
+    /// Bahnsteiggleise.
+    pub platforms: Vec<Platform>,
+}
+
+/// Verbindung zweier Stellbereiche über ein Paar verbundener Ports.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct AreaLink {
+    /// Bereich auf der einen Seite.
+    pub a: AreaId,
+    /// Port auf der Seite von `a`.
+    pub a_port: PortRef,
+    /// Bereich auf der anderen Seite.
+    pub b: AreaId,
+    /// Port auf der Seite von `b`.
+    pub b_port: PortRef,
 }
 
 /// Element, das einem Gleisfreimeldeabschnitt angehören kann.

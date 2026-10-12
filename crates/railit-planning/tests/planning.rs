@@ -505,3 +505,105 @@ fn distant_signals_need_a_unique_main_signal() {
     // v zeigt zur Netzgrenze S, v2 über die spitz befahrene Weiche W.
     assert_eq!(names, ["v", "v2"], "{report}");
 }
+
+const NORDBAHN: &str = include_str!("../../../examples/nordbahn.toml");
+
+/// REQ-PLN-019: Projektierung je Stellbereich mit Grenzen und Annäherungsabschnitten.
+#[test]
+fn nordbahn_compiles_per_area() {
+    use railit_plan::{PlanView, RouteEnd};
+    let net = railit_import::toml_format::parse(NORDBAHN)
+        .unwrap()
+        .topology;
+    let areas = railit_planning::compile_areas(&net, None, &PlanningConfig::default()).unwrap();
+    assert_eq!(areas.len(), 3);
+
+    let plan = |name: &str| {
+        let a = areas.iter().find(|a| a.name == name).unwrap();
+        PlanView::parse(&a.compiled.image).unwrap();
+        a.compiled.plan.clone()
+    };
+    let tvd = |p: &railit_plan::Plan, n: &str| {
+        railit_types::TvdId::from_index(p.tvds.iter().position(|t| t.name == n).unwrap()).unwrap()
+    };
+    let signal = |p: &railit_plan::Plan, n: &str| {
+        railit_types::SignalId::from_index(p.signals.iter().position(|s| s.name == n).unwrap())
+            .unwrap()
+    };
+
+    let strecke = plan("Strecke");
+    let names: Vec<&str> = strecke.routes.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, ["Sbk1->Bstadt", "Sbk2->Adorf"]);
+    assert!(matches!(strecke.routes[0].end, RouteEnd::Border(_)));
+    assert!(strecke.routes[0].overlap_tvds.is_empty());
+    let borders: Vec<(&str, bool)> = strecke
+        .borders
+        .iter()
+        .map(|b| (b.name.as_str(), b.initial))
+        .collect();
+    assert_eq!(borders, [(">Adorf", false), (">Bstadt", true)]);
+    let west = &strecke.borders[0];
+    assert_eq!(west.entry_signal, signal(&strecke, "Sbk1"));
+    assert_eq!(
+        west.approach_tvds,
+        [tvd(&strecke, "ST1"), tvd(&strecke, "ST2")]
+    );
+
+    let adorf = plan("Adorf");
+    let exit = adorf
+        .routes
+        .iter()
+        .find(|r| r.name == "AN1->Strecke")
+        .unwrap();
+    assert_eq!(
+        exit.tvds,
+        [tvd(&adorf, "ATW2"), tvd(&adorf, "ATO1"), tvd(&adorf, "ATO")]
+    );
+    let border = &adorf.borders[0];
+    assert!(border.initial);
+    assert_eq!(border.entry_signal, signal(&adorf, "AF"));
+    assert_eq!(
+        border.approach_tvds,
+        [tvd(&adorf, "ATO"), tvd(&adorf, "ATO1")]
+    );
+    assert!(border.approach_points.is_empty());
+    // Die beiden Ausfahrten zur Strecke sind feindlich, Einfahrt AF-AP1 ebenfalls.
+    let id = |n: &str| {
+        railit_types::RouteId::from_index(adorf.routes.iter().position(|r| r.name == n).unwrap())
+            .unwrap()
+    };
+    assert!(exit.conflicts.contains(&id("AN2->Strecke")));
+    assert!(exit.conflicts.contains(&id("AF-AP1")));
+
+    let bstadt = plan("Bstadt");
+    assert!(!bstadt.borders[0].initial);
+    assert!(bstadt.routes.iter().any(|r| r.name == "BP2->Strecke"));
+}
+
+/// REQ-PLN-019: Ohne Einfahrsignal hinter einer Grenze ist der Plan ungültig; ein
+/// manipulierter Annäherungsabschnitt fällt der Gegenprüfung auf.
+#[test]
+fn borders_need_an_entry_signal() {
+    let net = railit_import::toml_format::parse(NORDBAHN)
+        .unwrap()
+        .topology;
+    let without = NORDBAHN.replace(
+        "[[signal]]\nname = \"AF\"\ntrack = \"Ao\"\nposition_m = 0\ndirection = \"b_to_a\"\nkind = \"main\"\n",
+        "",
+    );
+    assert_ne!(without, NORDBAHN);
+    let bad = railit_import::toml_format::parse(&without)
+        .unwrap()
+        .topology;
+    let err = railit_planning::compile_areas(&bad, None, &PlanningConfig::default()).unwrap_err();
+    assert!(
+        err.errors.iter().any(|e| e.requirement() == "REQ-PLN-019"),
+        "{err}"
+    );
+
+    let strecke = net.area_cut(net.find_area("Strecke").unwrap()).unwrap();
+    let mut plan = railit_planning::generate(&strecke.topology).unwrap();
+    railit_planning::verify(&strecke.topology, &plan).unwrap();
+    plan.borders[0].approach_tvds.pop();
+    assert!(railit_planning::verify(&strecke.topology, &plan).is_err());
+}

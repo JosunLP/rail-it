@@ -88,6 +88,32 @@ pub enum TopologyError {
         /// Betroffene Abschnitte.
         tvds: Vec<String>,
     },
+    /// Ein Stellbereich hat keine Abschnitte.
+    EmptyArea {
+        /// Bereich.
+        area: String,
+    },
+    /// Ein Abschnitt gehört keinem Stellbereich an, obwohl Bereiche festgelegt sind.
+    TvdNotInArea {
+        /// Abschnitt.
+        tvd: String,
+    },
+    /// Ein Abschnitt gehört mehreren Stellbereichen an.
+    TvdInMultipleAreas {
+        /// Abschnitt.
+        tvd: String,
+        /// Bereiche.
+        areas: Vec<String>,
+    },
+    /// Ein Bahnsteig verweist auf ein Signal, an dem keine Fahrstraße endet.
+    PlatformSignal {
+        /// Betriebsstelle.
+        station: String,
+        /// Bahnsteig.
+        platform: String,
+        /// Signal.
+        signal: String,
+    },
     /// Das Netz überschreitet die maximale Anzahl Elemente einer Art (`u32::MAX`).
     TooManyElements {
         /// Art des Elements.
@@ -109,6 +135,10 @@ impl TopologyError {
             Self::EmptyTvd { .. } | Self::NotInTvd { .. } | Self::InMultipleTvds { .. } => {
                 "REQ-TOP-006"
             }
+            Self::EmptyArea { .. }
+            | Self::TvdNotInArea { .. }
+            | Self::TvdInMultipleAreas { .. } => "REQ-TOP-011",
+            Self::PlatformSignal { .. } => "REQ-TOP-012",
         }
     }
 }
@@ -163,6 +193,26 @@ impl fmt::Display for TopologyError {
                 }
                 Ok(())
             }
+            Self::EmptyArea { area } => write!(f, "Stellbereich „{area}“ ist leer"),
+            Self::TvdNotInArea { tvd } => {
+                write!(
+                    f,
+                    "Gleisfreimeldeabschnitt „{tvd}“ gehört zu keinem Stellbereich"
+                )
+            }
+            Self::TvdInMultipleAreas { tvd, areas } => write!(
+                f,
+                "Gleisfreimeldeabschnitt „{tvd}“ gehört zu mehreren Stellbereichen: {}",
+                areas.join(", ")
+            ),
+            Self::PlatformSignal {
+                station,
+                platform,
+                signal,
+            } => write!(
+                f,
+                "Bahnsteig „{platform}“ in „{station}“ verweist auf „{signal}“, an dem keine Fahrstraße endet"
+            ),
             Self::TooManyElements { kind } => write!(f, "Zu viele Elemente der Art {kind}"),
         }
     }

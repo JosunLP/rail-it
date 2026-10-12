@@ -7,16 +7,18 @@ use alloc::vec::Vec;
 use ed25519_dalek::{Signer, SigningKey};
 use railit_types::bitset::{BitSetMut, words_for};
 use railit_types::{
-    LxId, PointId, PointPosition, RouteId, SignalId, SignalKind, SignalSystem, Speed, TvdId,
+    BorderId, LxId, PointId, PointPosition, RouteId, SignalId, SignalKind, SignalSystem, Speed,
+    TvdId,
 };
 use sha2::{Digest, Sha256};
 
 use crate::error::PlanError;
 use crate::format::{
-    END_BOUNDARY, END_BUFFER_STOP, END_SIGNAL, FLAG_SIGNED, FLANK_POINT, FLANK_SIGNAL, H_BODY_LEN,
-    H_CONFLICT_OFF, H_FLAGS, H_LX_TVD_OFF, H_LXS, H_NAMES_LEN, H_NAMES_OFF, H_POINT_TVD_OFF,
-    H_POINTS, H_POOL_OFF, H_POOL_WORDS, H_ROUTE_OFF, H_ROUTES, H_SIGNAL_OFF, H_SIGNALS,
-    H_TVD_FLAGS_OFF, H_TVDS, H_VERSION, HEADER_LEN, MAGIC, NONE, TVD_ENTRY, VERSION, encode_point,
+    BORDER_INITIAL, END_BORDER, END_BOUNDARY, END_BUFFER_STOP, END_SIGNAL, FLAG_SIGNED,
+    FLANK_POINT, FLANK_SIGNAL, H_BODY_LEN, H_BORDER_OFF, H_BORDERS, H_CONFLICT_OFF, H_FLAGS,
+    H_LX_TVD_OFF, H_LXS, H_NAMES_LEN, H_NAMES_OFF, H_POINT_TVD_OFF, H_POINTS, H_POOL_OFF,
+    H_POOL_WORDS, H_ROUTE_OFF, H_ROUTES, H_SIGNAL_OFF, H_SIGNALS, H_TVD_FLAGS_OFF, H_TVDS,
+    H_VERSION, HEADER_LEN, MAGIC, NONE, TVD_ENTRY, VERSION, encode_point,
 };
 use crate::view::{Flank, PlanView, Protection, RouteEnd};
 
@@ -58,6 +60,22 @@ pub struct LxDef {
     pub name: String,
     /// Gleisfreimeldeabschnitt, in dem der Bahnübergang liegt.
     pub tvd: TvdId,
+}
+
+/// Grenze zu einem Nachbarbereich im Plan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BorderDef {
+    /// Fachlicher Name, z. B. `">Strecke"`.
+    pub name: String,
+    /// Dieser Bereich übernimmt beim Anlauf die Erlaubnis.
+    pub initial: bool,
+    /// Einfahrsignal für Züge aus dem Nachbarbereich.
+    pub entry_signal: SignalId,
+    /// Annäherungsabschnitt: Abschnitte von der Grenze bis zum Einfahrsignal und dessen
+    /// Durchrutschweg.
+    pub approach_tvds: Vec<TvdId>,
+    /// Weichenlagen im Annäherungsabschnitt.
+    pub approach_points: Vec<(PointId, PointPosition)>,
 }
 
 /// Fahrstraße im Plan.
@@ -102,6 +120,8 @@ pub struct Plan {
     pub level_crossings: Vec<LxDef>,
     /// Fahrstraßen, Index = [`RouteId`].
     pub routes: Vec<RouteDef>,
+    /// Grenzen zu Nachbarbereichen, Index = [`BorderId`].
+    pub borders: Vec<BorderDef>,
 }
 
 /// Puffer, in den das Image geschrieben wird.
@@ -219,6 +239,18 @@ impl Plan {
                     conflicts: r.conflicts().collect(),
                 })
                 .collect(),
+            borders: ids(view.border_count())
+                .map(BorderId::new)
+                .map(|id| BorderDef {
+                    name: view.border_name(id).unwrap_or_default().into(),
+                    initial: view.border_initial(id),
+                    entry_signal: view
+                        .border_entry_signal(id)
+                        .unwrap_or(SignalId::new(u32::MAX)),
+                    approach_tvds: view.border_approach_tvds(id).collect(),
+                    approach_points: view.border_approach_points(id).collect(),
+                })
+                .collect(),
         }
     }
 
@@ -266,6 +298,7 @@ impl Plan {
                 RouteEnd::Signal(s) => (END_SIGNAL, s.raw()),
                 RouteEnd::Boundary => (END_BOUNDARY, NONE),
                 RouteEnd::BufferStop => (END_BUFFER_STOP, NONE),
+                RouteEnd::Border(b) => (END_BORDER, b.raw()),
             };
             let points = pool.list(encode_points(&r.points)?, 1)?;
             let tvds = pool.list(r.tvds.iter().map(|t| t.raw()), 1)?;
@@ -305,6 +338,20 @@ impl Plan {
             ]);
         }
 
+        let mut border_entries: Vec<[u32; 6]> = Vec::with_capacity(self.borders.len());
+        for b in &self.borders {
+            let tvds = pool.list(b.approach_tvds.iter().map(|t| t.raw()), 1)?;
+            let points = pool.list(encode_points(&b.approach_points)?, 1)?;
+            border_entries.push([
+                if b.initial { BORDER_INITIAL } else { 0 },
+                b.entry_signal.raw(),
+                tvds.0,
+                tvds.1,
+                points.0,
+                points.1,
+            ]);
+        }
+
         let route_off = w.pos()?;
         for entry in &entries {
             for v in entry {
@@ -339,6 +386,13 @@ impl Plan {
             w.u32(l.tvd.raw());
         }
 
+        let border_off = w.pos()?;
+        for entry in &border_entries {
+            for v in entry {
+                w.u32(*v);
+            }
+        }
+
         let conflict_off = w.pos()?;
         let row_words = words_for(self.routes.len());
         for (index, r) in self.routes.iter().enumerate() {
@@ -363,6 +417,7 @@ impl Plan {
             .chain(self.tvds.iter().map(|t| t.name.as_str()))
             .chain(self.routes.iter().map(|r| r.name.as_str()))
             .chain(self.level_crossings.iter().map(|l| l.name.as_str()))
+            .chain(self.borders.iter().map(|b| b.name.as_str()))
             .collect();
         let mut data_off = 0u32;
         for name in &names {
@@ -399,6 +454,8 @@ impl Plan {
             (H_NAMES_OFF, names_off),
             (H_NAMES_LEN, names_len),
             (H_FLAGS, if signed { FLAG_SIGNED } else { 0 }),
+            (H_BORDERS, Writer::len(self.borders.len())?),
+            (H_BORDER_OFF, border_off),
         ];
         w.buf
             .get_mut(..4)

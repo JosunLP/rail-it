@@ -1,4 +1,4 @@
-//! Binärformat des Plan-Images, Version 2.
+//! Binärformat des Plan-Images, Version 3.
 //!
 //! Alle Zahlen sind little-endian. Offsets sind Byte-Offsets ab Anfang des Images.
 //!
@@ -18,10 +18,14 @@
 //! │ TVD-Merkmale: n × u32            │   Bit 0: Einfahrabschnitt (an Netzgrenze)
 //! ├──────────────────────────────────┤ lx_tvd_off
 //! │ TVD je Bahnübergang: n × u32     │
+//! ├──────────────────────────────────┤ border_off
+//! │ Grenzen: n × 6 × u32             │   Merkmale, Einfahrsignal, Annäherungsabschnitt
+//! │                                  │   (TVDs, Weichen) als Pool-Listen
 //! ├──────────────────────────────────┤ conflict_off
 //! │ Feindlichkeiten: n × w × u64     │   w = ⌈Anzahl Fahrstraßen / 64⌉
 //! ├──────────────────────────────────┤ names_off
-//! │ Namen: k × (off, len) u32        │   Netz, Weichen, Signale, TVDs, Fahrstraßen, BÜ
+//! │ Namen: k × (off, len) u32        │   Netz, Weichen, Signale, TVDs, Fahrstraßen, BÜ,
+//! │                                  │   Grenzen
 //! │        UTF-8-Daten               │
 //! ├──────────────────────────────────┤ body_len
 //! │ SHA-256 über [0, body_len)       │ 32 Byte
@@ -40,14 +44,16 @@
 //! | 4 | Anzahl Signale | 16 | `names_off` |
 //! | 5 | Anzahl TVDs | 17 | Länge Namensabschnitt in Byte |
 //! | 6 | Anzahl Fahrstraßen | 18 | Flags (Bit 0: signiert) |
-//! | 7 | Anzahl Bahnübergänge | 19–23 | reserviert (0) |
+//! | 7 | Anzahl Bahnübergänge | 19 | Anzahl Grenzen |
+//! | | | 20 | `border_off` |
+//! | | | 21–23 | reserviert (0) |
 //! | 8 | `route_off` | | |
 //! | 9 | `pool_off` | | |
 //! | 10 | Anzahl Pool-Wörter | | |
 //! | 11 | `conflict_off` | | |
 //!
-//! **Fahrstraße** (16 × u32): Startsignal, Zielart (0 Signal, 1 Netzgrenze, 2 Prellbock),
-//! Zielsignal (oder `u32::MAX`), Geschwindigkeit in km/h (0 = keine Beschränkung), dann je
+//! **Fahrstraße** (16 × u32): Startsignal, Zielart (0 Signal, 1 Netzgrenze, 2 Prellbock,
+//! 3 Bereichsgrenze), Zielsignal bzw. Grenze (oder `u32::MAX`), Geschwindigkeit in km/h (0 = keine Beschränkung), dann je
 //! Pool-Start und Anzahl für: Weichen, TVDs (Fahrreihenfolge), TVDs des Durchrutschwegs,
 //! Weichen des Durchrutschwegs, Flankenschutz-Einträge, Bahnübergänge.
 //!
@@ -55,11 +61,15 @@
 //!
 //! **Flankenschutz-Eintrag** im Pool (3 × u32): Art (0 Weiche in Lage, 1 Signal in Halt),
 //! Weicheneintrag bzw. Signal-ID, geschützter TVD der Fahrstraße.
+//!
+//! **Grenze** (6 × u32): Merkmale (Bit 0: übernimmt beim Anlauf die Erlaubnis),
+//! Einfahrsignal, dann je Pool-Start und Anzahl für die Abschnitte und die Weichen des
+//! Annäherungsabschnitts (von der Grenze bis zum Einfahrsignal und dessen Durchrutschweg).
 
 /// Kennung am Anfang jedes Plan-Images.
 pub const MAGIC: [u8; 4] = *b"RPLN";
 /// Unterstützte Formatversion.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 /// Länge des Kopfs in Byte.
 pub const HEADER_LEN: usize = 96;
 /// Länge eines Fahrstraßeneintrags in Byte.
@@ -68,6 +78,10 @@ pub const ROUTE_LEN: usize = 64;
 pub const SIGNAL_WORDS: usize = 3;
 /// Wörter je Flankenschutz-Eintrag.
 pub const FLANK_WORDS: usize = 3;
+/// Wörter je Grenzeintrag.
+pub const BORDER_WORDS: usize = 6;
+/// Grenzmerkmal: Dieser Bereich übernimmt beim Anlauf die Erlaubnis.
+pub const BORDER_INITIAL: u32 = 1;
 /// Länge der SHA-256-Prüfsumme in Byte.
 pub const DIGEST_LEN: usize = 32;
 /// Länge der Ed25519-Signatur in Byte.
@@ -95,6 +109,8 @@ pub(crate) const H_LX_TVD_OFF: usize = 15;
 pub(crate) const H_NAMES_OFF: usize = 16;
 pub(crate) const H_NAMES_LEN: usize = 17;
 pub(crate) const H_FLAGS: usize = 18;
+pub(crate) const H_BORDERS: usize = 19;
+pub(crate) const H_BORDER_OFF: usize = 20;
 
 /// Wortindex in einem Fahrstraßeneintrag.
 pub(crate) mod r {
@@ -113,6 +129,7 @@ pub(crate) mod r {
 pub(crate) const END_SIGNAL: u32 = 0;
 pub(crate) const END_BOUNDARY: u32 = 1;
 pub(crate) const END_BUFFER_STOP: u32 = 2;
+pub(crate) const END_BORDER: u32 = 3;
 pub(crate) const NONE: u32 = u32::MAX;
 pub(crate) const FLANK_POINT: u32 = 0;
 pub(crate) const FLANK_SIGNAL: u32 = 1;

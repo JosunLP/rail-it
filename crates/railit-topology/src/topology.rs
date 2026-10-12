@@ -5,11 +5,11 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use railit_types::{LxId, PointId, SignalId, TerminalId, TrackId, TvdId};
+use railit_types::{AreaId, LxId, PointId, SignalId, StationId, TerminalId, TrackId, TvdId};
 
 use crate::model::{
-    ElementRef, LevelCrossing, NodeRef, Point, PointPosition, Port, PortRef, Signal, Terminal,
-    Track, TvdMember, TvdSection,
+    Area, AreaLink, ElementRef, LevelCrossing, NodeRef, Point, PointPosition, Port, PortRef,
+    Signal, Station, Terminal, Track, TvdMember, TvdSection,
 };
 
 /// Verbindungstabelle: pro Knoten und Port der verbundene Gegenport.
@@ -176,9 +176,93 @@ pub struct Topology {
     pub(crate) names: BTreeMap<String, ElementRef>,
     pub(crate) track_tvd: Vec<Option<TvdId>>,
     pub(crate) point_tvd: Vec<Option<TvdId>>,
+    pub(crate) areas: Vec<Area>,
+    pub(crate) stations: Vec<Station>,
+    pub(crate) tvd_area: Vec<Option<AreaId>>,
 }
 
 impl Topology {
+    /// Alle Stellbereiche (leer, wenn das Netz nicht aufgeteilt ist).
+    pub fn areas(&self) -> impl ExactSizeIterator<Item = (AreaId, &Area)> {
+        enumerate_ids(&self.areas)
+    }
+
+    /// Stellbereich `id`.
+    pub fn area(&self, id: AreaId) -> Option<&Area> {
+        self.areas.get(id.index()?)
+    }
+
+    /// Stellbereich mit dem Namen `name`.
+    pub fn find_area(&self, name: &str) -> Option<AreaId> {
+        self.areas().find(|(_, a)| a.name == name).map(|(id, _)| id)
+    }
+
+    /// Stellbereich eines Gleisfreimeldeabschnitts.
+    pub fn area_of_tvd(&self, tvd: TvdId) -> Option<AreaId> {
+        self.tvd_area.get(tvd.index()?).copied().flatten()
+    }
+
+    /// Stellbereich eines Gleises oder einer Weiche; Netzenden gehören zum Bereich des
+    /// Knotens, an den sie angeschlossen sind.
+    pub fn area_of_node(&self, node: NodeRef) -> Option<AreaId> {
+        match node {
+            NodeRef::Track(t) => self.area_of_tvd(self.tvd_of(TvdMember::Track(t))?),
+            NodeRef::Point(p) => self.area_of_tvd(self.tvd_of(TvdMember::Point(p))?),
+            NodeRef::Terminal(t) => {
+                let inside = self.linked(PortRef::new(NodeRef::Terminal(t), Port::End))?;
+                match inside.node {
+                    NodeRef::Terminal(_) => None,
+                    node => self.area_of_node(node),
+                }
+            }
+        }
+    }
+
+    /// Verbindungen zwischen verschiedenen Stellbereichen, je Paar einmal (`a < b` nach
+    /// Port-Reihenfolge).
+    pub fn area_links(&self) -> Vec<AreaLink> {
+        let mut out = Vec::new();
+        for node in self.links.nodes() {
+            for &port in node.ports() {
+                let here = PortRef::new(node, port);
+                let Some(there) = self.linked(here) else {
+                    continue;
+                };
+                if here >= there {
+                    continue;
+                }
+                if let (Some(a), Some(b)) =
+                    (self.area_of_node(here.node), self.area_of_node(there.node))
+                    && a != b
+                {
+                    out.push(AreaLink {
+                        a,
+                        a_port: here,
+                        b,
+                        b_port: there,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Alle Betriebsstellen.
+    pub fn stations(&self) -> impl ExactSizeIterator<Item = (StationId, &Station)> {
+        enumerate_ids(&self.stations)
+    }
+
+    /// Betriebsstelle `id`.
+    pub fn station(&self, id: StationId) -> Option<&Station> {
+        self.stations.get(id.index()?)
+    }
+
+    /// Betriebsstelle mit dem Namen `name`.
+    pub fn find_station(&self, name: &str) -> Option<StationId> {
+        self.stations()
+            .find(|(_, s)| s.name == name)
+            .map(|(id, _)| id)
+    }
     /// Name des Netzes.
     pub fn name(&self) -> &str {
         &self.name
@@ -368,4 +452,6 @@ macro_rules! impl_from_index {
     )*};
 }
 
-impl_from_index!(TrackId, PointId, TerminalId, SignalId, TvdId, LxId);
+impl_from_index!(
+    TrackId, PointId, TerminalId, SignalId, TvdId, LxId, AreaId, StationId
+);

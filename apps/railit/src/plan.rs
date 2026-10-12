@@ -198,6 +198,7 @@ pub(crate) fn info(plan_path: &Path, output: Output) -> ExitCode {
         RouteEnd::Signal(s) => view.signal_name(s).unwrap_or("?").to_string(),
         RouteEnd::Boundary => "Netzgrenze".into(),
         RouteEnd::BufferStop => "Prellbock".into(),
+        RouteEnd::Border(b) => view.border_name(b).unwrap_or("?").to_string(),
     };
     match output {
         Output::Json => print_json(&json!({
@@ -246,6 +247,7 @@ fn print_routes(view: &PlanView<'_>) {
         RouteEnd::Signal(s) => view.signal_name(s).unwrap_or("?").to_string(),
         RouteEnd::Boundary => "Netzgrenze".into(),
         RouteEnd::BufferStop => "Prellbock".into(),
+        RouteEnd::Border(b) => view.border_name(b).unwrap_or("?").to_string(),
     };
     println!("\nFahrstraßen ({}):", view.route_count());
     let point_text = |(p, pos): (railit_plan::PointId, railit_plan::PointPosition)| {

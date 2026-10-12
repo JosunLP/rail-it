@@ -7,14 +7,15 @@
 use std::collections::{BTreeMap, HashMap};
 
 use railit_plan::{
-    Flank, LxDef, Plan, PointDef, Protection, RouteDef, RouteEnd, SignalDef, TvdDef,
+    BorderDef, Flank, LxDef, Plan, PointDef, Protection, RouteDef, RouteEnd, SignalDef, TvdDef,
 };
 use railit_topology::{
     Direction, NodeRef, Port, PortRef, SignalKind, TerminalKind, Topology, TvdMember,
 };
 use railit_types::bitset::{BitSet, BitSetMut, words_for};
 use railit_types::{
-    Length, LxId, PointId, PointPosition, RouteId, SignalId, Speed, TrackId, TvdId,
+    BorderId, Length, LxId, PointId, PointPosition, RouteId, SignalId, Speed, TerminalId, TrackId,
+    TvdId,
 };
 
 use crate::PlanningConfig;
@@ -210,11 +211,21 @@ fn announced_signals(
     out
 }
 
+/// Grenzen zu Nachbarbereichen, nummeriert in der Reihenfolge ihrer Netzenden.
+pub(crate) fn border_ids(net: &Topology) -> HashMap<TerminalId, BorderId> {
+    net.terminals()
+        .filter(|(_, t)| t.kind.is_border())
+        .enumerate()
+        .filter_map(|(i, (id, _))| Some((id, BorderId::from_index(i)?)))
+        .collect()
+}
+
 /// Alle Fahrwege ab Startsignal `start`.
 fn explore(
     net: &Topology,
     start: SignalId,
     ends: &HashMap<(TrackId, Direction), SignalId>,
+    borders: &HashMap<TerminalId, BorderId>,
     drafts: &mut Vec<Draft>,
     errors: &mut Vec<PlanningError>,
 ) {
@@ -287,14 +298,9 @@ fn explore(
 
         match entry.node {
             NodeRef::Terminal(t) => {
-                let Some(terminal) = net.terminal(t) else {
-                    continue;
-                };
-                let end = match terminal.kind {
-                    TerminalKind::Boundary => RouteEnd::Boundary,
-                    TerminalKind::BufferStop => RouteEnd::BufferStop,
-                };
-                drafts.push(finish(frame, end, terminal.name.clone()));
+                if let Some((end, name)) = terminal_end(net, t, borders) {
+                    drafts.push(finish(frame, end, name));
+                }
             }
             NodeRef::Track(t) => {
                 let direction = if entry.port == Port::A {
@@ -365,7 +371,12 @@ fn overlap(
             tvds.push(t);
         }
         match (entry.node, entry.port) {
-            (NodeRef::Terminal(_), _) => break,
+            (NodeRef::Terminal(t), _) => {
+                if net.terminal(t).is_some_and(|x| x.kind.is_border()) {
+                    return Err("Durchrutschweg reicht über die Grenze zum Nachbarbereich".into());
+                }
+                break;
+            }
             (NodeRef::Track(t), entered) => {
                 let dir = if entered == Port::A {
                     Direction::AToB
@@ -396,6 +407,76 @@ fn overlap(
         }
     }
     Ok((tvds, points, tracks))
+}
+
+/// REQ-PLN-019: Annäherungsabschnitt einer Grenze. Von der Grenze nach innen bis zum ersten
+/// Hauptsignal in dieser Richtung (Einfahrsignal), dazu dessen Durchrutschweg. Vor dem
+/// Einfahrsignal darf keine Weiche spitz befahren werden.
+fn approach(
+    net: &Topology,
+    terminal: TerminalId,
+    ends: &HashMap<(TrackId, Direction), SignalId>,
+    length: Length,
+) -> Result<BorderDef, String> {
+    let t = net.terminal(terminal).ok_or("Netzende fehlt")?;
+    let initial = matches!(t.kind, TerminalKind::Border { initial: true });
+    let mut port = PortRef::new(NodeRef::Terminal(terminal), Port::End);
+    let mut tvds: Vec<TvdId> = Vec::new();
+    let mut points = Vec::new();
+    let mut entry_signal = None;
+    for _ in 0..=net.tracks().len() + net.points().len() {
+        let entry = net.linked(port).ok_or("offener Port")?;
+        if let Some(tvd) = member_tvd(net, entry.node)
+            && tvds.last() != Some(&tvd)
+        {
+            tvds.push(tvd);
+        }
+        match (entry.node, entry.port) {
+            (NodeRef::Terminal(_), _) => {
+                return Err("kein Einfahrsignal bis zum nächsten Netzende".into());
+            }
+            (NodeRef::Point(_), Port::Tip) => {
+                return Err("vor dem Einfahrsignal liegt eine spitz befahrene Weiche".into());
+            }
+            (NodeRef::Point(p), entered) => {
+                let pos = if entered == Port::Left {
+                    PointPosition::Left
+                } else {
+                    PointPosition::Right
+                };
+                points.push((p, pos));
+                port = PortRef::new(entry.node, Port::Tip);
+            }
+            (NodeRef::Track(tr), entered) => {
+                let dir = if entered == Port::A {
+                    Direction::AToB
+                } else {
+                    Direction::BToA
+                };
+                if let Some(&s) = ends.get(&(tr, dir)) {
+                    entry_signal = Some(s);
+                    break;
+                }
+                port = PortRef::new(entry.node, exit_port(dir));
+            }
+        }
+    }
+    let entry_signal = entry_signal.ok_or("kein Einfahrsignal gefunden")?;
+    let (o_tvds, o_points, _) = overlap(net, entry_signal, length)?;
+    for tvd in o_tvds {
+        if tvds.contains(&tvd) {
+            return Err("Durchrutschweg des Einfahrsignals führt zurück zur Grenze".into());
+        }
+        tvds.push(tvd);
+    }
+    points.extend(o_points);
+    Ok(BorderDef {
+        name: t.name.clone(),
+        initial,
+        entry_signal,
+        approach_tvds: tvds,
+        approach_points: points,
+    })
 }
 
 /// REQ-PLN-016: Flankenschutz für die Weiche `point`, deren Strang `pos` die Fahrstraße
@@ -726,6 +807,47 @@ fn complete(
     }
 }
 
+/// Grenzen mit Annäherungsabschnitt, geordnet nach [`BorderId`].
+fn border_defs(
+    net: &Topology,
+    border_map: &HashMap<TerminalId, BorderId>,
+    ends: &HashMap<(TrackId, Direction), SignalId>,
+    cfg: PlanningConfig,
+    errors: &mut Vec<PlanningError>,
+) -> Vec<BorderDef> {
+    let mut borders: Vec<(BorderId, BorderDef)> = Vec::new();
+    for (terminal, id) in border_map {
+        let name = net
+            .terminal(*terminal)
+            .map(|t| t.name.clone())
+            .unwrap_or_default();
+        match approach(net, *terminal, ends, cfg.overlap_length) {
+            Ok(def) => borders.push((*id, def)),
+            Err(reason) => errors.push(PlanningError::Border {
+                border: name,
+                reason,
+            }),
+        }
+    }
+    borders.sort_by_key(|(id, _)| *id);
+    borders.into_iter().map(|(_, d)| d).collect()
+}
+
+/// Ziel eines Fahrwegs an einem Netzende.
+fn terminal_end(
+    net: &Topology,
+    t: TerminalId,
+    borders: &HashMap<TerminalId, BorderId>,
+) -> Option<(RouteEnd, String)> {
+    let terminal = net.terminal(t)?;
+    let end = match terminal.kind {
+        TerminalKind::Boundary => RouteEnd::Boundary,
+        TerminalKind::BufferStop => RouteEnd::BufferStop,
+        TerminalKind::Border { .. } => RouteEnd::Border(*borders.get(&t)?),
+    };
+    Some((end, terminal.name.clone()))
+}
+
 /// Erzeugt den Plan für ein Netz.
 ///
 /// # Errors
@@ -738,10 +860,13 @@ pub fn generate_with(net: &Topology, cfg: &PlanningConfig) -> Result<Plan, Plann
         return Err(PlanningReport { errors });
     }
 
+    let border_map = border_ids(net);
+    let borders = border_defs(net, &border_map, &ends, *cfg, &mut errors);
+
     let mut drafts = Vec::new();
     for (id, s) in net.signals() {
         if s.kind.delimits_routes() {
-            explore(net, id, &ends, &mut drafts, &mut errors);
+            explore(net, id, &ends, &border_map, &mut drafts, &mut errors);
         }
     }
     let names = route_names(net, &drafts);
@@ -830,6 +955,7 @@ pub fn generate_with(net: &Topology, cfg: &PlanningConfig) -> Result<Plan, Plann
             .collect(),
         level_crossings,
         routes,
+        borders,
     })
 }
 

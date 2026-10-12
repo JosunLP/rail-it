@@ -5,18 +5,20 @@ use core::fmt;
 use ed25519_dalek::{Signature, VerifyingKey};
 use railit_types::bitset::{BitSet, WORD_BITS, words_for};
 use railit_types::{
-    LxId, PointId, PointPosition, RouteId, SignalId, SignalKind, SignalSystem, Speed, TvdId,
+    BorderId, LxId, PointId, PointPosition, RouteId, SignalId, SignalKind, SignalSystem, Speed,
+    TvdId,
 };
 use sha2::{Digest, Sha256};
 
 use crate::error::PlanError;
 use crate::format::{
-    DIGEST_LEN, END_BOUNDARY, END_BUFFER_STOP, END_SIGNAL, FLAG_SIGNED, FLANK_POINT, FLANK_SIGNAL,
-    FLANK_WORDS, H_BODY_LEN, H_CONFLICT_OFF, H_FLAGS, H_LX_TVD_OFF, H_LXS, H_NAMES_LEN,
-    H_NAMES_OFF, H_POINT_TVD_OFF, H_POINTS, H_POOL_OFF, H_POOL_WORDS, H_ROUTE_OFF, H_ROUTES,
-    H_SIGNAL_OFF, H_SIGNALS, H_TVD_FLAGS_OFF, H_TVDS, H_VERSION, HEADER_LEN, MAGIC, NONE,
-    ROUTE_LEN, SIGNAL_WORDS, SIGNATURE_LEN, TVD_ENTRY, VERSION, decode_point, r, read_u32,
-    read_u64, read_word,
+    BORDER_INITIAL, BORDER_WORDS, DIGEST_LEN, END_BORDER, END_BOUNDARY, END_BUFFER_STOP,
+    END_SIGNAL, FLAG_SIGNED, FLANK_POINT, FLANK_SIGNAL, FLANK_WORDS, H_BODY_LEN, H_BORDER_OFF,
+    H_BORDERS, H_CONFLICT_OFF, H_FLAGS, H_LX_TVD_OFF, H_LXS, H_NAMES_LEN, H_NAMES_OFF,
+    H_POINT_TVD_OFF, H_POINTS, H_POOL_OFF, H_POOL_WORDS, H_ROUTE_OFF, H_ROUTES, H_SIGNAL_OFF,
+    H_SIGNALS, H_TVD_FLAGS_OFF, H_TVDS, H_VERSION, HEADER_LEN, MAGIC, NONE, ROUTE_LEN,
+    SIGNAL_WORDS, SIGNATURE_LEN, TVD_ENTRY, VERSION, decode_point, r, read_u32, read_u64,
+    read_word,
 };
 
 /// Ziel einer Fahrstraße.
@@ -28,6 +30,8 @@ pub enum RouteEnd {
     Boundary,
     /// Prellbock.
     BufferStop,
+    /// Grenze zu einem benachbarten Stellbereich.
+    Border(BorderId),
 }
 
 /// Flankenschutzmaßnahme.
@@ -96,6 +100,8 @@ pub struct PlanView<'a> {
     tvds: usize,
     routes: usize,
     lxs: usize,
+    borders: usize,
+    border_off: usize,
     route_off: usize,
     pool_off: usize,
     pool_words: usize,
@@ -164,9 +170,13 @@ impl<'a> PlanView<'a> {
         let tvds = to_usize(h(H_TVDS)?)?;
         let routes = to_usize(h(H_ROUTES)?)?;
         let lxs = to_usize(h(H_LXS)?)?;
+        let borders = to_usize(h(H_BORDERS)?)?;
         let names_count = add(
-            add(add(add(add(1, points)?, signals)?, tvds)?, routes)?,
-            lxs,
+            add(
+                add(add(add(add(1, points)?, signals)?, tvds)?, routes)?,
+                lxs,
+            )?,
+            borders,
         )?;
 
         let mut view = Self {
@@ -177,6 +187,8 @@ impl<'a> PlanView<'a> {
             tvds,
             routes,
             lxs,
+            borders,
+            border_off: to_usize(h(H_BORDER_OFF)?)?,
             route_off: to_usize(h(H_ROUTE_OFF)?)?,
             pool_off: to_usize(h(H_POOL_OFF)?)?,
             pool_words: to_usize(h(H_POOL_WORDS)?)?,
@@ -204,6 +216,11 @@ impl<'a> PlanView<'a> {
         view.check_section("TVD-Merkmale", view.tvd_flags_off, mul(tvds, 4)?)?;
         view.check_section("BÜ-TVD", view.lx_tvd_off, mul(lxs, 4)?)?;
         view.check_section(
+            "Grenzen",
+            view.border_off,
+            mul(mul(borders, BORDER_WORDS)?, 4)?,
+        )?;
+        view.check_section(
             "Feindlichkeiten",
             view.conflict_off,
             mul(mul(routes, view.conflict_words)?, 8)?,
@@ -219,6 +236,7 @@ impl<'a> PlanView<'a> {
 
         view.check_digest()?;
         view.check_tables()?;
+        view.check_borders()?;
         view.check_routes()?;
         view.check_conflicts()?;
         view.check_names()?;
@@ -353,6 +371,7 @@ impl<'a> PlanView<'a> {
             match raw.end_kind {
                 END_SIGNAL if delimits(raw.end_signal) => {}
                 END_BOUNDARY | END_BUFFER_STOP if raw.end_signal == NONE => {}
+                END_BORDER if to_usize(raw.end_signal).is_ok_and(|b| b < self.borders) => {}
                 _ => return Err(bad("Ziel")(index)),
             }
             if u16::try_from(raw.speed).is_err() {
@@ -464,6 +483,121 @@ impl<'a> PlanView<'a> {
             }
         }
         Ok(())
+    }
+
+    fn check_borders(&self) -> Result<(), PlanError> {
+        for index in 0..self.borders {
+            let bad = PlanError::InvalidReference {
+                what: "Grenze",
+                index,
+            };
+            let id = BorderId::from_index(index).ok_or(PlanError::TooLarge)?;
+            let flags = self.border_word(id, 0).ok_or(bad)?;
+            if flags & !BORDER_INITIAL != 0 {
+                return Err(bad);
+            }
+            let entry = self.border_entry_signal(id).ok_or(bad)?;
+            if !self
+                .signal_kind(entry)
+                .is_some_and(SignalKind::delimits_routes)
+            {
+                return Err(bad);
+            }
+            for range in [self.border_range(id, 2), self.border_range(id, 4)] {
+                let range = range.ok_or(bad)?;
+                if add(range.start, range.len)? > self.pool_words {
+                    return Err(bad);
+                }
+            }
+            let tvds = || self.border_approach_tvds(id);
+            if tvds().len() == 0 {
+                return Err(bad);
+            }
+            for (i, t) in tvds().enumerate() {
+                if !self.valid_tvd(t.raw()) || tvds().skip(i.saturating_add(1)).any(|x| x == t) {
+                    return Err(bad);
+                }
+            }
+            let points = || self.border_approach_points(id);
+            for (i, (p, _)) in points().enumerate() {
+                if p.index().is_none_or(|x| x >= self.points)
+                    || points().skip(i.saturating_add(1)).any(|(o, _)| o == p)
+                    || !self.point_tvd(p).is_some_and(|t| tvds().any(|x| x == t))
+                {
+                    return Err(bad);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn border_word(&self, id: BorderId, word: usize) -> Option<u32> {
+        let index = id.index()?;
+        if index >= self.borders {
+            return None;
+        }
+        read_word(
+            self.bytes,
+            self.border_off,
+            index.checked_mul(BORDER_WORDS)?.checked_add(word)?,
+        )
+    }
+
+    fn border_range(&self, id: BorderId, word: usize) -> Option<Range> {
+        Some(Range {
+            start: usize::try_from(self.border_word(id, word)?).ok()?,
+            len: usize::try_from(self.border_word(id, word.checked_add(1)?)?).ok()?,
+        })
+    }
+
+    fn pool_words_of(&self, range: Option<Range>) -> Words<'a> {
+        let range = range.unwrap_or_default();
+        Words {
+            bytes: self.bytes,
+            base: self.pool_off,
+            next: range.start,
+            end: range.start.saturating_add(range.len),
+        }
+    }
+
+    /// Anzahl Grenzen zu Nachbarbereichen.
+    pub const fn border_count(&self) -> usize {
+        self.borders
+    }
+
+    /// Name einer Grenze (z. B. `">Strecke"`).
+    pub fn border_name(&self, id: BorderId) -> Option<&'a str> {
+        self.name_at(self.group_start(5), id.index(), self.borders)
+    }
+
+    /// Grenze mit dem Namen `name`.
+    pub fn find_border(&self, name: &str) -> Option<BorderId> {
+        Self::find(name, self.borders, |i| {
+            BorderId::from_index(i).and_then(|id| self.border_name(id))
+        })
+        .and_then(BorderId::from_index)
+    }
+
+    /// Übernimmt dieser Bereich beim Anlauf die Erlaubnis für die Grenze?
+    pub fn border_initial(&self, id: BorderId) -> bool {
+        self.border_word(id, 0)
+            .is_some_and(|f| f & BORDER_INITIAL != 0)
+    }
+
+    /// Einfahrsignal hinter der Grenze: Hier halten Züge, die aus dem Nachbarbereich kommen.
+    pub fn border_entry_signal(&self, id: BorderId) -> Option<SignalId> {
+        self.border_word(id, 1).map(SignalId::new)
+    }
+
+    /// Abschnitte des Annäherungsabschnitts: von der Grenze bis zum Einfahrsignal und
+    /// dessen Durchrutschweg.
+    pub fn border_approach_tvds(&self, id: BorderId) -> TvdEntries<'a> {
+        TvdEntries(self.pool_words_of(self.border_range(id, 2)))
+    }
+
+    /// Weichenlagen im Annäherungsabschnitt.
+    pub fn border_approach_points(&self, id: BorderId) -> PointEntries<'a> {
+        PointEntries(self.pool_words_of(self.border_range(id, 4)))
     }
 
     fn conflict_word(&self, route: usize, word: usize) -> Option<u64> {
@@ -641,7 +775,7 @@ impl<'a> PlanView<'a> {
     }
 
     fn group_start(&self, group: usize) -> Option<usize> {
-        [self.points, self.signals, self.tvds, self.routes]
+        [self.points, self.signals, self.tvds, self.routes, self.lxs]
             .iter()
             .take(group)
             .try_fold(1usize, |acc, n| acc.checked_add(*n))
@@ -828,6 +962,7 @@ impl<'a> RouteView<'a> {
         match self.raw.end_kind {
             END_SIGNAL => RouteEnd::Signal(SignalId::new(self.raw.end_signal)),
             END_BOUNDARY => RouteEnd::Boundary,
+            END_BORDER => RouteEnd::Border(BorderId::new(self.raw.end_signal)),
             _ => RouteEnd::BufferStop,
         }
     }

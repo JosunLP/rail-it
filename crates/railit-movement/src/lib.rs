@@ -221,11 +221,12 @@ impl<'a, 'p> Pictures<'a, 'p> {
     }
 
     /// Zustand des nächsten Hauptsignals hinter der Fahrstraße. An Netzgrenze und
-    /// Prellbock gibt es keins; dann gilt „Halt erwarten“.
+    /// Prellbock gibt es keins, hinter einer Bereichsgrenze ist es nicht bekannt; dann gilt
+    /// „Halt erwarten“.
     fn next_main(&self, route: &RouteView<'_>) -> MainState<'p> {
         match route.end() {
             RouteEnd::Signal(next) => self.main_state(next),
-            RouteEnd::Boundary | RouteEnd::BufferStop => MainState {
+            RouteEnd::Boundary | RouteEnd::BufferStop | RouteEnd::Border(_) => MainState {
                 proceed: false,
                 route: None,
             },

@@ -148,6 +148,7 @@ async fn plan(State(state): State<AppState>) -> Json<Value> {
                 RouteEnd::Signal(s) => p.signal_name(s).unwrap_or("?"),
                 RouteEnd::Boundary => "Netzgrenze",
                 RouteEnd::BufferStop => "Prellbock",
+                RouteEnd::Border(b) => p.border_name(b).unwrap_or("?"),
             },
             "speed_kmh": r.speed().map(railit_types::Speed::as_kmh),
             "points": r.points().map(|(pt, pos)| json!({"point": p.point_name(pt), "position": pos})).collect::<Vec<_>>(),

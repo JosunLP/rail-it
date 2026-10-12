@@ -23,13 +23,17 @@
 //! - Die **Geschwindigkeit** ist die kleinste der abzweigend befahrenen Weichen.
 //! - **Vorsignale** kündigen das nächste Hauptsignal an (REQ-PLN-017).
 //! - **Feindlichkeiten** nach REQ-PLN-012 (siehe `generate`).
+//! - **Grenzen** zu Nachbarbereichen sind Fahrstraßenziele; je Grenze wird der
+//!   Annäherungsabschnitt bis zum Einfahrsignal samt Durchrutschweg bestimmt (REQ-PLN-019).
+//!
+//! Netze mit Stellbereichen werden mit [`compile_areas`] je Bereich projektiert.
 
 mod error;
 mod generate;
 mod verify;
 
 use railit_plan::{Plan, PlanView, SigningKey};
-use railit_topology::Topology;
+use railit_topology::{AreaCut, Topology};
 use railit_types::Length;
 
 pub use error::{PlanningError, PlanningReport};
@@ -98,4 +102,64 @@ pub fn compile_with(
         )));
     }
     Ok(Compiled { plan, image })
+}
+
+/// Ergebnis von [`compile_areas`] für einen Stellbereich.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledArea {
+    /// Name des Bereichs.
+    pub name: String,
+    /// Teilnetz mit Abbildung auf das Gesamtnetz.
+    pub cut: AreaCut,
+    /// Plan und Image des Bereichs.
+    pub compiled: Compiled,
+}
+
+/// Projektiert jeden Stellbereich eines Netzes für sich (REQ-PLN-019).
+///
+/// # Errors
+/// [`PlanningReport`] mit allen Fehlern aller Bereiche; jeder Fehler nennt seinen Bereich.
+pub fn compile_areas(
+    topology: &Topology,
+    key: Option<&SigningKey>,
+    cfg: &PlanningConfig,
+) -> Result<Vec<CompiledArea>, PlanningReport> {
+    if topology.areas().len() == 0 {
+        return Err(PlanningReport::single(PlanningError::Inconsistent(
+            "das Netz hat keine Stellbereiche".into(),
+        )));
+    }
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    for (id, area) in topology.areas() {
+        let wrap = |error: PlanningError| PlanningError::InArea {
+            area: area.name.clone(),
+            error: Box::new(error),
+        };
+        let cut = match topology.area_cut(id) {
+            Ok(cut) => cut,
+            Err(report) => {
+                errors.extend(
+                    report
+                        .errors
+                        .iter()
+                        .map(|e| wrap(PlanningError::Inconsistent(e.to_string()))),
+                );
+                continue;
+            }
+        };
+        match compile_with(&cut.topology, key, cfg) {
+            Ok(compiled) => out.push(CompiledArea {
+                name: area.name.clone(),
+                cut,
+                compiled,
+            }),
+            Err(report) => errors.extend(report.errors.into_iter().map(wrap)),
+        }
+    }
+    if errors.is_empty() {
+        Ok(out)
+    } else {
+        Err(PlanningReport { errors })
+    }
 }

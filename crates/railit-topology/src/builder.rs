@@ -6,13 +6,15 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use railit_types::{
-    Length, LxId, PointId, PointPosition, SignalId, Speed, TerminalId, TrackId, TvdId,
+    AreaId, Length, LxId, PointId, PointPosition, SignalId, Speed, StationId, TerminalId, TrackId,
+    TvdId,
 };
 
 use crate::error::{Report, TopologyError, Warning};
 use crate::model::{
-    DEFAULT_DIVERGING_SPEED, Direction, ElementRef, LevelCrossing, NodeRef, Point, PortRef, Signal,
-    SignalKind, SignalSystem, Terminal, TerminalKind, Track, TvdMember, TvdSection,
+    Area, DEFAULT_DIVERGING_SPEED, Direction, ElementRef, LevelCrossing, NodeRef, Platform, Point,
+    PortRef, Signal, SignalKind, SignalSystem, Station, Terminal, TerminalKind, Track, TvdMember,
+    TvdSection,
 };
 use crate::topology::{Links, Topology};
 
@@ -56,6 +58,8 @@ pub struct TopologyBuilder {
     level_crossings: Vec<LevelCrossing>,
     links: Links,
     names: BTreeMap<String, ElementRef>,
+    areas: Vec<Area>,
+    stations: Vec<Station>,
 }
 
 impl TopologyBuilder {
@@ -169,6 +173,93 @@ impl TopologyBuilder {
             direction,
             kind,
             system: SignalSystem::Ks,
+            auto: false,
+        });
+        Ok(id)
+    }
+
+    /// Kennzeichnet ein Signal als Selbstblocksignal (siehe [`Signal::auto`]).
+    ///
+    /// # Errors
+    /// Unbekanntes Signal.
+    pub fn set_signal_auto(&mut self, signal: SignalId, auto: bool) -> Result<(), TopologyError> {
+        let s = signal.index().and_then(|i| self.signals.get_mut(i)).ok_or(
+            TopologyError::UnknownId {
+                kind: "Signal",
+                raw: signal.raw(),
+            },
+        )?;
+        s.auto = auto;
+        Ok(())
+    }
+
+    /// Fügt einen Stellbereich hinzu (REQ-TOP-011). Sind Stellbereiche festgelegt, muss
+    /// jeder Gleisfreimeldeabschnitt genau einem angehören.
+    ///
+    /// # Errors
+    /// Doppelter Name, unbekannte Abschnitte oder zu viele Bereiche.
+    pub fn add_area(
+        &mut self,
+        name: impl Into<String>,
+        tvds: &[TvdId],
+    ) -> Result<AreaId, TopologyError> {
+        let name = name.into();
+        if self.areas.iter().any(|a| a.name == name) {
+            return Err(TopologyError::DuplicateName { name });
+        }
+        for t in tvds {
+            if t.index().and_then(|i| self.tvds.get(i)).is_none() {
+                return Err(TopologyError::UnknownId {
+                    kind: "Gleisfreimeldeabschnitt",
+                    raw: t.raw(),
+                });
+            }
+        }
+        let mut tvds = tvds.to_vec();
+        tvds.sort_unstable();
+        tvds.dedup();
+        let id = AreaId::from_index(self.areas.len()).ok_or(TopologyError::TooManyElements {
+            kind: "Stellbereich",
+        })?;
+        self.areas.push(Area { name, tvds });
+        Ok(id)
+    }
+
+    /// Fügt eine Betriebsstelle mit ihren Bahnsteiggleisen hinzu (REQ-TOP-012).
+    ///
+    /// # Errors
+    /// Doppelter Name, unbekannte Signale oder zu viele Betriebsstellen.
+    pub fn add_station(
+        &mut self,
+        name: impl Into<String>,
+        platforms: &[(String, Vec<SignalId>)],
+    ) -> Result<StationId, TopologyError> {
+        let name = name.into();
+        if self.stations.iter().any(|s| s.name == name) {
+            return Err(TopologyError::DuplicateName { name });
+        }
+        let mut out = Vec::new();
+        for (platform, signals) in platforms {
+            for s in signals {
+                if s.index().and_then(|i| self.signals.get(i)).is_none() {
+                    return Err(TopologyError::UnknownId {
+                        kind: "Signal",
+                        raw: s.raw(),
+                    });
+                }
+            }
+            out.push(Platform {
+                name: platform.clone(),
+                signals: signals.clone(),
+            });
+        }
+        let id =
+            StationId::from_index(self.stations.len()).ok_or(TopologyError::TooManyElements {
+                kind: "Betriebsstelle",
+            })?;
+        self.stations.push(Station {
+            name,
+            platforms: out,
         });
         Ok(id)
     }
@@ -387,6 +478,8 @@ impl TopologyBuilder {
             check_membership(&point.name, tvds);
         }
 
+        let tvd_area = self.check_areas_and_stations(&mut errors);
+
         // REQ-TOP-010: Zusammenhang (nur Warnung).
         let mut warnings = Vec::new();
         let components = self.links.components();
@@ -413,8 +506,70 @@ impl TopologyBuilder {
             names: self.names,
             track_tvd: single(track_tvds),
             point_tvd: single(point_tvds),
+            areas: self.areas,
+            stations: self.stations,
+            tvd_area,
         };
         Ok(Validated { topology, warnings })
+    }
+
+    /// REQ-TOP-011/012: Stellbereiche und Bahnsteige. Liefert den Bereich je Abschnitt.
+    fn check_areas_and_stations(&self, errors: &mut Vec<TopologyError>) -> Vec<Option<AreaId>> {
+        // REQ-TOP-011: Sind Stellbereiche festgelegt, gehört jeder Abschnitt genau einem an.
+        let mut tvd_area: Vec<Option<AreaId>> = vec![None; self.tvds.len()];
+        if !self.areas.is_empty() {
+            let mut tvd_areas: Vec<Vec<AreaId>> = vec![Vec::new(); self.tvds.len()];
+            for (index, area) in self.areas.iter().enumerate() {
+                let Some(area_id) = AreaId::from_index(index) else {
+                    continue;
+                };
+                if area.tvds.is_empty() {
+                    errors.push(TopologyError::EmptyArea {
+                        area: area.name.clone(),
+                    });
+                }
+                for t in &area.tvds {
+                    if let Some(list) = t.index().and_then(|i| tvd_areas.get_mut(i)) {
+                        list.push(area_id);
+                    }
+                }
+            }
+            for ((tvd, areas), slot) in self.tvds.iter().zip(&tvd_areas).zip(&mut tvd_area) {
+                match areas.as_slice() {
+                    [] => errors.push(TopologyError::TvdNotInArea {
+                        tvd: tvd.name.clone(),
+                    }),
+                    [single] => *slot = Some(*single),
+                    many => errors.push(TopologyError::TvdInMultipleAreas {
+                        tvd: tvd.name.clone(),
+                        areas: many
+                            .iter()
+                            .filter_map(|a| a.index().and_then(|i| self.areas.get(i)))
+                            .map(|a| a.name.clone())
+                            .collect(),
+                    }),
+                }
+            }
+        }
+
+        // REQ-TOP-012: Bahnsteige verweisen auf Signale, an denen Fahrstraßen enden.
+        for station in &self.stations {
+            for platform in &station.platforms {
+                for s in &platform.signals {
+                    if let Some(signal) = s.index().and_then(|i| self.signals.get(i))
+                        && !signal.kind.delimits_routes()
+                    {
+                        errors.push(TopologyError::PlatformSignal {
+                            station: station.name.clone(),
+                            platform: platform.name.clone(),
+                            signal: signal.name.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        tvd_area
     }
 
     fn track(&self, id: TrackId) -> Result<&Track, TopologyError> {

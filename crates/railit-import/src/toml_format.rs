@@ -6,7 +6,8 @@
 //!
 //! [[terminal]]
 //! name = "W"
-//! kind = "boundary"          # oder "buffer_stop"
+//! kind = "boundary"          # oder "buffer_stop", "border" (Grenze zu einem Nachbarbereich)
+//! initial = true             # nur bei "border": dieser Bereich beginnt mit der Erlaubnis
 //!
 //! [[track]]
 //! name = "1"
@@ -28,6 +29,7 @@
 //! direction = "a_to_b"       # oder "b_to_a"
 //! kind = "main"              # main, distant, combined, shunting, etcs_stop_marker
 //! system = "ks"              # optional: ks (Standard) oder hv
+//! auto = true                # optional: Selbstblocksignal (Zuglenkung stellt selbsttätig)
 //!
 //! [[level_crossing]]         # Bahnübergang
 //! name = "BÜ1"
@@ -37,6 +39,14 @@
 //! [[tvd]]
 //! name = "T1"
 //! elements = ["1"]           # Gleise und Weichen
+//!
+//! [[area]]                   # optional: Stellbereiche (je einer pro Sicherheitskern)
+//! name = "Adorf"
+//! tvds = ["T1"]
+//!
+//! [[station]]                # optional: Betriebsstellen für die Betriebsführung
+//! name = "Adorf"
+//! platforms = [{ name = "1", signals = ["N1", "P1"] }]
 //! ```
 //!
 //! Ein vollständiges Beispiel liegt unter `examples/beispielstadt.toml`.
@@ -69,6 +79,32 @@ struct Document {
     tvd: Vec<TvdEntry>,
     #[serde(default)]
     level_crossing: Vec<LevelCrossingEntry>,
+    #[serde(default)]
+    area: Vec<AreaEntry>,
+    #[serde(default)]
+    station: Vec<StationEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AreaEntry {
+    name: String,
+    tvds: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StationEntry {
+    name: String,
+    #[serde(default)]
+    platforms: Vec<PlatformEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlatformEntry {
+    name: String,
+    signals: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,6 +118,8 @@ struct NetworkSection {
 struct TerminalEntry {
     name: String,
     kind: TerminalKindEntry,
+    #[serde(default)]
+    initial: bool,
 }
 
 #[derive(Copy, Clone, Debug, Deserialize)]
@@ -89,6 +127,7 @@ struct TerminalEntry {
 enum TerminalKindEntry {
     BufferStop,
     Boundary,
+    Border,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +187,8 @@ struct SignalEntry {
     kind: SignalKindEntry,
     #[serde(default)]
     system: SystemEntry,
+    #[serde(default)]
+    auto: bool,
 }
 
 #[derive(Copy, Clone, Debug, Deserialize)]
@@ -191,6 +232,8 @@ pub fn parse(source: &str) -> Result<Validated, ImportError> {
     add_signals(&mut b, doc.signal, &mut errors);
     add_tvds(&mut b, doc.tvd, &mut errors);
     add_level_crossings(&mut b, doc.level_crossing, &mut errors);
+    add_areas(&mut b, doc.area, &mut errors);
+    add_stations(&mut b, doc.station, &mut errors);
 
     match b.build() {
         Ok(validated) if errors.is_empty() => Ok(validated),
@@ -214,11 +257,19 @@ fn add_terminals(
     errors: &mut Vec<Diagnostic>,
 ) {
     for t in entries {
+        let context = format!("terminal „{}“", t.name);
         let kind = match t.kind {
             TerminalKindEntry::BufferStop => TerminalKind::BufferStop,
             TerminalKindEntry::Boundary => TerminalKind::Boundary,
+            TerminalKindEntry::Border => TerminalKind::Border { initial: t.initial },
         };
-        let context = format!("terminal „{}“", t.name);
+        if t.initial && !kind.is_border() {
+            errors.push(Diagnostic {
+                context: context.clone(),
+                message: "initial ist nur bei kind = \"border\" zulässig".into(),
+                requirement: None,
+            });
+        }
         if let Err(e) = b.add_terminal(t.name, kind) {
             errors.push(model_error(context, &e));
         }
@@ -325,7 +376,10 @@ fn add_signals(b: &mut TopologyBuilder, entries: Vec<SignalEntry>, errors: &mut 
         };
         match b.add_signal(s.name, track, position, direction, kind) {
             Ok(id) => {
-                if let Err(e) = b.set_signal_system(id, system) {
+                if let Err(e) = b
+                    .set_signal_system(id, system)
+                    .and_then(|()| b.set_signal_auto(id, s.auto))
+                {
                     errors.push(model_error(context, &e));
                 }
             }
@@ -385,6 +439,50 @@ fn add_tvds(b: &mut TopologyBuilder, entries: Vec<TvdEntry>, errors: &mut Vec<Di
             });
         }
         if ok && let Err(e) = b.add_tvd(t.name, &members) {
+            errors.push(model_error(context, &e));
+        }
+    }
+}
+
+fn add_areas(b: &mut TopologyBuilder, entries: Vec<AreaEntry>, errors: &mut Vec<Diagnostic>) {
+    for a in entries {
+        let context = format!("area „{}“", a.name);
+        let mut tvds = Vec::with_capacity(a.tvds.len());
+        for name in &a.tvds {
+            match b.lookup(name) {
+                Some(ElementRef::Tvd(id)) => tvds.push(id),
+                _ => errors.push(Diagnostic {
+                    context: context.clone(),
+                    message: format!("„{name}“ ist kein bekannter Gleisfreimeldeabschnitt"),
+                    requirement: None,
+                }),
+            }
+        }
+        if let Err(e) = b.add_area(a.name, &tvds) {
+            errors.push(model_error(context, &e));
+        }
+    }
+}
+
+fn add_stations(b: &mut TopologyBuilder, entries: Vec<StationEntry>, errors: &mut Vec<Diagnostic>) {
+    for s in entries {
+        let context = format!("station „{}“", s.name);
+        let mut platforms = Vec::with_capacity(s.platforms.len());
+        for p in s.platforms {
+            let mut signals = Vec::new();
+            for name in &p.signals {
+                match b.lookup(name) {
+                    Some(ElementRef::Signal(id)) => signals.push(id),
+                    _ => errors.push(Diagnostic {
+                        context: format!("{context}, Bahnsteig „{}“", p.name),
+                        message: format!("„{name}“ ist kein bekanntes Signal"),
+                        requirement: None,
+                    }),
+                }
+            }
+            platforms.push((p.name, signals));
+        }
+        if let Err(e) = b.add_station(s.name, &platforms) {
             errors.push(model_error(context, &e));
         }
     }

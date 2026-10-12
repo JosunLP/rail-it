@@ -18,7 +18,9 @@ use railit_plan::{Plan, Protection, RouteDef, RouteEnd};
 use railit_topology::{
     Direction, NodeRef, Port, PortRef, SignalKind, TerminalKind, Topology, TvdMember,
 };
-use railit_types::{LxId, PointId, PointPosition, SignalId, Speed, TrackId, TvdId};
+use railit_types::{
+    BorderId, LxId, PointId, PointPosition, SignalId, Speed, TerminalId, TrackId, TvdId,
+};
 
 use crate::PlanningConfig;
 use crate::error::{PlanningError, PlanningReport};
@@ -37,6 +39,7 @@ enum EndKey {
     Signal(SignalId),
     Boundary,
     BufferStop,
+    Border(BorderId),
 }
 
 impl From<RouteEnd> for EndKey {
@@ -45,6 +48,7 @@ impl From<RouteEnd> for EndKey {
             RouteEnd::Signal(s) => Self::Signal(s),
             RouteEnd::Boundary => Self::Boundary,
             RouteEnd::BufferStop => Self::BufferStop,
+            RouteEnd::Border(b) => Self::Border(b),
         }
     }
 }
@@ -78,6 +82,16 @@ fn tvd_of(net: &Topology, node: NodeRef) -> Option<TvdId> {
         NodeRef::Point(p) => net.tvd_of(TvdMember::Point(p)),
         NodeRef::Terminal(_) => None,
     }
+}
+
+/// Nummer einer Grenze: Anzahl der Grenz-Netzenden vor ihr.
+fn border_number(net: &Topology, terminal: TerminalId) -> Option<BorderId> {
+    let before = net
+        .terminals()
+        .take_while(|(id, _)| *id != terminal)
+        .filter(|(_, t)| matches!(t.kind, TerminalKind::Border { .. }))
+        .count();
+    BorderId::from_index(before)
 }
 
 /// Hauptsignal auf `track` am Ende in Fahrtrichtung, wenn über `entered_at` eingefahren.
@@ -139,6 +153,10 @@ fn walk(
             (NodeRef::Terminal(t), _) => {
                 let kind = match net.terminal(t).map(|t| t.kind) {
                     Some(TerminalKind::Boundary) => EndKey::Boundary,
+                    Some(TerminalKind::Border { .. }) => match border_number(net, t) {
+                        Some(b) => EndKey::Border(b),
+                        None => return (Err("Grenze ohne Nummer".into()), used),
+                    },
                     _ => EndKey::BufferStop,
                 };
                 return (Ok(done(kind, &points, &tvds, &tracks)), used);
@@ -232,7 +250,15 @@ fn expected_overlap(net: &Topology, end: SignalId, length_mm: u64) -> Result<Ove
             result.tvds.push(t);
         }
         match (entry.node, entry.port) {
-            (NodeRef::Terminal(_), _) => break,
+            (NodeRef::Terminal(t), _) => {
+                if matches!(
+                    net.terminal(t).map(|x| x.kind),
+                    Some(TerminalKind::Border { .. })
+                ) {
+                    return Err("Durchrutschweg erreicht die Bereichsgrenze".into());
+                }
+                break;
+            }
             (NodeRef::Track(t), entered) => {
                 result.tracks.push((t, distance, entered == Port::A));
                 distance += u64::from(net.track(t).ok_or("Gleis fehlt")?.length.as_mm());
@@ -634,6 +660,100 @@ fn check_routes(net: &Topology, cfg: PlanningConfig, plan: &Plan, problems: &mut
     }
 }
 
+/// Einfahrsignal, Abschnitte und Weichenlagen eines Annäherungsabschnitts.
+type Approach = (SignalId, Vec<TvdId>, BTreeSet<(PointId, PointPosition)>);
+
+/// Erwarteter Annäherungsabschnitt einer Grenze (eigene Herleitung).
+fn expected_approach(
+    net: &Topology,
+    terminal: TerminalId,
+    length_mm: u64,
+) -> Result<Approach, String> {
+    let mut tvds: Vec<TvdId> = Vec::new();
+    let mut points = BTreeSet::new();
+    let mut port = PortRef::new(NodeRef::Terminal(terminal), Port::End);
+    let mut steps = 0usize;
+    let entry = loop {
+        steps += 1;
+        if steps > net.tracks().len() + net.points().len() + 2 {
+            return Err("Annäherungsabschnitt endet nicht".into());
+        }
+        let at = net.linked(port).ok_or("offener Port")?;
+        if let Some(t) = tvd_of(net, at.node)
+            && tvds.last() != Some(&t)
+        {
+            tvds.push(t);
+        }
+        match (at.node, at.port) {
+            (NodeRef::Track(t), entered) => {
+                if let Some(s) = end_signal(net, t, entered) {
+                    break s;
+                }
+                port = PortRef::new(at.node, leave(entered));
+            }
+            (NodeRef::Point(p), Port::Left) => {
+                points.insert((p, PointPosition::Left));
+                port = PortRef::new(at.node, Port::Tip);
+            }
+            (NodeRef::Point(p), Port::Right) => {
+                points.insert((p, PointPosition::Right));
+                port = PortRef::new(at.node, Port::Tip);
+            }
+            _ => return Err("kein Einfahrsignal vor Weichenspitze oder Netzende".into()),
+        }
+    };
+    let overlap = expected_overlap(net, entry, length_mm)?;
+    for t in overlap.tvds {
+        if tvds.contains(&t) {
+            return Err("Durchrutschweg führt zur Grenze zurück".into());
+        }
+        tvds.push(t);
+    }
+    points.extend(overlap.points);
+    Ok((entry, tvds, points))
+}
+
+fn check_borders(net: &Topology, cfg: PlanningConfig, plan: &Plan, problems: &mut Vec<String>) {
+    let length = u64::from(cfg.overlap_length.as_mm());
+    let mut count = 0usize;
+    for (id, t) in net.terminals() {
+        let TerminalKind::Border { initial } = t.kind else {
+            continue;
+        };
+        let Some(def) = plan.borders.get(count) else {
+            problems.push(format!("Grenze „{}“ fehlt im Plan", t.name));
+            count += 1;
+            continue;
+        };
+        count += 1;
+        if def.name != t.name || def.initial != initial {
+            problems.push(format!(
+                "Grenze „{}“: Name oder Anlaufmerkmal weicht ab",
+                t.name
+            ));
+        }
+        match expected_approach(net, id, length) {
+            Ok((entry, tvds, points)) => {
+                let plan_points: BTreeSet<_> = def.approach_points.iter().copied().collect();
+                if def.entry_signal != entry
+                    || def.approach_tvds != tvds
+                    || plan_points != points
+                    || plan_points.len() != def.approach_points.len()
+                {
+                    problems.push(format!(
+                        "Grenze „{}“: Annäherungsabschnitt weicht ab",
+                        t.name
+                    ));
+                }
+            }
+            Err(e) => problems.push(format!("Grenze „{}“: {e}", t.name)),
+        }
+    }
+    if plan.borders.len() != count {
+        problems.push("Anzahl der Grenzen weicht ab".into());
+    }
+}
+
 fn check_conflicts(plan: &Plan, problems: &mut Vec<String>) {
     struct Sets {
         path: BTreeSet<TvdId>,
@@ -717,6 +837,7 @@ pub fn verify_with(
     let mut problems = Vec::new();
     check_elements(net, plan, &mut problems);
     check_routes(net, *cfg, plan, &mut problems);
+    check_borders(net, *cfg, plan, &mut problems);
     check_conflicts(plan, &mut problems);
     if problems.is_empty() {
         Ok(())

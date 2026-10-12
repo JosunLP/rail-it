@@ -59,6 +59,20 @@ pub enum PlanningError {
         /// Grund.
         reason: String,
     },
+    /// Eine Grenze zu einem Nachbarbereich lässt sich nicht sichern.
+    Border {
+        /// Grenze.
+        border: String,
+        /// Grund.
+        reason: String,
+    },
+    /// Fehler in einem Stellbereich.
+    InArea {
+        /// Stellbereich.
+        area: String,
+        /// Fehler.
+        error: Box<PlanningError>,
+    },
     /// Die unabhängige Gegenprüfung weicht vom Generator ab.
     Verification(String),
     /// Das Plan-Image konnte nicht geschrieben oder gelesen werden.
@@ -67,8 +81,9 @@ pub enum PlanningError {
 
 impl PlanningError {
     /// Kennung der Anforderung, die diese Prüfung absichert.
-    pub const fn requirement(&self) -> &'static str {
+    pub fn requirement(&self) -> &'static str {
         match self {
+            Self::InArea { error, .. } => error.requirement(),
             Self::SignalNotAtTrackEnd { .. }
             | Self::SignalNotAtTvdBoundary { .. }
             | Self::SignalFacesTerminal { .. }
@@ -78,6 +93,7 @@ impl PlanningError {
             Self::Verification(_) => "REQ-PLN-013",
             Self::UnprotectedFlank { .. } => "REQ-PLN-016",
             Self::DistantSignal { .. } => "REQ-PLN-017",
+            Self::Border { .. } => "REQ-PLN-019",
             Self::Image(_) => "REQ-PLN-002",
         }
     }
@@ -124,6 +140,8 @@ impl fmt::Display for PlanningError {
             Self::DistantSignal { signal, reason } => {
                 write!(f, "Vorsignal „{signal}“: {reason}")
             }
+            Self::Border { border, reason } => write!(f, "Grenze „{border}“: {reason}"),
+            Self::InArea { area, error } => write!(f, "Stellbereich „{area}“: {error}"),
             Self::Verification(msg) => write!(f, "Gegenprüfung fehlgeschlagen: {msg}"),
             Self::Image(e) => write!(f, "Plan-Image: {e}"),
         }

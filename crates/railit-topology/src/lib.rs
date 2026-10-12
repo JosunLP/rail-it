@@ -17,6 +17,10 @@
 //! Ein Netz entsteht über den [`TopologyBuilder`]. Erst [`TopologyBuilder::build`] liefert
 //! nach vollständiger Validierung eine unveränderliche [`Topology`] (REQ-TOP-008).
 //!
+//! Große Netze werden in **Stellbereiche** ([`Area`]) aufgeteilt; [`Topology::area_cut`]
+//! bildet daraus je Bereich ein eigenständiges Teilnetz mit Grenzen zu den Nachbarn.
+//! **Betriebsstellen** ([`Station`]) mit Bahnsteigen dienen der Betriebsführung.
+//!
 //! Das Crate ist `no_std` und benötigt nur `alloc`.
 
 #![no_std]
@@ -33,18 +37,22 @@
 
 extern crate alloc;
 
+mod area;
 mod builder;
 mod error;
 mod model;
 mod topology;
 
+pub use area::{AreaCut, CutBorder};
 pub use builder::{TopologyBuilder, Validated};
 pub use error::{Report, TopologyError, Warning};
 pub use model::{
-    DEFAULT_DIVERGING_SPEED, Direction, ElementRef, LevelCrossing, NodeRef, Point, PointPosition,
-    Port, PortRef, Signal, SignalKind, SignalSystem, Terminal, TerminalKind, Track, TvdMember,
-    TvdSection,
+    Area, AreaLink, DEFAULT_DIVERGING_SPEED, Direction, ElementRef, LevelCrossing, NodeRef,
+    Platform, Point, PointPosition, Port, PortRef, Signal, SignalKind, SignalSystem, Station,
+    Terminal, TerminalKind, Track, TvdMember, TvdSection,
 };
 pub use topology::{Exit, Exits, Topology};
 
-pub use railit_types::{Length, LxId, PointId, SignalId, Speed, TerminalId, TrackId, TvdId};
+pub use railit_types::{
+    AreaId, BorderId, Length, LxId, PointId, SignalId, Speed, StationId, TerminalId, TrackId, TvdId,
+};

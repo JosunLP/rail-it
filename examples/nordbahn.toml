@@ -1,0 +1,378 @@
+# Nordbahn – zwei Bahnhöfe an einer eingleisigen Strecke mit Selbstblock.
+#
+#        Adorf (Stellbereich „Adorf“)          Strecke („Strecke“)           Bstadt („Bstadt“)
+#
+#  GW ─ Aw ─▶AA ┬─ A1 ─▶AN1 ┬ Ao1 ◀AF─ Ao ═ S1 ─▶Sbk1 ═ S2 ═ Bo ─▶BA─ Bo1 ┬─ B1 ─▶BN1 ┬ Be ◀BF ─ GE
+#     aA       AW1          AW2            Sbk2◀                          BW1          BW2      bF
+#               └─ A2 ─▶AN2 ┘                                              └─ B2 ─▶BN2 ┘
+#        AP1/AP2 ◀ an den Westenden von A1/A2                    BP1/BP2 ◀ an den Westenden von B1/B2
+#
+# Die Strecke ist ein eigener Stellbereich mit den Selbstblocksignalen Sbk1 (Richtung Bstadt)
+# und Sbk2 (Richtung Adorf). An den Bereichsgrenzen (═) sichert der Erlaubniswechsel, dass
+# Züge die eingleisige Strecke nur in einer Richtung befahren.
+# W-Weichen zweigen rechts mit 40 km/h ab.
+
+[network]
+name = "Nordbahn"
+
+# ── Adorf ──────────────────────────────────────────────────────────────────────────────────
+
+[[terminal]]
+name = "GW"
+kind = "boundary"
+
+[[track]]
+name = "Aw"
+length_m = 800
+
+[[track]]
+name = "A1"
+length_m = 600
+
+[[track]]
+name = "A2"
+length_m = 600
+
+[[track]]
+name = "Ao1"
+length_m = 120
+
+[[track]]
+name = "Ao"
+length_m = 300
+
+[[point]]
+name = "AW1"
+diverging = "right"
+
+[[point]]
+name = "AW2"
+diverging = "right"
+
+[[link]]
+from = "GW.end"
+to = "Aw.a"
+
+[[link]]
+from = "Aw.b"
+to = "AW1.tip"
+
+[[link]]
+from = "AW1.left"
+to = "A1.a"
+
+[[link]]
+from = "AW1.right"
+to = "A2.a"
+
+[[link]]
+from = "A1.b"
+to = "AW2.left"
+
+[[link]]
+from = "A2.b"
+to = "AW2.right"
+
+[[link]]
+from = "AW2.tip"
+to = "Ao1.a"
+
+[[link]]
+from = "Ao1.b"
+to = "Ao.a"
+
+[[signal]]
+name = "aA"
+track = "Aw"
+position_m = 0
+direction = "a_to_b"
+kind = "distant"
+
+[[signal]]
+name = "AA"
+track = "Aw"
+position_m = 800
+direction = "a_to_b"
+kind = "main"
+
+[[signal]]
+name = "AN1"
+track = "A1"
+position_m = 600
+direction = "a_to_b"
+kind = "main"
+
+[[signal]]
+name = "AN2"
+track = "A2"
+position_m = 600
+direction = "a_to_b"
+kind = "main"
+
+[[signal]]
+name = "AP1"
+track = "A1"
+position_m = 0
+direction = "b_to_a"
+kind = "main"
+
+[[signal]]
+name = "AP2"
+track = "A2"
+position_m = 0
+direction = "b_to_a"
+kind = "main"
+
+[[signal]]
+name = "AF"
+track = "Ao"
+position_m = 0
+direction = "b_to_a"
+kind = "main"
+
+[[tvd]]
+name = "ATW"
+elements = ["Aw"]
+
+[[tvd]]
+name = "ATW1"
+elements = ["AW1"]
+
+[[tvd]]
+name = "AT1"
+elements = ["A1"]
+
+[[tvd]]
+name = "AT2"
+elements = ["A2"]
+
+[[tvd]]
+name = "ATW2"
+elements = ["AW2"]
+
+[[tvd]]
+name = "ATO1"
+elements = ["Ao1"]
+
+[[tvd]]
+name = "ATO"
+elements = ["Ao"]
+
+# ── Strecke ────────────────────────────────────────────────────────────────────────────────
+
+[[track]]
+name = "S1"
+length_m = 1500
+
+[[track]]
+name = "S2"
+length_m = 1500
+
+[[link]]
+from = "Ao.b"
+to = "S1.a"
+
+[[link]]
+from = "S1.b"
+to = "S2.a"
+
+[[signal]]
+name = "Sbk1"
+track = "S1"
+position_m = 1500
+direction = "a_to_b"
+kind = "main"
+auto = true
+
+[[signal]]
+name = "Sbk2"
+track = "S2"
+position_m = 0
+direction = "b_to_a"
+kind = "main"
+auto = true
+
+[[tvd]]
+name = "ST1"
+elements = ["S1"]
+
+[[tvd]]
+name = "ST2"
+elements = ["S2"]
+
+# ── Bstadt ─────────────────────────────────────────────────────────────────────────────────
+
+[[terminal]]
+name = "GE"
+kind = "boundary"
+
+[[track]]
+name = "Bo"
+length_m = 300
+
+[[track]]
+name = "Bo1"
+length_m = 120
+
+[[track]]
+name = "B1"
+length_m = 600
+
+[[track]]
+name = "B2"
+length_m = 600
+
+[[track]]
+name = "Be"
+length_m = 800
+
+[[point]]
+name = "BW1"
+diverging = "right"
+
+[[point]]
+name = "BW2"
+diverging = "right"
+
+[[link]]
+from = "S2.b"
+to = "Bo.a"
+
+[[link]]
+from = "Bo.b"
+to = "Bo1.a"
+
+[[link]]
+from = "Bo1.b"
+to = "BW1.tip"
+
+[[link]]
+from = "BW1.left"
+to = "B1.a"
+
+[[link]]
+from = "BW1.right"
+to = "B2.a"
+
+[[link]]
+from = "B1.b"
+to = "BW2.left"
+
+[[link]]
+from = "B2.b"
+to = "BW2.right"
+
+[[link]]
+from = "BW2.tip"
+to = "Be.a"
+
+[[link]]
+from = "Be.b"
+to = "GE.end"
+
+[[signal]]
+name = "BA"
+track = "Bo"
+position_m = 300
+direction = "a_to_b"
+kind = "main"
+
+[[signal]]
+name = "BN1"
+track = "B1"
+position_m = 600
+direction = "a_to_b"
+kind = "main"
+
+[[signal]]
+name = "BN2"
+track = "B2"
+position_m = 600
+direction = "a_to_b"
+kind = "main"
+
+[[signal]]
+name = "BP1"
+track = "B1"
+position_m = 0
+direction = "b_to_a"
+kind = "main"
+
+[[signal]]
+name = "BP2"
+track = "B2"
+position_m = 0
+direction = "b_to_a"
+kind = "main"
+
+[[signal]]
+name = "BF"
+track = "Be"
+position_m = 0
+direction = "b_to_a"
+kind = "combined"
+system = "hv"
+
+[[signal]]
+name = "bF"
+track = "Be"
+position_m = 800
+direction = "b_to_a"
+kind = "distant"
+system = "hv"
+
+[[tvd]]
+name = "BTO"
+elements = ["Bo"]
+
+[[tvd]]
+name = "BTO1"
+elements = ["Bo1"]
+
+[[tvd]]
+name = "BTW1"
+elements = ["BW1"]
+
+[[tvd]]
+name = "BT1"
+elements = ["B1"]
+
+[[tvd]]
+name = "BT2"
+elements = ["B2"]
+
+[[tvd]]
+name = "BTW2"
+elements = ["BW2"]
+
+[[tvd]]
+name = "BTE"
+elements = ["Be"]
+
+# ── Stellbereiche und Betriebsstellen ──────────────────────────────────────────────────────
+
+[[area]]
+name = "Adorf"
+tvds = ["ATW", "ATW1", "AT1", "AT2", "ATW2", "ATO1", "ATO"]
+
+[[area]]
+name = "Strecke"
+tvds = ["ST1", "ST2"]
+
+[[area]]
+name = "Bstadt"
+tvds = ["BTO", "BTO1", "BTW1", "BT1", "BT2", "BTW2", "BTE"]
+
+[[station]]
+name = "Adorf"
+platforms = [
+    { name = "1", signals = ["AN1", "AP1"] },
+    { name = "2", signals = ["AN2", "AP2"] },
+]
+
+[[station]]
+name = "Bstadt"
+platforms = [
+    { name = "1", signals = ["BN1", "BP1"] },
+    { name = "2", signals = ["BN2", "BP2"] },
+]

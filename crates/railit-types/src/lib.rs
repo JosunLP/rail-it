@@ -30,7 +30,9 @@ pub mod time;
 pub mod units;
 
 pub use bitset::{BitSet, BitSetMut, OutOfRange};
-pub use id::{LxId, PointId, RouteId, SignalId, TerminalId, TrackId, TvdId};
+pub use id::{
+    AreaId, BorderId, LxId, PointId, RouteId, SignalId, StationId, TerminalId, TrackId, TvdId,
+};
 pub use point::PointPosition;
 pub use signal::{SignalKind, SignalSystem};
 pub use time::{Duration, Tick};

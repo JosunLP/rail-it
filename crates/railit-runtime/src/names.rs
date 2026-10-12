@@ -404,6 +404,7 @@ impl Snapshot {
                         RouteEnd::Signal(s) => signal_name(plan, s),
                         RouteEnd::Boundary => "Netzgrenze".into(),
                         RouteEnd::BufferStop => "Prellbock".into(),
+                        RouteEnd::Border(b) => plan.border_name(b).unwrap_or("?").into(),
                     },
                     phase: r
                         .id()

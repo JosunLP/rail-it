@@ -81,3 +81,18 @@ define_id!(
     LxId,
     "Lx"
 );
+define_id!(
+    /// Stellbereich: Teil des Netzes, den genau ein Sicherheitskern steuert.
+    AreaId,
+    "Area"
+);
+define_id!(
+    /// Betriebsstelle (Bahnhof, Haltepunkt) mit Bahnsteiggleisen.
+    StationId,
+    "Station"
+);
+define_id!(
+    /// Grenze eines Stellbereichs zu einem benachbarten Stellbereich.
+    BorderId,
+    "Border"
+);
