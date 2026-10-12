@@ -25,6 +25,8 @@
 pub mod bitset;
 pub mod id;
 pub mod point;
+#[cfg(kani)]
+mod proofs;
 pub mod signal;
 pub mod time;
 pub mod units;

@@ -43,6 +43,8 @@
 )]
 
 pub mod md4;
+#[cfg(kani)]
+mod proofs;
 
 /// Länge des Kopfs in Byte.
 pub const HEADER_LEN: usize = 28;

@@ -1,0 +1,76 @@
+[package]
+name = "railit-fuzz-targets"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license-file = "../LICENSE"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+railit-fuzz = { path = "../crates/railit-fuzz" }
+
+# Eigener Workspace: cargo-fuzz braucht Nightly und Sanitizer.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "plan_image"
+path = "fuzz_targets/plan_image.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "toml_network"
+path = "fuzz_targets/toml_network.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "railml_network"
+path = "fuzz_targets/railml_network.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "timetable"
+path = "fuzz_targets/timetable.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "journal"
+path = "fuzz_targets/journal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rasta"
+path = "fuzz_targets/rasta.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sci"
+path = "fuzz_targets/sci.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "node_wire"
+path = "fuzz_targets/node_wire.rs"
+test = false
+doc = false
+bench = false

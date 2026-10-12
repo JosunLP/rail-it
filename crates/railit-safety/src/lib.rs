@@ -43,6 +43,8 @@
 mod channels;
 mod digest;
 mod outputs;
+#[cfg(kani)]
+mod proofs;
 mod watchdog;
 
 pub use channels::{

@@ -69,6 +69,8 @@ extern crate alloc;
 mod host;
 mod memory;
 mod node;
+#[cfg(kani)]
+mod proofs;
 pub mod wire;
 
 #[cfg(feature = "host")]

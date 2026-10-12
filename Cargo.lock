@@ -1494,6 +1494,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "railit-fuzz"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "railit-adapters",
+ "railit-embedded",
+ "railit-import",
+ "railit-journal",
+ "railit-kernel",
+ "railit-movement",
+ "railit-ops",
+ "railit-plan",
+ "railit-planning",
+ "railit-rasta",
+ "railit-rules",
+ "railit-topology",
+ "railit-types",
+ "sha2",
+]
+
+[[package]]
 name = "railit-import"
 version = "0.1.0"
 dependencies = [
@@ -2735,6 +2756,10 @@ dependencies = [
  "thiserror",
  "time",
 ]
+
+[[package]]
+name = "xtask"
+version = "0.1.0"
 
 [[package]]
 name = "yasna"

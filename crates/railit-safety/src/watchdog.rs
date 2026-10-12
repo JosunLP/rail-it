@@ -53,7 +53,14 @@ impl Watchdog {
                 });
             }
         }
-        let elapsed = end_us.checked_sub(start_us).unwrap_or(u64::MAX);
+        // Eine rückwärts laufende Uhr ist immer ein Fehler, auch bei unbegrenzter Frist
+        // (gefunden mit Kani).
+        let Some(elapsed) = end_us.checked_sub(start_us) else {
+            return Err(Trip::DeadlineExceeded {
+                elapsed_us: u64::MAX,
+                deadline_us: self.deadline_us,
+            });
+        };
         if elapsed > self.deadline_us {
             return Err(Trip::DeadlineExceeded {
                 elapsed_us: elapsed,
@@ -95,5 +102,11 @@ mod tests {
         assert!(w.check(300_000, 300_001).is_err(), "Uhr läuft rückwärts");
         w.restart();
         assert_eq!(w.check(10, 20), Ok(()));
+    }
+
+    #[test]
+    fn backward_clock_trips_even_without_deadline() {
+        let mut w = Watchdog::new(u64::MAX, u64::MAX);
+        assert!(w.check(20, 10).is_err());
     }
 }
