@@ -22,6 +22,7 @@ railit-rules = { workspace = true }
 railit-kernel = { workspace = true, features = ["alloc", "serde"] }
 railit-sim = { workspace = true }
 railit-runtime = { workspace = true }
+railit-journal = { workspace = true }
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true }
 clap = { workspace = true }
@@ -30,11 +31,21 @@ tokio-stream = { workspace = true }
 axum = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+sha2 = { workspace = true, features = ["std"] }
+toml = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+x509-parser = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+tower = { workspace = true }
 
 [dev-dependencies]
 railit-planning = { workspace = true }
-ureq = { workspace = true }
-railit-journal = { workspace = true }
+ureq = { workspace = true, features = ["rustls-no-provider"] }
+rcgen = { workspace = true }
+rustls = { workspace = true }
 
 [lints]
 workspace = true

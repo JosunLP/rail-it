@@ -20,6 +20,8 @@
 //! `Hash`-Implementierung des Kernzustands; Prüfpunkte sind daher nur zwischen Programmen
 //! gleicher Version und Plattform vergleichbar. Die Ausgaben-Hashes sind plattformunabhängig.
 
+pub mod audit;
+
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, Write};

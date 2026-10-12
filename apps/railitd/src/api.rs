@@ -28,23 +28,28 @@
 //! | DELETE | `/v1/sim/trains/{name}` | Zug entfernen |
 //! | POST | `/v1/sim/faults` | Störung setzen/aufheben |
 //!
-//! Ist ein Token konfiguriert, verlangen alle Pfade außer `/v1/health` den Kopf
-//! `Authorization: Bearer <token>`.
+//! | GET | `/v1/whoami` | Angemeldeter Benutzer mit Rollen |
+//! | GET | `/v1/audit` | Auditprotokoll prüfen, letzte Einträge (`?last=50`) |
 //!
-//! Hilfshandlungen verlangen zusätzlich den Kopf `X-Railit-Operator: <Nummer>`. Er
-//! **identifiziert** den Bediener für die Zwei-Personen-Regel.
+//! **Anmeldung** (siehe [`crate::auth`]): Mit Benutzerdatei meldet sich ein Client mit
+//! Client-Zertifikat (mTLS) oder mit `Authorization: Bearer <token>` an; jede Handlung
+//! verlangt das Recht ihrer Rolle (sonst 403) und wird im Auditprotokoll festgehalten. Mit
+//! einem gemeinsamen Token (`--token`) hat jeder Inhaber alle Rechte; ohne beides ist der
+//! Dienst offen (nur Entwicklung). `/v1/health` ist immer ohne Anmeldung erreichbar.
+//!
+//! Hilfshandlungen: Mit Benutzerdatei gilt die Bedienernummer des Benutzers, sonst der Kopf
+//! `X-Railit-Operator: <Nummer>` (Zwei-Personen-Regel).
 
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, Request as HttpRequest, State};
+use axum::extract::{Extension, Path, Query, Request as HttpRequest, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use railit_kernel::OperatorId;
 use railit_runtime::{NamedAux, NamedEvent, Snapshot};
 use railit_types::PointPosition;
 use serde::Deserialize;
@@ -52,6 +57,7 @@ use serde_json::{Value, json};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
+use crate::auth::{AuthMode, Permission, Principal};
 use crate::engine::{Answer, OpsCommand};
 use crate::service::{FaultKind, NewTrain, Service, ServiceError};
 
@@ -59,8 +65,12 @@ use crate::service::{FaultKind, NewTrain, Service, ServiceError};
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) service: Service,
-    pub(crate) token: Option<Arc<str>>,
+    pub(crate) auth: Arc<AuthMode>,
 }
+
+/// Name aus dem Client-Zertifikat der Verbindung (mTLS), von der TLS-Schicht gesetzt.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PeerIdentity(pub(crate) Option<String>);
 
 /// Fehlerantwort `{"error": "..."}`.
 struct ApiError(StatusCode, String);
@@ -75,8 +85,11 @@ impl From<ServiceError> for ApiError {
     fn from(e: ServiceError) -> Self {
         let status = match e {
             ServiceError::NotFound(_) => StatusCode::NOT_FOUND,
+            ServiceError::Forbidden(_) => StatusCode::FORBIDDEN,
             ServiceError::BadRequest(_) => StatusCode::BAD_REQUEST,
-            ServiceError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+            ServiceError::AuditUnavailable | ServiceError::Unavailable => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             ServiceError::Timeout => StatusCode::GATEWAY_TIMEOUT,
         };
         Self(status, e.message())
@@ -110,6 +123,8 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/v1/sim/trains", get(trains).post(add_train))
         .route("/v1/sim/trains/{name}", delete(remove_train))
         .route("/v1/sim/faults", post(fault))
+        .route("/v1/whoami", get(whoami))
+        .route("/v1/audit", get(audit))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
     Router::new()
         .route("/v1/health", get(health))
@@ -117,18 +132,23 @@ pub(crate) fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn auth(State(state): State<AppState>, request: HttpRequest, next: Next) -> Response {
-    if let Some(token) = &state.token {
-        let given = request
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "));
-        if given != Some(token.as_ref()) {
-            return ApiError(StatusCode::UNAUTHORIZED, "Anmeldung erforderlich".into())
-                .into_response();
-        }
+async fn auth(State(state): State<AppState>, mut request: HttpRequest, next: Next) -> Response {
+    let bearer = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    let cn = request
+        .extensions()
+        .get::<PeerIdentity>()
+        .and_then(|p| p.0.as_deref());
+    let Some(principal) = state.auth.authenticate(bearer, cn) else {
+        return ApiError(StatusCode::UNAUTHORIZED, "Anmeldung erforderlich".into()).into_response();
+    };
+    if !principal.may(Permission::Read) {
+        return ApiError(StatusCode::FORBIDDEN, "keine Leseberechtigung".into()).into_response();
     }
+    request.extensions_mut().insert(principal);
     next.run(request).await
 }
 
@@ -180,12 +200,20 @@ async fn areas(State(state): State<AppState>) -> Json<Value> {
     Json(json!(state.service.snapshot().areas))
 }
 
-async fn set_route(State(state): State<AppState>, Path(name): Path<String>) -> ApiResult {
-    Ok(answer(state.service.set_route(&name).await?))
+async fn set_route(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Path(name): Path<String>,
+) -> ApiResult {
+    Ok(answer(state.service.set_route(&who, &name).await?))
 }
 
-async fn cancel_route(State(state): State<AppState>, Path(name): Path<String>) -> ApiResult {
-    Ok(answer(state.service.cancel_route(&name).await?))
+async fn cancel_route(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Path(name): Path<String>,
+) -> ApiResult {
+    Ok(answer(state.service.cancel_route(&who, &name).await?))
 }
 
 #[derive(Deserialize)]
@@ -195,45 +223,47 @@ struct MoveBody {
 
 async fn move_point(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     Path(name): Path<String>,
     Json(body): Json<MoveBody>,
 ) -> ApiResult {
     Ok(answer(
-        state.service.move_point(&name, body.position).await?,
+        state.service.move_point(&who, &name, body.position).await?,
     ))
 }
 
 async fn request_permission(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     Path(address): Path<String>,
 ) -> ApiResult {
     Ok(answer(
-        state.service.request_permission(&address, true).await?,
+        state
+            .service
+            .request_permission(&who, &address, true)
+            .await?,
     ))
 }
 
 async fn withdraw_permission(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     Path(address): Path<String>,
 ) -> ApiResult {
     Ok(answer(
-        state.service.request_permission(&address, false).await?,
+        state
+            .service
+            .request_permission(&who, &address, false)
+            .await?,
     ))
 }
 
-/// Bedienerkennung aus `X-Railit-Operator`.
-fn operator(headers: &HeaderMap) -> Result<OperatorId, ApiError> {
+/// Bedienernummer aus `X-Railit-Operator`, falls angegeben.
+fn operator(headers: &HeaderMap) -> Option<u32> {
     headers
         .get("x-railit-operator")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.trim().parse::<u32>().ok())
-        .map(OperatorId)
-        .ok_or_else(|| {
-            ApiError(
-                StatusCode::BAD_REQUEST,
-                "Hilfshandlungen verlangen den Kopf X-Railit-Operator (Bedienernummer)".into(),
-            )
-        })
 }
 
 async fn aux_list(State(state): State<AppState>) -> Json<Value> {
@@ -246,11 +276,16 @@ async fn aux_list(State(state): State<AppState>) -> Json<Value> {
 
 async fn aux_request(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     headers: HeaderMap,
     Json(body): Json<NamedAux>,
 ) -> ApiResult {
-    let operator = operator(&headers)?;
-    Ok(answer(state.service.aux_request(&body, operator).await?))
+    Ok(answer(
+        state
+            .service
+            .aux_request(&who, &body, operator(&headers))
+            .await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -260,15 +295,15 @@ struct AreaQuery {
 
 async fn aux_confirm(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     headers: HeaderMap,
     Path(id): Path<u32>,
     Query(query): Query<AreaQuery>,
 ) -> ApiResult {
-    let operator = operator(&headers)?;
     Ok(answer(
         state
             .service
-            .aux_confirm(query.area.as_deref(), id, operator)
+            .aux_confirm(&who, query.area.as_deref(), id, operator(&headers))
             .await?,
     ))
 }
@@ -289,8 +324,12 @@ struct ArsBody {
     on: bool,
 }
 
-async fn ops_ars(State(state): State<AppState>, Json(body): Json<ArsBody>) -> ApiResult {
-    state.service.ops(OpsCommand::SetArs(body.on)).await?;
+async fn ops_ars(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Json(body): Json<ArsBody>,
+) -> ApiResult {
+    state.service.ops(&who, OpsCommand::SetArs(body.on)).await?;
     Ok(done())
 }
 
@@ -302,31 +341,53 @@ struct DescribeBody {
 
 async fn ops_describe(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     Path(train): Path<String>,
     Json(body): Json<DescribeBody>,
 ) -> ApiResult {
     state
         .service
-        .ops(OpsCommand::Describe {
-            train,
-            signal: body.signal,
-        })
+        .ops(
+            &who,
+            OpsCommand::Describe {
+                train,
+                signal: body.signal,
+            },
+        )
         .await?;
     Ok(done())
 }
 
-async fn ops_erase(State(state): State<AppState>, Path(train): Path<String>) -> ApiResult {
-    state.service.ops(OpsCommand::Erase(train)).await?;
+async fn ops_erase(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Path(train): Path<String>,
+) -> ApiResult {
+    state.service.ops(&who, OpsCommand::Erase(train)).await?;
     Ok(done())
 }
 
-async fn ops_hold(State(state): State<AppState>, Path(train): Path<String>) -> ApiResult {
-    state.service.ops(OpsCommand::Hold(train, true)).await?;
+async fn ops_hold(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Path(train): Path<String>,
+) -> ApiResult {
+    state
+        .service
+        .ops(&who, OpsCommand::Hold(train, true))
+        .await?;
     Ok(done())
 }
 
-async fn ops_release(State(state): State<AppState>, Path(train): Path<String>) -> ApiResult {
-    state.service.ops(OpsCommand::Hold(train, false)).await?;
+async fn ops_release(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Path(train): Path<String>,
+) -> ApiResult {
+    state
+        .service
+        .ops(&who, OpsCommand::Hold(train, false))
+        .await?;
     Ok(done())
 }
 
@@ -339,16 +400,20 @@ struct PlatformBody {
 
 async fn ops_platform(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     Path(train): Path<String>,
     Json(body): Json<PlatformBody>,
 ) -> ApiResult {
     state
         .service
-        .ops(OpsCommand::Platform {
-            train,
-            station: body.station,
-            platform: body.platform,
-        })
+        .ops(
+            &who,
+            OpsCommand::Platform {
+                train,
+                station: body.station,
+                platform: body.platform,
+            },
+        )
         .await?;
     Ok(done())
 }
@@ -361,10 +426,14 @@ struct DelayBody {
 
 async fn ops_delay(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     Path(train): Path<String>,
     Json(body): Json<DelayBody>,
 ) -> ApiResult {
-    state.service.ops(OpsCommand::Delay(train, body.s)).await?;
+    state
+        .service
+        .ops(&who, OpsCommand::Delay(train, body.s))
+        .await?;
     Ok(done())
 }
 
@@ -383,13 +452,21 @@ async fn trains(State(state): State<AppState>) -> ApiResult {
     Ok(Json(state.service.trains().await?).into_response())
 }
 
-async fn add_train(State(state): State<AppState>, Json(body): Json<NewTrain>) -> ApiResult {
-    state.service.add_train(body).await?;
+async fn add_train(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Json(body): Json<NewTrain>,
+) -> ApiResult {
+    state.service.add_train(&who, body).await?;
     Ok(done())
 }
 
-async fn remove_train(State(state): State<AppState>, Path(name): Path<String>) -> ApiResult {
-    state.service.remove_train(name).await?;
+async fn remove_train(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Path(name): Path<String>,
+) -> ApiResult {
+    state.service.remove_train(&who, name).await?;
     Ok(done())
 }
 
@@ -406,10 +483,32 @@ const fn yes() -> bool {
     true
 }
 
-async fn fault(State(state): State<AppState>, Json(body): Json<FaultBody>) -> ApiResult {
+async fn fault(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Json(body): Json<FaultBody>,
+) -> ApiResult {
     state
         .service
-        .fault(body.kind, &body.element, body.active)
+        .fault(&who, body.kind, &body.element, body.active)
         .await?;
     Ok(done())
+}
+
+async fn whoami(Extension(who): Extension<Principal>) -> Json<Principal> {
+    Json(who)
+}
+
+#[derive(Deserialize)]
+struct AuditQuery {
+    last: Option<usize>,
+}
+
+async fn audit(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Query(query): Query<AuditQuery>,
+) -> ApiResult {
+    let log = state.service.audit_log(&who, query.last.unwrap_or(50))?;
+    Ok(Json(log).into_response())
 }

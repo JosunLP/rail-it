@@ -11,10 +11,16 @@
 //! Die Feldebene ist bisher ausschließlich simuliert. Unsignierte Pläne sind nur mit
 //! `--allow-unsigned` zulässig. Mit `--journal` schreibt der Dienst ein Betriebsjournal,
 //! das sich mit `railit journal verify|replay` prüfen und abspielen lässt.
+//!
+//! Sicherheit (siehe [`auth`], [`tls`]): `--users` mit Rollen und Auditprotokoll
+//! (`--audit`), TLS mit `--tls-cert`/`--tls-key`, gegenseitige Anmeldung mit
+//! `--tls-client-ca`. Ohne Anmeldung lauscht der Dienst nur auf der Loopback-Adresse.
 
 mod api;
+mod auth;
 mod engine;
 mod service;
+mod tls;
 
 use std::io::Write;
 use std::net::SocketAddr;
@@ -22,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use auth::{AuthMode, Users};
 use clap::Parser;
 use railit_plan::{PlanView, VerifyingKey};
 use railit_rules::GenericRules;
@@ -79,9 +86,29 @@ struct Args {
     /// Zuglenkung einschalten (Fahrstraßen für Züge mit Fahrplan selbsttätig anfordern).
     #[arg(long)]
     ars: bool,
-    /// Zugangstoken der API (auch über `RAILIT_TOKEN`).
-    #[arg(long, env = "RAILIT_TOKEN", hide_env_values = true)]
+    /// Gemeinsames Zugangstoken mit allen Rechten (auch über `RAILIT_TOKEN`).
+    #[arg(
+        long,
+        env = "RAILIT_TOKEN",
+        hide_env_values = true,
+        conflicts_with = "users"
+    )]
     token: Option<String>,
+    /// Benutzerdatei mit Rollen, Token-Hashes und Zertifikatsnamen.
+    #[arg(long, requires = "audit")]
+    users: Option<PathBuf>,
+    /// Auditprotokoll (wird fortgesetzt; eine manipulierte Datei verhindert den Start).
+    #[arg(long)]
+    audit: Option<PathBuf>,
+    /// Serverzertifikat (PEM, mit Kette) für TLS.
+    #[arg(long, requires = "tls_key")]
+    tls_cert: Option<PathBuf>,
+    /// Privater Schlüssel des Servers (PEM).
+    #[arg(long, requires = "tls_cert")]
+    tls_key: Option<PathBuf>,
+    /// CA für Client-Zertifikate: verlangt mTLS; der CN identifiziert den Benutzer.
+    #[arg(long, requires_all = ["tls_cert", "users"])]
+    tls_client_ca: Option<PathBuf>,
 }
 
 fn fail(msg: &str) -> ExitCode {
@@ -198,7 +225,12 @@ fn start_journals(rt: &mut Runtime<Simulator>, path: &Path, every: u64) -> Resul
 }
 
 /// Startet Engine und API und läuft bis Strg+C.
-async fn serve(args: Args, net: Topology, rt: Runtime<Simulator>) -> Result<(), String> {
+async fn serve(
+    args: Args,
+    net: Topology,
+    rt: Runtime<Simulator>,
+    security: Security,
+) -> Result<(), String> {
     let period = std::time::Duration::from_micros(
         (args.cycle_ms.max(1) * 1000 / u64::from(args.speed.max(1))).max(1000),
     );
@@ -213,9 +245,24 @@ async fn serve(args: Args, net: Topology, rt: Runtime<Simulator>) -> Result<(), 
     };
     let engine = tokio::spawn(engine::run(rt, channels, period));
 
+    let audit = args
+        .audit
+        .as_deref()
+        .map(service::Audit::open)
+        .transpose()?
+        .map(Arc::new);
+    let operators_from_users = security.auth.operators_from_users();
     let state = api::AppState {
-        service: service::Service::new(directory, Arc::new(net), tx, snapshot_rx, events_tx),
-        token: args.token.map(Arc::from),
+        service: service::Service::new(
+            directory,
+            Arc::new(net),
+            tx,
+            snapshot_rx,
+            events_tx,
+            audit,
+            operators_from_users,
+        ),
+        auth: Arc::new(security.auth),
     };
     let listener = tokio::net::TcpListener::bind(args.listen)
         .await
@@ -223,20 +270,84 @@ async fn serve(args: Args, net: Topology, rt: Runtime<Simulator>) -> Result<(), 
     let addr = listener
         .local_addr()
         .map_or_else(|_| args.listen.to_string(), |a| a.to_string());
-    tracing::info!(%addr, cycle_ms = args.cycle_ms, speed = args.speed, "API bereit");
+    let scheme = if security.tls.is_some() {
+        "https"
+    } else {
+        "http"
+    };
+    tracing::info!(%addr, scheme, cycle_ms = args.cycle_ms, speed = args.speed, "API bereit");
     // Erste Zeile auf stdout: Adresse für Skripte und Tests.
-    println!("railitd: http://{addr}");
+    println!("railitd: {scheme}://{addr}");
     let _ = std::io::stdout().flush();
 
     let shutdown = async {
         let _ = tokio::signal::ctrl_c().await;
         tracing::info!("wird beendet");
     };
-    let served = axum::serve(listener, api::router(state))
-        .with_graceful_shutdown(shutdown)
-        .await;
+    let app = api::router(state);
+    let served = match security.tls {
+        Some(config) => {
+            tls::serve(listener, config, app, shutdown).await;
+            Ok(())
+        }
+        None => axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown)
+            .await
+            .map_err(|e| format!("Server: {e}")),
+    };
     engine.abort();
-    served.map_err(|e| format!("Server: {e}"))
+    served
+}
+
+/// Anmeldung und Transportsicherung.
+struct Security {
+    auth: AuthMode,
+    tls: Option<Arc<rustls::ServerConfig>>,
+}
+
+/// Prüft die Sicherheitseinstellungen vor dem Start.
+fn security(args: &Args, net: &Topology) -> Result<Security, String> {
+    let auth = match (&args.users, &args.token) {
+        (Some(path), _) => {
+            let mut areas: Vec<String> = net.areas().map(|(_, a)| a.name.clone()).collect();
+            if areas.is_empty() {
+                areas.push(net.name().to_string());
+            }
+            AuthMode::Users(Users::load(path, &areas)?)
+        }
+        (None, Some(token)) => {
+            if token.len() < 16 {
+                tracing::warn!("Zugangstoken kürzer als 16 Zeichen");
+            }
+            AuthMode::Token(token.clone())
+        }
+        (None, None) => {
+            if !args.listen.ip().is_loopback() {
+                return Err(
+                    "ohne --users oder --token lauscht der Dienst nur auf der Loopback-Adresse"
+                        .into(),
+                );
+            }
+            tracing::warn!("keine Anmeldung: jeder lokale Zugriff hat alle Rechte");
+            AuthMode::Open
+        }
+    };
+    if args.users.is_none() && args.audit.is_some() {
+        tracing::info!("Auditprotokoll ohne Benutzerdatei: Benutzer sind nicht unterscheidbar");
+    }
+    let tls = if let (Some(cert), Some(key)) = (&args.tls_cert, &args.tls_key) {
+        Some(tls::server_config(
+            cert,
+            key,
+            args.tls_client_ca.as_deref(),
+        )?)
+    } else {
+        if !args.listen.ip().is_loopback() {
+            tracing::warn!("ohne TLS: Token und Daten gehen unverschlüsselt über das Netz");
+        }
+        None
+    };
+    Ok(Security { auth, tls })
 }
 
 fn main() -> ExitCode {
@@ -266,7 +377,11 @@ fn main() -> ExitCode {
         Ok(r) => r,
         Err(e) => return fail(&format!("Tokio: {e}")),
     };
-    match runtime.block_on(serve(args, net, rt)) {
+    let security = match security(&args, &net) {
+        Ok(s) => s,
+        Err(e) => return fail(&e),
+    };
+    match runtime.block_on(serve(args, net, rt, security)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => fail(&e),
     }
