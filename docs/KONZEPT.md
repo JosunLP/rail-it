@@ -1,6 +1,6 @@
 # rail-it – Konzept einer Engine für Netz- und Stellwerkmanagement
 
-> Status: **v0.3** (Phase 1 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
+> Status: **v0.4** (Phasen 0 bis 2 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
 >
 > v0.2 arbeitet die Grundsatzentscheidungen aus Abschnitt 2 ein: vollständiger Netz- und
 > Bahnbetrieb, deutsches ESTW **und** europäisches System (ETCS/EULYNX), Server **und**
@@ -319,6 +319,12 @@ pub trait SignallingChannel {
 | `lineside::hv` | H/V-Signalbegriffe, PZB-Wirkung | `de-estw` |
 | `etcs::l2` | Movement Authorities (EoA, Danger Point, Overlap, statisches Geschwindigkeitsprofil) an die RBC-Funktion | `etcs` |
 
+**Stand Phase 2:** `railit-movement` setzt die Kanäle Ks und H/V um. Es berechnet die
+Signalbilder als reine Funktion aus Plan und Kernzustand (`Pictures`): Hauptsignale zeigen
+einen Fahrtbegriff genau dann, wenn der Kern Fahrt befohlen hat, Vorsignale kündigen das
+nächste Hauptsignal an, Geschwindigkeitsbeschränkungen erscheinen als Zs3/Zs3v bzw. Hp2/Vr2
+(REQ-MOV-001 bis 003). Die Abstraktion `MovementPermission` mit ETCS-Kanal folgt in Phase 4.
+
 Ein Abschnitt kann **mehrere Kanäle zugleich** haben, etwa ETCS Level 2 mit Lichtsignalen als
 Rückfallebene. Das ist im Mischbetrieb der Normalfall. Für ETCS mit Moving Block bzw. Hybrid
 Level 3 ist das Konzept der *Virtual Sub-Sections* (VSS) vorgesehen: Belegung entsteht dann
@@ -367,7 +373,8 @@ stateDiagram-v2
     Fahrerlaubnis --> Ruecknahme: Bedienhandlung
     Ruecknahme --> Aufgeloest: kein Zug in Annäherung<br/>oder Zeitverschluss abgelaufen
     Befahren --> Befahren: Teilauflösung je Abschnitt
-    Befahren --> Aufgeloest: Ziel erreicht,<br/>Durchrutschweg aufgelöst
+    Befahren --> Angekommen: Zielabschnitt erreicht,<br/>Fahrweg aufgelöst
+    Angekommen --> Aufgeloest: Auflösezeit abgelaufen,<br/>Durchrutschweg frei
     Abgelehnt --> [*]
     Abgebrochen --> [*]
     Aufgeloest --> [*]
@@ -408,12 +415,27 @@ und, wo möglich, formal mit Kani nachgewiesen.
 ### 10.6 Hilfshandlungen
 
 ```rust
-pub struct Pending<Op>   { op: Op, requested_by: OperatorId, at: Tick }
-pub struct Confirmed<Op> { op: Op, requested_by: OperatorId, confirmed_by: OperatorId, counter: u64 }
+pub enum AuxOperation { ReleaseRoute(RouteId), ResetTvd(TvdId), Substitute(RouteId),
+                        ForcePoint(PointId, PointPosition) }
+pub enum Request { …, AuxRequest { op, operator }, AuxConfirm { aux, operator } }
 ```
 
-Der Kern nimmt nur `Confirmed<_>` an. Eine Bestätigung erfordert eine zweite, getrennte
-Handlung. Jede Hilfshandlung zählt ein Zählwerk hoch und wird im Journal festgehalten.
+Der Kern hält angeforderte Hilfshandlungen in festen Plätzen (ohne Allokation). Ausgeführt
+wird erst, wenn ein **anderer** Bediener innerhalb der Bestätigungsfrist bestätigt und die
+Voraussetzungen dann noch gelten; jede Ausführung erhöht das Zählwerk. Nicht bestätigte
+Anforderungen verfallen. Das Journal hält Anforderung und Bestätigung fest (REQ-IXL-014).
+
+### 10.7 Stand Phase 2
+
+- **Verschlüsse:** Fahrweg exklusiv je Abschnitt und Weiche; Durchrutschweg exklusiv je
+  Abschnitt (eine anschließende Fahrstraße darf ihn als Fahrweg nutzen); Weichen in
+  Durchrutschweg und Flankenschutz lagebezogen geteilt; Schutzsignale und Bahnübergänge mit
+  Haltezählern. Die Invarianten berechnen alle Verschlüsse unabhängig aus Phasen und
+  Auflösefortschritt der Fahrstraßen neu.
+- **Unerlaubte Besetzung:** Ein frei gemeldeter Abschnitt, der ohne erlaubte Fahrt besetzt
+  wird, löst einen Alarm aus; Einfahrabschnitte an der Netzgrenze sind ausgenommen.
+- **Ersatzsignal (Zs1):** nur über die Hilfshandlung, nur bei gesichertem Fahrweg, erlischt
+  bei Einfahrt, nach Höchstdauer oder bei Wegfall einer Bedingung.
 
 ---
 
@@ -564,7 +586,8 @@ Beispiel durch Rückmeldung mit Prüfcode. Die API ist darauf von Beginn an ausg
 **Neustart**
 
 Nach einem Neustart gelten alle Elemente als unbekannt, alle Fahrerlaubnisse sind
-zurückgenommen. Das Journal dient der Diagnose. Es wird nicht blind wiederhergestellt, denn
+zurückgenommen. Das Journal (`railit-journal`: Eingaben je Zyklus, SHA-256-Hashkette,
+Zustands-Prüfpunkte, deterministisches Replay) dient der Diagnose. Es wird nicht blind wiederhergestellt, denn
 der tatsächliche Zustand draußen hat Vorrang.
 
 **Performance**
@@ -641,16 +664,18 @@ Daraus folgen diese Regeln:
 |-------|--------|----------|-------|
 | **0 – Fundament** | Workspace, CI, Lizenz, `types`, `topology`, rail-it-TOML, `railit net validate/info`, erste Gefährdungsliste und Anforderungen | Netz laden, prüfen und beschreiben | ✔ |
 | **1 – Minimaler Kern** | Plan-Image (signiert), Fahrstraßengenerator mit unabhängiger Gegenprüfung, Kern mit Weichen, Signalen und TVD inkl. Teilauflösung und Zeitverschluss, Simulator, Szenarien, `railitd` mit REST-API, CLI | Bahnhof „Beispielstadt“ (`examples/beispielstadt.toml`) fährt sicher in der Simulation, bedienbar über die CLI | ✔ |
-| **2 – ESTW vollständig** | Durchrutschwege, Flankenschutz, Hilfshandlungen mit Zählwerk, Signalbegriffe Ks und H/V (`railit-movement`), BÜ, Erkennung unerlaubter Besetzungen, Journal und Replay | Fachlich vollständiges Einzelstellwerk nach `de-estw` | offen |
+| **2 – ESTW vollständig** | Durchrutschwege, Flankenschutz, Hilfshandlungen mit Zählwerk, Signalbegriffe Ks und H/V (`railit-movement`), BÜ, Erkennung unerlaubter Besetzungen, Journal und Replay | Fachlich vollständiges Einzelstellwerk nach `de-estw` | ✔ |
 | **3 – Netz & Betrieb** | Mehrere Stellbereiche, Streckenblock, Zugnummern, Fahrplan, Zuglenkung, Disposition, gRPC-Vertrag, Rollen, mTLS, Audit | Betrieb eines Netzes mit mehreren Bahnhöfen in der Simulation | offen |
 | **4 – Europa** | ETCS Level 2 (MA-Erzeugung, RBC-Funktion), EULYNX SCI-* über RaSTA, Import von railML 3 und PlanPro | Mischbetrieb ESTW/ETCS, Anbindung an Prüfstände | offen |
 | **5 – Sicherheit & Embedded** | Redundante Kanäle, Voter, Cortex-R-Runtime, Kani-Nachweise, Fuzzing, Safety Case | Zulassungsreifer Kandidat für das Labor | offen |
 | **6 – UI** | Spurplan-UI als API-Client mit sicherer Anzeige- und Bestätigungskette | Bedienplatz | offen |
 
-**Umgesetzte Crates (Stand Phase 1):** `railit-types`, `railit-topology`, `railit-plan`,
-`railit-planning`, `railit-rules`, `railit-kernel`, `railit-sim`, `railit-runtime`
-(einschließlich Szenario-Runner und Schlüsselverwaltung), `railit-import` sowie die
-Anwendungen `railit` und `railitd`. Die übrigen Crates aus Abschnitt 5 entstehen in den
+**Umgesetzte Crates (Stand Phase 2):** `railit-types`, `railit-topology`, `railit-plan`,
+`railit-planning`, `railit-rules`, `railit-kernel`, `railit-movement`, `railit-journal`,
+`railit-sim`, `railit-runtime` (einschließlich Szenario-Runner und Schlüsselverwaltung),
+`railit-import` sowie die Anwendungen `railit` und `railitd`. Das Regelwerk `de-estw` ist
+noch das Lehrregelwerk `GenericRules` mit den Zeiten aus Phase 2 (Auflösezeit des
+Durchrutschwegs, Bestätigungsfrist, Leuchtdauer Zs1). Die übrigen Crates aus Abschnitt 5 entstehen in den
 jeweiligen Phasen.
 
 ---

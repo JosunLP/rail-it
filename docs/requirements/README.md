@@ -9,6 +9,8 @@ Anforderung → Code → Test (Konzept, Abschnitt 16).
 | [topologie.md](topologie.md) | `REQ-TOP`: Netzmodell und seine Validierung |
 | [plan.md](plan.md) | `REQ-PLN`: Projektierung und Plan-Image |
 | [kern.md](kern.md) | `REQ-IXL`: Sicherheitskern (Fahrwegsicherung) |
+| [fahrerlaubnis.md](fahrerlaubnis.md) | `REQ-MOV`: Signalbegriffe Ks und H/V |
+| [journal.md](journal.md) | `REQ-JRN`: Betriebsjournal und Replay |
 | [dienst.md](dienst.md) | `REQ-SVC`: Dienst, API und Bedienung |
 
 **Regeln**
