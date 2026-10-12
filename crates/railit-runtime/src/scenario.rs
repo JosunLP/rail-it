@@ -31,7 +31,7 @@
 //! `confirm_aux = { operator }` (zuletzt angeforderte Hilfshandlung bestätigen).
 //!
 //! **Bedingungen** (`until`, `expect`): `route`, `signal` (befohlener Begriff),
-//! `substitute` (Ersatzsignal ein/aus), `point`, `tvd` (Meldung des Felds), `lx` (Meldung
+//! `substitute` (Ersatzsignal ein/aus), `picture` (Signalbild, z. B. `"Ks1 Zs3(4)"`), `point`, `tvd` (Meldung des Felds), `lx` (Meldung
 //! des Bahnübergangs), `train`, `accepted`, `rejected` (Grund), `alarm` / `no_alarm`
 //! (Listen), `sim_event` (Liste), `aux_counter`, `safe_state`.
 
@@ -187,6 +187,8 @@ struct Conditions {
     signal: BTreeMap<String, Aspect>,
     #[serde(default)]
     substitute: BTreeMap<String, bool>,
+    #[serde(default)]
+    picture: BTreeMap<String, String>,
     #[serde(default)]
     lx: BTreeMap<String, LxReport>,
     #[serde(default)]
@@ -607,6 +609,16 @@ impl Ctx {
                 .map(railit_kernel::SignalState::substitute);
             if got != Some(*want) {
                 failures.push(format!("Ersatzsignal {name}: erwartet {want}, ist {got:?}"));
+            }
+        }
+        let pictures = railit_movement::Pictures::new(&plan, state.signals(), state.routes());
+        for (name, want) in &c.picture {
+            let got = plan
+                .find_signal(name)
+                .and_then(|s| pictures.picture(s))
+                .map(|p| p.to_string());
+            if got.as_deref() != Some(want.as_str()) {
+                failures.push(format!("Signalbild {name}: erwartet {want}, ist {got:?}"));
             }
         }
         for (name, want) in &c.lx {

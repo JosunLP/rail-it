@@ -36,3 +36,8 @@ set_route = "N1-GE"
 until = { route = { "N1-GE" = "proceed" } }
 timeout_s = 30
 expect = { accepted = true, signal = { N1 = "proceed" } }
+
+[[step]]
+note = "Signalbilder: Einfahrt gerade, Ausfahrt auf die Strecke"
+wait_s = 0.1
+expect = { picture = { a = "Ks1", A = "Ks1", N1 = "Ks2" } }

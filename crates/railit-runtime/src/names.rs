@@ -254,6 +254,10 @@ pub struct SignalSnapshot {
     pub report: Option<SignalReport>,
     /// Ersatzsignal (Zs1) eingeschaltet.
     pub substitute: bool,
+    /// Signalbild nach Signalsystem, z. B. `Ks1 Zs3(4)` oder `Hp2 Vr0`.
+    pub picture: String,
+    /// Signalbild strukturiert.
+    pub aspects: Option<railit_movement::Picture>,
     /// Anzahl der Fahrstraßen, die das Signal als Flankenschutz in Halt halten.
     pub flank_holds: u8,
 }
@@ -341,6 +345,7 @@ impl Snapshot {
     /// Zustandsbild aus Plan und Kernzustand.
     pub fn new(plan: &PlanView<'_>, state: &OwnedState, now: Tick) -> Self {
         let owner = |r: Option<RouteId>| r.map(|r| route_name(plan, r));
+        let pictures = railit_movement::Pictures::new(plan, state.signals(), state.routes());
         Self {
             network: plan.network_name().to_string(),
             time_ms: now.as_millis(),
@@ -370,6 +375,11 @@ impl Snapshot {
                     commanded: s.commanded(),
                     report: s.report(),
                     substitute: s.substitute(),
+                    picture: pictures
+                        .picture(id)
+                        .map(|p| p.to_string())
+                        .unwrap_or_default(),
+                    aspects: pictures.picture(id),
                     flank_holds: s.stop_holds(),
                 })
                 .collect(),

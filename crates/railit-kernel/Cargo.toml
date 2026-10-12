@@ -35,5 +35,9 @@ required-features = ["alloc"]
 name = "invariants"
 required-features = ["alloc"]
 
+[[test]]
+name = "phase2"
+required-features = ["alloc"]
+
 [lints]
 workspace = true

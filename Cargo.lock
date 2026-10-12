@@ -975,6 +975,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "railit-movement"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "railit-import",
+ "railit-kernel",
+ "railit-plan",
+ "railit-planning",
+ "railit-rules",
+ "railit-types",
+ "serde",
+]
+
+[[package]]
 name = "railit-plan"
 version = "0.1.0"
 dependencies = [
@@ -1009,6 +1023,7 @@ dependencies = [
  "getrandom 0.3.4",
  "railit-import",
  "railit-kernel",
+ "railit-movement",
  "railit-plan",
  "railit-planning",
  "railit-rules",

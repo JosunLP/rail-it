@@ -1,0 +1,31 @@
+[package]
+name = "railit-movement"
+description = "Fahrerlaubnisse von rail-it: Signalbegriffe der Systeme Ks und H/V aus dem Zustand des Sicherheitskerns (no_std, ohne alloc)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+railit-types = { workspace = true }
+railit-plan = { workspace = true }
+railit-kernel = { workspace = true }
+serde = { workspace = true, optional = true }
+
+[features]
+default = []
+serde = ["dep:serde", "railit-types/serde"]
+
+[dev-dependencies]
+railit-kernel = { workspace = true, features = ["alloc"] }
+railit-plan = { workspace = true, features = ["alloc"] }
+railit-rules = { workspace = true }
+railit-planning = { workspace = true }
+railit-import = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

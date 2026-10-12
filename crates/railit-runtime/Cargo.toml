@@ -17,6 +17,7 @@ railit-planning = { workspace = true }
 railit-import = { workspace = true }
 railit-rules = { workspace = true }
 railit-kernel = { workspace = true, features = ["alloc", "serde"] }
+railit-movement = { workspace = true, features = ["serde"] }
 railit-sim = { workspace = true }
 serde = { workspace = true, features = ["std"] }
 toml = { workspace = true }
