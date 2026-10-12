@@ -944,10 +944,15 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "railit-import",
+ "railit-journal",
+ "railit-kernel",
  "railit-plan",
  "railit-planning",
+ "railit-rules",
  "railit-runtime",
+ "railit-sim",
  "railit-topology",
+ "railit-types",
  "serde_json",
  "ureq",
 ]
@@ -1086,6 +1091,7 @@ dependencies = [
  "axum",
  "clap",
  "railit-import",
+ "railit-journal",
  "railit-kernel",
  "railit-plan",
  "railit-planning",

@@ -8,8 +8,9 @@
 //!         --trusted-key railit.pub --listen 127.0.0.1:7878
 //! ```
 //!
-//! Phase 1 betreibt die Feldebene ausschließlich simuliert. Unsignierte Pläne sind nur mit
-//! `--allow-unsigned` zulässig.
+//! Die Feldebene ist bisher ausschließlich simuliert. Unsignierte Pläne sind nur mit
+//! `--allow-unsigned` zulässig. Mit `--journal` schreibt der Dienst ein Betriebsjournal,
+//! das sich mit `railit journal verify|replay` prüfen und abspielen lässt.
 
 mod api;
 mod engine;
@@ -33,7 +34,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 #[command(
     name = "railitd",
     version,
-    about = "Stellwerksdienst von rail-it (Phase 1: simulierte Feldebene)"
+    about = "Stellwerksdienst von rail-it (simulierte Feldebene)"
 )]
 struct Args {
     /// Netzbeschreibung (rail-it-TOML) für Simulator und Abgleich mit dem Plan.
@@ -61,6 +62,13 @@ struct Args {
     /// Zeitraffer: Die Simulation läuft so viel schneller als Echtzeit.
     #[arg(long, default_value_t = 1)]
     speed: u32,
+    /// Betriebsjournal: Eingaben jedes Zyklus mit Hashkette (neue Datei; eine vorhandene
+    /// wird nicht überschrieben). Prüfen und abspielen mit `railit journal`.
+    #[arg(long)]
+    journal: Option<PathBuf>,
+    /// Abstand der Zustands-Prüfpunkte im Journal (Zyklen).
+    #[arg(long, default_value_t = 600)]
+    checkpoint_every: u64,
     /// Zugangstoken der API (auch über `RAILIT_TOKEN`).
     #[arg(long, env = "RAILIT_TOKEN", hide_env_values = true)]
     token: Option<String>,
@@ -163,7 +171,24 @@ fn main() -> ExitCode {
     };
     let cycle = railit_types::Duration::from_millis(args.cycle_ms.max(1));
     let sim = Simulator::new(net, SimConfig::default());
-    let rt = Runtime::new(plan, GenericRules::default(), sim, cycle);
+    let mut rt = Runtime::new(plan, GenericRules::default(), sim, cycle);
+    if let Some(path) = &args.journal {
+        let file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(f) => f,
+            Err(e) => return fail(&format!("Journal {}: {e}", path.display())),
+        };
+        if let Err(e) = rt.start_journal(
+            Box::new(std::io::BufWriter::new(file)),
+            args.checkpoint_every,
+        ) {
+            return fail(&format!("Journal {}: {e}", path.display()));
+        }
+        tracing::info!(path = %path.display(), "Journal läuft");
+    }
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()

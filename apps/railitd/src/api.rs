@@ -8,6 +8,9 @@
 //! | POST | `/v1/routes/{name}/set` | Fahrstraße einstellen |
 //! | POST | `/v1/routes/{name}/cancel` | Fahrstraße zurücknehmen |
 //! | POST | `/v1/points/{name}/move` | Weiche umstellen (`{"position":"left"}`) |
+//! | GET | `/v1/aux` | Offene Hilfshandlungen und Zählwerk |
+//! | POST | `/v1/aux` | Hilfshandlung anfordern (`{"kind":…,"element":…}`) |
+//! | POST | `/v1/aux/{id}/confirm` | Hilfshandlung bestätigen (zweiter Bediener) |
 //! | GET | `/v1/events` | Ereignisstrom (SSE, JSON je Ereignis) |
 //! | GET | `/v1/sim/trains` | Züge der Simulation |
 //! | POST | `/v1/sim/trains` | Zug einsetzen |
@@ -16,21 +19,25 @@
 //!
 //! Ist ein Token konfiguriert, verlangen alle Pfade außer `/v1/health` den Kopf
 //! `Authorization: Bearer <token>`.
+//!
+//! Hilfshandlungen verlangen zusätzlich den Kopf `X-Railit-Operator: <Nummer>`. Er
+//! **identifiziert** den Bediener für die Zwei-Personen-Regel; die Anmeldung je Bediener
+//! (eigene Tokens, Rollen) folgt mit Phase 3.
 
 use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::extract::{Path, Request as HttpRequest, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use railit_kernel::Request;
+use railit_kernel::{AuxId, OperatorId, Request};
 use railit_plan::{PlanView, RouteEnd};
 use railit_runtime::keys::to_hex;
-use railit_runtime::{NamedEvent, Snapshot};
+use railit_runtime::{NamedAux, NamedEvent, Snapshot};
 use railit_sim::{Fault, TrainSpec};
 use railit_types::{Length, PointPosition, Speed};
 use serde::Deserialize;
@@ -39,7 +46,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
-use crate::engine::{EngineMsg, SimCommand, SimReply};
+use crate::engine::{Answer, EngineMsg, SimCommand, SimReply};
 
 /// Gemeinsamer Zustand der Handler.
 #[derive(Clone)]
@@ -82,6 +89,8 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/v1/routes/{name}/set", post(set_route))
         .route("/v1/routes/{name}/cancel", post(cancel_route))
         .route("/v1/points/{name}/move", post(move_point))
+        .route("/v1/aux", get(aux_list).post(aux_request))
+        .route("/v1/aux/{id}/confirm", post(aux_confirm))
         .route("/v1/events", get(events))
         .route("/v1/sim/trains", get(trains).post(add_train))
         .route("/v1/sim/trains/{name}", delete(remove_train))
@@ -131,6 +140,7 @@ async fn plan(State(state): State<AppState>) -> Json<Value> {
         "points": names(p.point_count(), &|i| railit_types::PointId::from_index(i).and_then(|id| p.point_name(id))),
         "signals": names(p.signal_count(), &|i| railit_types::SignalId::from_index(i).and_then(|id| p.signal_name(id))),
         "tvds": names(p.tvd_count(), &|i| railit_types::TvdId::from_index(i).and_then(|id| p.tvd_name(id))),
+        "level_crossings": names(p.lx_count(), &|i| railit_types::LxId::from_index(i).and_then(|id| p.lx_name(id))),
         "routes": p.routes().map(|r| json!({
             "name": r.name(),
             "start": p.signal_name(r.start()),
@@ -139,8 +149,18 @@ async fn plan(State(state): State<AppState>) -> Json<Value> {
                 RouteEnd::Boundary => "Netzgrenze",
                 RouteEnd::BufferStop => "Prellbock",
             },
+            "speed_kmh": r.speed().map(railit_types::Speed::as_kmh),
             "points": r.points().map(|(pt, pos)| json!({"point": p.point_name(pt), "position": pos})).collect::<Vec<_>>(),
             "tvds": r.tvds().map(|t| p.tvd_name(t)).collect::<Vec<_>>(),
+            "overlap": {
+                "tvds": r.overlap_tvds().map(|t| p.tvd_name(t)).collect::<Vec<_>>(),
+                "points": r.overlap_points().map(|(pt, pos)| json!({"point": p.point_name(pt), "position": pos})).collect::<Vec<_>>(),
+            },
+            "flank": r.flank().map(|f| match f.protection {
+                railit_plan::Protection::Point(pt, pos) => json!({"point": p.point_name(pt), "position": pos, "protects": p.tvd_name(f.protects)}),
+                railit_plan::Protection::Signal(s) => json!({"signal": p.signal_name(s), "protects": p.tvd_name(f.protects)}),
+            }).collect::<Vec<_>>(),
+            "level_crossings": r.level_crossings().map(|l| p.lx_name(l)).collect::<Vec<_>>(),
             "conflicts": r.conflicts().map(|c| p.route_name(c)).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
     }))
@@ -167,11 +187,70 @@ async fn request(state: &AppState, request: Request) -> Result<Response, ApiErro
             )
         })?
         .map_err(|_| unavailable())?;
+    let Answer { answer, aux } = answer;
     let status = match answer {
         NamedEvent::Accepted { .. } => StatusCode::OK,
         _ => StatusCode::CONFLICT,
     };
-    Ok((status, Json(answer)).into_response())
+    let mut body = serde_json::to_value(&answer).unwrap_or(Value::Null);
+    if let (Value::Object(map), Some(aux)) = (&mut body, aux) {
+        map.insert(
+            "aux".into(),
+            serde_json::to_value(aux).unwrap_or(Value::Null),
+        );
+    }
+    Ok((status, Json(body)).into_response())
+}
+
+/// Bedienerkennung aus `X-Railit-Operator`.
+fn operator(headers: &HeaderMap) -> Result<OperatorId, ApiError> {
+    headers
+        .get("x-railit-operator")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .map(OperatorId)
+        .ok_or_else(|| {
+            ApiError(
+                StatusCode::BAD_REQUEST,
+                "Hilfshandlungen verlangen den Kopf X-Railit-Operator (Bedienernummer)".into(),
+            )
+        })
+}
+
+async fn aux_list(State(state): State<AppState>) -> Json<Value> {
+    let snap = state.snapshot.borrow().clone();
+    Json(json!({
+        "pending": snap.pending_aux,
+        "counter": snap.aux_counter,
+    }))
+}
+
+async fn aux_request(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<NamedAux>,
+) -> Result<Response, ApiError> {
+    let operator = operator(&headers)?;
+    let op = body
+        .resolve(&state.plan)
+        .map_err(|e| ApiError(StatusCode::NOT_FOUND, e))?;
+    request(&state, Request::AuxRequest { op, operator }).await
+}
+
+async fn aux_confirm(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<u32>,
+) -> Result<Response, ApiError> {
+    let operator = operator(&headers)?;
+    request(
+        &state,
+        Request::AuxConfirm {
+            aux: AuxId(id),
+            operator,
+        },
+    )
+    .await
 }
 
 async fn set_route(
@@ -291,6 +370,7 @@ enum FaultKind {
     TvdDisturbed,
     TvdOccupied,
     SignalDefective,
+    LxDisturbed,
 }
 
 #[derive(Deserialize)]
@@ -316,6 +396,7 @@ async fn fault(
         FaultKind::TvdDisturbed => p.find_tvd(&body.element).map(Fault::TvdDisturbed),
         FaultKind::TvdOccupied => p.find_tvd(&body.element).map(Fault::TvdOccupied),
         FaultKind::SignalDefective => p.find_signal(&body.element).map(Fault::SignalDefective),
+        FaultKind::LxDisturbed => p.find_lx(&body.element).map(Fault::LxDisturbed),
     }
     .ok_or_else(|| not_found("Element", &body.element))?;
     sim_result(sim(&state, SimCommand::Fault(fault, body.active)).await?)

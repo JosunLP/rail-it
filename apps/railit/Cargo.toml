@@ -19,12 +19,17 @@ railit-topology = { workspace = true }
 railit-plan = { workspace = true, features = ["alloc"] }
 railit-planning = { workspace = true }
 railit-runtime = { workspace = true }
+railit-journal = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
 ureq = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+railit-kernel = { workspace = true }
+railit-rules = { workspace = true }
+railit-sim = { workspace = true }
+railit-types = { workspace = true }
 
 [lints]
 workspace = true

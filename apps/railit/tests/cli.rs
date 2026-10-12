@@ -211,3 +211,70 @@ fn online_commands_report_unreachable_server() {
             .contains("nicht erreichbar")
     );
 }
+
+/// REQ-JRN-001/002: Journal prüfen und abspielen über die Kommandozeile.
+#[test]
+fn journal_verify_and_replay() {
+    let dir = tmp_dir("journal");
+    let plan = dir.join("bs.rplan");
+    let out = railit(&[
+        "plan",
+        "compile",
+        &example(),
+        "--out",
+        plan.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(0));
+
+    // Journal eines kurzen Betriebs erzeugen.
+    let net = railit_import::toml_format::parse(&std::fs::read_to_string(example()).unwrap())
+        .unwrap()
+        .topology;
+    let view = railit_runtime::load_plan(std::fs::read(&plan).unwrap(), None).unwrap();
+    let route = view.find_route("A-N1").unwrap();
+    let mut rt = railit_runtime::Runtime::new(
+        view,
+        railit_rules::GenericRules::default(),
+        railit_sim::Simulator::new(net, railit_sim::SimConfig::default()),
+        railit_types::Duration::from_millis(100),
+    );
+    let journal = dir.join("bs.journal");
+    let _ = std::fs::remove_file(&journal);
+    rt.start_journal(Box::new(std::fs::File::create(&journal).unwrap()), 10)
+        .unwrap();
+    rt.cycle(&[(
+        railit_kernel::RequestId(1),
+        railit_kernel::Request::SetRoute(route),
+    )]);
+    for _ in 0..99 {
+        rt.cycle(&[]);
+    }
+    drop(rt);
+
+    let out = railit(&["journal", "verify", journal.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("100 Zyklen"), "{stdout}");
+
+    let out = railit(&[
+        "--output",
+        "json",
+        "journal",
+        "replay",
+        journal.to_str().unwrap(),
+        "--plan",
+        plan.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["checkpoints"], 10);
+
+    // Manipuliert: Kette bricht, Exit-Code 1.
+    let text = std::fs::read_to_string(&journal).unwrap();
+    let tampered = dir.join("tampered.journal");
+    std::fs::write(&tampered, text.replacen("\"right\"", "\"left\"", 1)).unwrap();
+    let out = railit(&["journal", "verify", tampered.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("Hashkette in Zeile"), "{stdout}");
+}

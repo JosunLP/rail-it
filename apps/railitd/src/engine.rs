@@ -30,13 +30,22 @@ pub(crate) enum SimReply {
     Error(String),
 }
 
+/// Antwort des Kerns auf eine Anforderung.
+#[derive(Clone, Debug)]
+pub(crate) struct Answer {
+    /// Angenommen oder abgelehnt.
+    pub(crate) answer: NamedEvent,
+    /// Zugehöriges Ereignis einer Hilfshandlung (angefordert, ausgeführt, verfallen).
+    pub(crate) aux: Option<NamedEvent>,
+}
+
 /// Nachricht an die Engine.
 #[derive(Debug)]
 pub(crate) enum EngineMsg {
     /// Bedienanforderung; Antwort nach dem nächsten Zyklus.
     Request {
         request: Request,
-        reply: oneshot::Sender<NamedEvent>,
+        reply: oneshot::Sender<Answer>,
     },
     /// Simulationsbefehl; Antwort sofort.
     Sim {
@@ -64,9 +73,10 @@ pub(crate) async fn run(mut rt: Runtime<Simulator>, mut ch: Channels, period: Du
     let mut interval = tokio::time::interval(period);
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut pending: Vec<(RequestId, Request)> = Vec::new();
-    let mut waiting: HashMap<u64, oneshot::Sender<NamedEvent>> = HashMap::new();
+    let mut waiting: HashMap<u64, oneshot::Sender<Answer>> = HashMap::new();
     let mut next_id = 0u64;
     let mut safe_state_logged = false;
+    let mut journal_error_logged = false;
 
     loop {
         tokio::select! {
@@ -74,16 +84,36 @@ pub(crate) async fn run(mut rt: Runtime<Simulator>, mut ch: Channels, period: Du
                 let out = rt.cycle(&pending);
                 pending.clear();
                 let time_ms = out.now.as_millis();
+                if let Some(error) = rt.journal_error()
+                    && !journal_error_logged
+                {
+                    tracing::error!(error, "Journal abgebrochen; der Betrieb läuft ohne Journal weiter");
+                    journal_error_logged = true;
+                }
 
+                // Der Kern meldet Ereignisse einer Hilfshandlung unmittelbar vor der Antwort
+                // auf die Anforderung, zu der sie gehören.
+                let mut aux_event = None;
                 for e in &out.events {
                     let named = rt.name_event(e);
-                    if let NamedEvent::Alarm { alarm, element } = &named {
-                        tracing::warn!(alarm, ?element, "Alarm");
-                    }
-                    if let NamedEvent::Accepted { request } | NamedEvent::Rejected { request, .. } = &named
-                        && let Some(reply) = waiting.remove(request)
-                    {
-                        let _ = reply.send(named.clone());
+                    match &named {
+                        NamedEvent::Alarm { alarm, element } => {
+                            tracing::warn!(alarm, ?element, "Alarm");
+                        }
+                        NamedEvent::AuxExecuted { aux, op, counter } => {
+                            tracing::warn!(aux, ?op, counter, "Hilfshandlung ausgeführt");
+                            aux_event = Some(named.clone());
+                        }
+                        NamedEvent::AuxPending { .. } | NamedEvent::AuxExpired { .. } => {
+                            aux_event = Some(named.clone());
+                        }
+                        NamedEvent::Accepted { request } | NamedEvent::Rejected { request, .. } => {
+                            let aux = aux_event.take();
+                            if let Some(reply) = waiting.remove(request) {
+                                let _ = reply.send(Answer { answer: named.clone(), aux });
+                            }
+                        }
+                        NamedEvent::RoutePhase { .. } => {}
                     }
                     let value = serde_json::to_value(&named).unwrap_or(Value::Null);
                     let _ = ch.events.send(event_json(time_ms, value));

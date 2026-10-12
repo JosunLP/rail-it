@@ -9,6 +9,8 @@
 //! railit plan verify PLAN.rplan [--key PRÄFIX.pub] [--network NETZ.toml]
 //! railit plan info PLAN.rplan
 //! railit scenario run SZENARIO.toml…
+//! railit journal verify JOURNAL
+//! railit journal replay JOURNAL --plan PLAN.rplan
 //! ```
 //!
 //! **Online** (Client von `railitd`, Adresse über `--server` bzw. `RAILIT_SERVER`):
@@ -19,12 +21,16 @@
 //! railit point move NAME left|right
 //! railit sim train add|list|remove …
 //! railit sim fault set|clear ART ELEMENT
+//! railit aux list
+//! railit aux request ART ELEMENT [--position left|right] --operator NR
+//! railit aux confirm ID --operator NR
 //! railit watch
 //! ```
 //!
 //! Exit-Codes: `0` Erfolg, `1` ungültig bzw. abgelehnt, `2` Bedien-, Lese- oder
 //! Verbindungsfehler.
 
+mod journal;
 mod net;
 mod online;
 mod plan;
@@ -82,6 +88,9 @@ enum Command {
     /// Betriebsszenarien ausführen.
     #[command(subcommand)]
     Scenario(ScenarioCommand),
+    /// Betriebsjournal prüfen und abspielen.
+    #[command(subcommand)]
+    Journal(JournalCommand),
     /// Zustandsbild des Stellwerks (online).
     State,
     /// Fahrstraßen (online).
@@ -93,6 +102,9 @@ enum Command {
     /// Simulation steuern (online).
     #[command(subcommand)]
     Sim(SimCommand),
+    /// Zählpflichtige Hilfshandlungen mit Zwei-Personen-Regel (online).
+    #[command(subcommand)]
+    Aux(AuxCommand),
     /// Ereignisse fortlaufend ausgeben (online).
     Watch,
 }
@@ -158,6 +170,74 @@ enum ScenarioCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum JournalCommand {
+    /// Prüft die Hashkette eines Journals.
+    Verify {
+        /// Journaldatei (`railitd --journal`).
+        file: PathBuf,
+    },
+    /// Spielt ein Journal gegen das Plan-Image ab und vergleicht Ausgaben und Prüfpunkte.
+    Replay {
+        /// Journaldatei.
+        file: PathBuf,
+        /// Plan-Image, mit dem das Journal aufgezeichnet wurde.
+        #[arg(long)]
+        plan: PathBuf,
+    },
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum AuxKind {
+    /// Fahrstraßenhilfsauflösung (Element: Fahrstraße).
+    ReleaseRoute,
+    /// Achszählgrundstellung (Element: Abschnitt).
+    ResetTvd,
+    /// Ersatzsignal Zs1 (Element: Fahrstraße).
+    Substitute,
+    /// Weiche im gestörten Abschnitt umstellen (Element: Weiche, mit --position).
+    ForcePoint,
+}
+
+impl AuxKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReleaseRoute => "release_route",
+            Self::ResetTvd => "reset_tvd",
+            Self::Substitute => "substitute",
+            Self::ForcePoint => "force_point",
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+enum AuxCommand {
+    /// Offene Hilfshandlungen und Zählwerk.
+    List,
+    /// Hilfshandlung anfordern (erster Bediener).
+    Request {
+        /// Art.
+        #[arg(value_enum)]
+        kind: AuxKind,
+        /// Element.
+        element: String,
+        /// Ziellage (nur force-point).
+        #[arg(long, value_enum)]
+        position: Option<Position>,
+        /// Bedienernummer.
+        #[arg(long)]
+        operator: u32,
+    },
+    /// Hilfshandlung bestätigen (zweiter, anderer Bediener).
+    Confirm {
+        /// Kennung aus der Anforderung.
+        id: u32,
+        /// Bedienernummer.
+        #[arg(long)]
+        operator: u32,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum RouteCommand {
     /// Alle Fahrstraßen mit Phase.
     List,
@@ -177,6 +257,15 @@ enum RouteCommand {
 enum Position {
     Left,
     Right,
+}
+
+impl Position {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -235,6 +324,7 @@ enum FaultKind {
     TvdDisturbed,
     TvdOccupied,
     SignalDefective,
+    LxDisturbed,
 }
 
 impl FaultKind {
@@ -244,6 +334,7 @@ impl FaultKind {
             Self::TvdDisturbed => "tvd_disturbed",
             Self::TvdOccupied => "tvd_occupied",
             Self::SignalDefective => "signal_defective",
+            Self::LxDisturbed => "lx_disturbed",
         }
     }
 }
@@ -286,6 +377,10 @@ fn main() -> ExitCode {
         }
         Command::Plan(PlanCommand::Info { plan }) => plan::info(&plan, output),
         Command::Scenario(ScenarioCommand::Run { files }) => plan::run_scenarios(&files, output),
+        Command::Journal(JournalCommand::Verify { file }) => journal::verify(&file, output),
+        Command::Journal(JournalCommand::Replay { file, plan }) => {
+            journal::replay(&file, &plan, output)
+        }
         online => {
             let client = online::Client::new(&cli.server, cli.token);
             run_online(&client, online, output).unwrap_or_else(online::Failure::exit)
@@ -317,9 +412,10 @@ fn run_online(
             output,
         ),
         Command::Point(PointCommand::Move { name, position }) => {
-            let (pos, label) = match position {
-                Position::Left => ("left", "links"),
-                Position::Right => ("right", "rechts"),
+            let pos = position.as_str();
+            let label = match position {
+                Position::Left => "links",
+                Position::Right => "rechts",
             };
             online::request(
                 c,
@@ -366,8 +462,26 @@ fn run_online(
             );
             online::sim_done(c.post("/v1/sim/faults", Some(body)), &what, output)
         }
+        Command::Aux(AuxCommand::List) => online::aux_list(c, output),
+        Command::Aux(AuxCommand::Request {
+            kind,
+            element,
+            position,
+            operator,
+        }) => {
+            let mut body = json!({ "kind": kind.as_str(), "element": element });
+            if let Some(p) = position {
+                body["position"] = json!(p.as_str());
+            }
+            online::aux(c, "/v1/aux", Some(body), operator, output)
+        }
+        Command::Aux(AuxCommand::Confirm { id, operator }) => {
+            online::aux(c, &format!("/v1/aux/{id}/confirm"), None, operator, output)
+        }
         Command::Watch => online::watch(c, output),
-        Command::Net(_) | Command::Plan(_) | Command::Scenario(_) => Ok(ExitCode::SUCCESS),
+        Command::Net(_) | Command::Plan(_) | Command::Scenario(_) | Command::Journal(_) => {
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 

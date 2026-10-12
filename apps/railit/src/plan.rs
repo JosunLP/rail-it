@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use railit_plan::{Plan, PlanView, RouteEnd};
+use railit_plan::{Plan, PlanView, Protection, RouteEnd};
 use railit_runtime::keys::{generate, read_signing_key, read_verifying_key, to_hex};
 use serde_json::json;
 
@@ -208,8 +208,18 @@ pub(crate) fn info(plan_path: &Path, output: Output) -> ExitCode {
                 "name": r.name(),
                 "start": view.signal_name(r.start()),
                 "end": end_name(r.end()),
+                "speed_kmh": r.speed().map(railit_plan::Speed::as_kmh),
                 "points": r.points().map(|(p, pos)| json!({"point": view.point_name(p), "position": pos})).collect::<Vec<_>>(),
                 "tvds": r.tvds().map(|t| view.tvd_name(t)).collect::<Vec<_>>(),
+                "overlap": {
+                    "tvds": r.overlap_tvds().map(|t| view.tvd_name(t)).collect::<Vec<_>>(),
+                    "points": r.overlap_points().map(|(p, pos)| json!({"point": view.point_name(p), "position": pos})).collect::<Vec<_>>(),
+                },
+                "flank": r.flank().map(|f| match f.protection {
+                    Protection::Point(p, pos) => json!({"point": view.point_name(p), "position": pos, "protects": view.tvd_name(f.protects)}),
+                    Protection::Signal(s) => json!({"signal": view.signal_name(s), "protects": view.tvd_name(f.protects)}),
+                }).collect::<Vec<_>>(),
+                "level_crossings": r.level_crossings().map(|l| view.lx_name(l)).collect::<Vec<_>>(),
                 "conflicts": r.conflicts().map(|c| view.route_name(c)).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
         })),
@@ -224,51 +234,95 @@ pub(crate) fn info(plan_path: &Path, output: Output) -> ExitCode {
                 },
                 to_hex(&view.digest()).get(..16).unwrap_or_default()
             );
-            println!("\nFahrstraßen ({}):", view.route_count());
-            for r in view.routes() {
-                let points: Vec<String> = r
-                    .points()
-                    .map(|(p, pos)| {
-                        let side = if pos == railit_plan::PointPosition::Left {
-                            "links"
-                        } else {
-                            "rechts"
-                        };
-                        format!("{} {side}", view.point_name(p).unwrap_or("?"))
-                    })
-                    .collect();
-                let tvds: Vec<&str> = r.tvds().map(|t| view.tvd_name(t).unwrap_or("?")).collect();
-                let conflicts: Vec<&str> = r
-                    .conflicts()
-                    .map(|c| view.route_name(c).unwrap_or("?"))
-                    .collect();
-                println!(
-                    "  {:<10} {} → {}",
-                    r.name(),
-                    view.signal_name(r.start()).unwrap_or("?"),
-                    end_name(r.end())
-                );
-                println!(
-                    "             Weichen:    {}",
-                    if points.is_empty() {
-                        "–".into()
-                    } else {
-                        points.join(", ")
-                    }
-                );
-                println!("             Abschnitte: {}", tvds.join(" → "));
-                println!(
-                    "             feindlich:  {}",
-                    if conflicts.is_empty() {
-                        "–".into()
-                    } else {
-                        conflicts.join(", ")
-                    }
-                );
-            }
+            print_routes(&view);
         }
     }
     ExitCode::SUCCESS
+}
+
+/// Fahrstraßen eines Plans als Text.
+fn print_routes(view: &PlanView<'_>) {
+    let end_name = |end| match end {
+        RouteEnd::Signal(s) => view.signal_name(s).unwrap_or("?").to_string(),
+        RouteEnd::Boundary => "Netzgrenze".into(),
+        RouteEnd::BufferStop => "Prellbock".into(),
+    };
+    println!("\nFahrstraßen ({}):", view.route_count());
+    let point_text = |(p, pos): (railit_plan::PointId, railit_plan::PointPosition)| {
+        let side = if pos == railit_plan::PointPosition::Left {
+            "links"
+        } else {
+            "rechts"
+        };
+        format!("{} {side}", view.point_name(p).unwrap_or("?"))
+    };
+    let list = |items: Vec<String>| {
+        if items.is_empty() {
+            "–".to_string()
+        } else {
+            items.join(", ")
+        }
+    };
+    for r in view.routes() {
+        let points: Vec<String> = r.points().map(point_text).collect();
+        let tvds: Vec<&str> = r.tvds().map(|t| view.tvd_name(t).unwrap_or("?")).collect();
+        let conflicts: Vec<&str> = r
+            .conflicts()
+            .map(|c| view.route_name(c).unwrap_or("?"))
+            .collect();
+        println!(
+            "  {:<10} {} → {}",
+            r.name(),
+            view.signal_name(r.start()).unwrap_or("?"),
+            end_name(r.end())
+        );
+        println!(
+            "             Weichen:    {}",
+            if points.is_empty() {
+                "–".into()
+            } else {
+                points.join(", ")
+            }
+        );
+        println!("             Abschnitte: {}", tvds.join(" → "));
+        let speed = r.speed().map_or_else(
+            || "Streckengeschwindigkeit".into(),
+            |v| format!("{} km/h", v.as_kmh()),
+        );
+        println!("             Geschw.:    {speed}");
+        let overlap: Vec<String> = r
+            .overlap_tvds()
+            .map(|t| view.tvd_name(t).unwrap_or("?").to_string())
+            .chain(r.overlap_points().map(point_text))
+            .collect();
+        println!("             D-Weg:      {}", list(overlap));
+        let flank: Vec<String> = r
+            .flank()
+            .map(|f| {
+                let what = match f.protection {
+                    Protection::Point(p, pos) => point_text((p, pos)),
+                    Protection::Signal(s) => view.signal_name(s).unwrap_or("?").to_string(),
+                };
+                format!("{what} (für {})", view.tvd_name(f.protects).unwrap_or("?"))
+            })
+            .collect();
+        println!("             Flanke:     {}", list(flank));
+        let lxs: Vec<String> = r
+            .level_crossings()
+            .map(|l| view.lx_name(l).unwrap_or("?").to_string())
+            .collect();
+        if !lxs.is_empty() {
+            println!("             BÜ:         {}", list(lxs));
+        }
+        println!(
+            "             feindlich:  {}",
+            if conflicts.is_empty() {
+                "–".into()
+            } else {
+                conflicts.join(", ")
+            }
+        );
+    }
 }
 
 /// Führt Szenarien aus.

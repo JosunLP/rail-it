@@ -34,6 +34,7 @@ tracing-subscriber = { workspace = true }
 [dev-dependencies]
 railit-planning = { workspace = true }
 ureq = { workspace = true }
+railit-journal = { workspace = true }
 
 [lints]
 workspace = true

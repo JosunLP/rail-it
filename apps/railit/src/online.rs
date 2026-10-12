@@ -1,5 +1,6 @@
 //! Online-Befehle: Client der API von `railitd`.
 
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader};
 use std::process::ExitCode;
 
@@ -89,6 +90,23 @@ impl Client {
         self.finish(result)
     }
 
+    /// POST mit Bedienerkennung (Hilfshandlungen).
+    pub(crate) fn post_as(
+        &self,
+        path: &str,
+        body: Option<Value>,
+        operator: u32,
+    ) -> Res<(u16, Value)> {
+        let req = self
+            .auth(self.agent.post(format!("{}{path}", self.base)))
+            .header("X-Railit-Operator", operator.to_string());
+        let result = match body {
+            Some(b) => req.send_json(b),
+            None => req.send_empty(),
+        };
+        self.finish(result)
+    }
+
     pub(crate) fn delete(&self, path: &str) -> Res<Value> {
         let req = self.auth(self.agent.delete(format!("{}{path}", self.base)));
         self.finish(req.call()).map(|(_, body)| body)
@@ -103,6 +121,7 @@ fn phase_text(phase: &str) -> &str {
         "locked" => "festgelegt",
         "proceed" => "Fahrt",
         "occupied" => "befahren",
+        "arrived" => "Ziel erreicht (Durchrutschweg festgelegt)",
         "cancelling" => "Rücknahme (Zeitverschluss)",
         "halted" => "Signalhaltfall",
         other => other,
@@ -122,6 +141,12 @@ fn reason_text(reason: &str, element: Option<&str>) -> String {
         "train_in_route" => "ein Zug befährt die Fahrstraße".into(),
         "safe_state" => "Kern im sicheren Zustand".into(),
         "unknown_element" => "unbekanntes Element".into(),
+        "signal_held" => format!("Signal {e} wird als Flankenschutz in Halt gehalten"),
+        "aux_busy" => "zu viele offene Hilfshandlungen".into(),
+        "aux_unknown" => "Hilfshandlung unbekannt oder bereits erledigt".into(),
+        "aux_expired" => "Bestätigungsfrist abgelaufen".into(),
+        "same_operator" => "Bestätigung muss ein anderer Bediener geben".into(),
+        "aux_not_applicable" => "Voraussetzungen der Hilfshandlung nicht erfüllt".into(),
         other => other.into(),
     }
 }
@@ -154,28 +179,44 @@ pub(crate) fn state(c: &Client, output: Output) -> Res<ExitCode> {
         } else {
             "Halt"
         };
+        let held = match sig["flank_holds"].as_u64() {
+            Some(n) if n > 0 => " · Flankenschutz",
+            _ => "",
+        };
         println!(
-            "  {:<8} {aspect:<6} (Meldung: {})",
+            "  {:<8} {aspect:<6} {:<22} (Meldung: {}){held}",
             show(&sig["name"]),
+            show(&sig["picture"]),
             show(&sig["report"])
         );
     }
     println!("\nWeichen:");
     for p in s["points"].as_array().into_iter().flatten() {
-        let lock = p["locked_by"]
+        let mut lock = p["locked_by"]
             .as_str()
             .map(|r| format!(" · verschlossen durch {r}"))
             .unwrap_or_default();
+        if let Some(n) = p["holds"].as_u64().filter(|n| *n > 0) {
+            let _ = write!(
+                lock,
+                " · {n}× verschlossen (Durchrutschweg/Flankenschutz, {})",
+                show(&p["locked_position"])
+            );
+        }
         println!("  {:<8} {}{lock}", show(&p["name"]), show(&p["report"]));
     }
     println!("\nGleisfreimeldeabschnitte:");
     for t in s["tvds"].as_array().into_iter().flatten() {
-        let lock = t["locked_by"]
+        let mut lock = t["locked_by"]
             .as_str()
             .map(|r| format!(" · verschlossen durch {r}"))
             .unwrap_or_default();
+        if let Some(r) = t["overlap_of"].as_str() {
+            let _ = write!(lock, " · Durchrutschweg von {r}");
+        }
         println!("  {:<8} {}{lock}", show(&t["name"]), show(&t["occupancy"]));
     }
+    print_level_crossings_and_aux(&s);
     let active: Vec<&Value> = s["routes"]
         .as_array()
         .into_iter()
@@ -191,6 +232,41 @@ pub(crate) fn state(c: &Client, output: Output) -> Res<ExitCode> {
         );
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Bahnübergänge und Hilfshandlungen des Zustandsbilds.
+fn print_level_crossings_and_aux(s: &Value) {
+    let lxs = s["level_crossings"].as_array().cloned().unwrap_or_default();
+    if !lxs.is_empty() {
+        println!("\nBahnübergänge:");
+        for l in lxs {
+            let cmd = if l["close_commanded"] == true {
+                "schließen"
+            } else {
+                "öffnen"
+            };
+            println!(
+                "  {:<8} {:<10} (befohlen: {cmd})",
+                show(&l["name"]),
+                show(&l["report"])
+            );
+        }
+    }
+    let pending = s["pending_aux"].as_array().cloned().unwrap_or_default();
+    println!(
+        "\nHilfshandlungen: Zählwerk {}, offen {}",
+        s["aux_counter"],
+        pending.len()
+    );
+    for a in pending {
+        println!(
+            "  #{} {} {} (Bediener {})",
+            a["aux"],
+            show(&a["op"]["kind"]),
+            show(&a["op"]["element"]),
+            a["operator"]
+        );
+    }
 }
 
 /// Fahrstraßen mit Phase.
@@ -318,9 +394,84 @@ pub(crate) fn watch(c: &Client, output: Output) -> Res<ExitCode> {
                 reason_text(show(&e["reason"]), e["element"].as_str())
             ),
             "sim" => format!("Simulation: {} {}", show(&e["event"]), show(&e["train"])),
+            "aux_pending" => format!(
+                "Hilfshandlung #{} {} {} angefordert von Bediener {} – Bestätigung nötig",
+                e["aux"],
+                show(&e["op"]["kind"]),
+                show(&e["op"]["element"]),
+                e["operator"]
+            ),
+            "aux_executed" => format!(
+                "HILFSHANDLUNG #{} {} {} ausgeführt · Zählwerk {}",
+                e["aux"],
+                show(&e["op"]["kind"]),
+                show(&e["op"]["element"]),
+                e["counter"]
+            ),
+            "aux_expired" => format!("Hilfshandlung #{} verfallen", e["aux"]),
             _ => data.to_string(),
         };
         println!("[{t:>8.1} s] {text}");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Offene Hilfshandlungen und Zählwerk.
+pub(crate) fn aux_list(c: &Client, output: Output) -> Res<ExitCode> {
+    let a = c.get("/v1/aux")?;
+    if output == Output::Json {
+        print_json(&a);
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!("Zählwerk: {}", a["counter"]);
+    let pending = a["pending"].as_array().cloned().unwrap_or_default();
+    if pending.is_empty() {
+        println!("Keine offenen Hilfshandlungen.");
+    }
+    for p in pending {
+        println!(
+            "  #{} {} {} · Bediener {} · angefordert bei t = {:.1} s",
+            p["aux"],
+            show(&p["op"]["kind"]),
+            show(&p["op"]["element"]),
+            p["operator"],
+            p["since_ms"].as_f64().unwrap_or(0.0) / 1000.0
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Hilfshandlung anfordern oder bestätigen.
+pub(crate) fn aux(
+    c: &Client,
+    path: &str,
+    body: Option<Value>,
+    operator: u32,
+    output: Output,
+) -> Res<ExitCode> {
+    let (status, answer) = c.post_as(path, body, operator)?;
+    if output == Output::Json {
+        print_json(&answer);
+    } else if status == 200 {
+        let aux = &answer["aux"];
+        match show(&aux["type"]) {
+            "aux_pending" => println!(
+                "Hilfshandlung #{} angefordert. Ein zweiter Bediener bestätigt mit:\n  railit aux confirm {} --operator <NUMMER>",
+                aux["aux"], aux["aux"]
+            ),
+            "aux_executed" => println!(
+                "Hilfshandlung #{} ausgeführt. Zählwerk: {}",
+                aux["aux"], aux["counter"]
+            ),
+            _ => println!("angenommen"),
+        }
+    } else {
+        let reason = reason_text(show(&answer["reason"]), answer["element"].as_str());
+        println!("abgelehnt – {reason}");
+    }
+    Ok(if status == 200 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(EXIT_INVALID)
+    })
 }

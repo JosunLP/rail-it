@@ -109,6 +109,21 @@ fn post(d: &Daemon, path: &str, body: Option<Value>) -> (u16, Value) {
     )
 }
 
+fn post_as(d: &Daemon, path: &str, body: Option<Value>, operator: u32) -> (u16, Value) {
+    let req = agent()
+        .post(format!("{}{path}", d.url))
+        .header("Authorization", format!("Bearer {TOKEN}"))
+        .header("X-Railit-Operator", operator.to_string());
+    let mut resp = match body {
+        Some(b) => req.send_json(b).unwrap(),
+        None => req.send_empty().unwrap(),
+    };
+    (
+        resp.status().as_u16(),
+        resp.body_mut().read_json().unwrap_or(Value::Null),
+    )
+}
+
 fn route_phase(d: &Daemon, name: &str) -> String {
     let (_, state) = get(d, "/v1/state", true);
     state["routes"]
@@ -183,6 +198,59 @@ fn operate_station_over_api() {
         (status, answer["reason"].as_str()),
         (409, Some("tvd_not_clear"))
     );
+}
+
+/// REQ-IXL-014, REQ-JRN-001/002: Hilfshandlung über die API, Journal prüfen und abspielen.
+#[test]
+fn aux_operation_and_journal() {
+    let (plan, public) = prepare("aux", true);
+    let journal = tmp("aux.journal");
+    let _ = std::fs::remove_file(&journal);
+    let d = start(&[
+        "--plan",
+        plan.to_str().unwrap(),
+        "--trusted-key",
+        public.to_str().unwrap(),
+        "--journal",
+        journal.to_str().unwrap(),
+        "--checkpoint-every",
+        "20",
+    ]);
+
+    assert_eq!(post(&d, "/v1/routes/A-N1/set", None).0, 200);
+    wait_for(&d, "A-N1", "proceed");
+
+    let op = json!({"kind": "release_route", "element": "A-N1"});
+    let (status, answer) = post(&d, "/v1/aux", Some(op.clone()));
+    assert_eq!(status, 400, "ohne Bedienerkennung: {answer}");
+
+    let (status, answer) = post_as(&d, "/v1/aux", Some(op), 1);
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(answer["aux"]["type"], "aux_pending");
+    let id = answer["aux"]["aux"].as_u64().unwrap();
+    let (_, pending) = get(&d, "/v1/aux", true);
+    assert_eq!(pending["pending"][0]["op"]["element"], "A-N1");
+
+    let confirm = format!("/v1/aux/{id}/confirm");
+    let (status, answer) = post_as(&d, &confirm, None, 1);
+    assert_eq!(
+        (status, answer["reason"].as_str()),
+        (409, Some("same_operator"))
+    );
+    let (status, answer) = post_as(&d, &confirm, None, 2);
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(answer["aux"]["type"], "aux_executed");
+    assert_eq!(answer["aux"]["counter"], 1);
+    wait_for(&d, "A-N1", "idle");
+    drop(d);
+
+    let bytes = std::fs::read(&journal).unwrap();
+    let summary = railit_journal::verify(bytes.as_slice()).unwrap();
+    assert!(summary.cycles > 0);
+    let plan = railit_runtime::load_plan(std::fs::read(&plan).unwrap(), None).unwrap();
+    let (replayed, state) = railit_journal::replay(bytes.as_slice(), &plan).unwrap();
+    assert_eq!(replayed.cycles, summary.cycles);
+    assert_eq!(state.meta().aux_counter(), 1);
 }
 
 /// REQ-PLN-004: Ohne gültige Signatur startet der Dienst nicht.

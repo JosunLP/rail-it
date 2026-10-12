@@ -357,8 +357,10 @@ pub struct Summary {
     pub checkpoints: u64,
     /// Zeitpunkt des letzten Zyklus in Millisekunden.
     pub last_ms: u64,
-    /// Hash der letzten Zeile (Hex).
+    /// Hash der letzten vollständigen Zeile (Hex).
     pub head: String,
+    /// Die letzte Zeile war unvollständig (Abbruch beim Schreiben) und wurde ignoriert.
+    pub truncated: bool,
 }
 
 /// Liest ein Journal und prüft dabei die Hashkette. `on_cycle` erhält jeden Zyklus.
@@ -372,16 +374,29 @@ fn read<R: BufRead>(
     let mut cycles = 0u64;
     let mut checkpoints = 0u64;
     let mut last_ms = 0u64;
-    for (index, line) in reader.lines().enumerate() {
+    let mut truncated = false;
+    let mut lines = reader.lines().enumerate().peekable();
+    while let Some((index, line)) = lines.next() {
         let number = index.saturating_add(1);
         let text = line.map_err(|e| JournalError::Io(e.to_string()))?;
         if text.trim().is_empty() {
             continue;
         }
-        let parsed: Line = serde_json::from_str(&text).map_err(|e| JournalError::Syntax {
-            line: number,
-            message: e.to_string(),
-        })?;
+        let parsed: Line = match serde_json::from_str(&text) {
+            Ok(l) => l,
+            // Eine unvollständige letzte Zeile ohne Zeilenende entsteht, wenn der Dienst
+            // beim Schreiben abbricht. Sie trägt keinen gültigen Hash und wird ignoriert.
+            Err(e) if e.is_eof() && lines.peek().is_none() => {
+                truncated = true;
+                break;
+            }
+            Err(e) => {
+                return Err(JournalError::Syntax {
+                    line: number,
+                    message: e.to_string(),
+                });
+            }
+        };
         let hash = chain(&prev, &parsed.entry).map_err(|e| JournalError::Io(e.to_string()))?;
         if from_hex32(&parsed.prev) != Some(prev) || from_hex32(&parsed.hash) != Some(hash) {
             return Err(JournalError::Chain { line: number });
@@ -421,6 +436,7 @@ fn read<R: BufRead>(
         checkpoints,
         last_ms,
         head: to_hex(&prev),
+        truncated,
     })
 }
 
