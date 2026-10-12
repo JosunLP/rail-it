@@ -168,6 +168,13 @@ fn operate_station_over_api() {
     assert_eq!(status, 200);
     assert_eq!(health["network"], "Beispielstadt");
 
+    // REQ-UI-001: Spurplan für Bedienplätze.
+    let (status, layout) = get(&d, "/v1/layout", true);
+    assert_eq!(status, 200);
+    assert_eq!(layout["network"], "Beispielstadt");
+    assert_eq!(layout["tracks"].as_array().unwrap().len(), 4);
+    assert_eq!(get(&d, "/v1/layout", false).0, 401);
+
     assert_eq!(get(&d, "/v1/state", false).0, 401, "ohne Token abgewiesen");
 
     let (_, info) = get(&d, "/v1/plan", true);

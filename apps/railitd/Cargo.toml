@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 railit-types = { workspace = true, features = ["serde"] }
 railit-topology = { workspace = true }
+railit-layout = { workspace = true }
 railit-plan = { workspace = true, features = ["alloc"] }
 railit-import = { workspace = true }
 railit-rules = { workspace = true }

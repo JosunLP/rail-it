@@ -33,6 +33,7 @@ pub(crate) mod pb {
 use pb::diagnostics_server::{Diagnostics, DiagnosticsServer};
 use pb::etcs_server::{Etcs, EtcsServer};
 use pb::events_server::{Events, EventsServer};
+use pb::infrastructure_server::{Infrastructure, InfrastructureServer};
 use pb::interlocking_server::{Interlocking, InterlockingServer};
 use pb::operations_server::{Operations, OperationsServer};
 use pb::safety_server::{Safety, SafetyServer};
@@ -49,6 +50,7 @@ pub(crate) fn router(service: &Service) -> axum::Router {
         .add_service(EventsServer::new(api.clone()))
         .add_service(EtcsServer::new(api.clone()))
         .add_service(SafetyServer::new(api.clone()))
+        .add_service(InfrastructureServer::new(api.clone()))
         .add_service(DiagnosticsServer::new(api))
         .into_axum_router()
 }
@@ -452,6 +454,15 @@ impl Etcs for Grpc {
                     }),
                 })
                 .collect(),
+        }))
+    }
+}
+
+#[tonic::async_trait]
+impl Infrastructure for Grpc {
+    async fn get_layout(&self, _request: Request<pb::GetLayoutRequest>) -> Res<pb::Layout> {
+        Ok(Response::new(pb::Layout {
+            json: self.service.layout().to_string(),
         }))
     }
 }

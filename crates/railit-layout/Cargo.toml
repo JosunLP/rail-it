@@ -1,0 +1,22 @@
+[package]
+name = "railit-layout"
+description = "Spurplan von rail-it: automatische schematische Geometrie aus dem Netzmodell, als JSON für Bedienplätze und als SVG."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+railit-types = { workspace = true, features = ["serde"] }
+railit-topology = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+railit-import = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

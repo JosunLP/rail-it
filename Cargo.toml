@@ -21,6 +21,7 @@ members = [
     "crates/railit-adapters",
     "crates/railit-runtime",
     "crates/railit-import",
+    "crates/railit-layout",
     "apps/railit",
     "apps/railitd",
     "xtask",
@@ -39,6 +40,7 @@ publish = false
 railit-types = { path = "crates/railit-types" }
 railit-topology = { path = "crates/railit-topology" }
 railit-import = { path = "crates/railit-import" }
+railit-layout = { path = "crates/railit-layout" }
 railit-plan = { path = "crates/railit-plan" }
 railit-planning = { path = "crates/railit-planning" }
 railit-rules = { path = "crates/railit-rules" }

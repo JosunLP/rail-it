@@ -1437,6 +1437,7 @@ dependencies = [
  "railit-import",
  "railit-journal",
  "railit-kernel",
+ "railit-layout",
  "railit-plan",
  "railit-planning",
  "railit-rules",
@@ -1550,6 +1551,17 @@ dependencies = [
  "railit-rules",
  "railit-types",
  "serde",
+]
+
+[[package]]
+name = "railit-layout"
+version = "0.1.0"
+dependencies = [
+ "railit-import",
+ "railit-topology",
+ "railit-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1695,6 +1707,7 @@ dependencies = [
  "railit-import",
  "railit-journal",
  "railit-kernel",
+ "railit-layout",
  "railit-plan",
  "railit-planning",
  "railit-rules",

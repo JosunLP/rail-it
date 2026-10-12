@@ -109,6 +109,7 @@ pub(crate) struct Service {
     snapshot: watch::Receiver<Arc<Snapshot>>,
     events: broadcast::Sender<Arc<str>>,
     plan_info: Arc<Value>,
+    layout: Arc<Value>,
     audit: Option<Arc<Audit>>,
     operators_from_users: bool,
 }
@@ -124,6 +125,7 @@ impl Service {
         operators_from_users: bool,
     ) -> Self {
         let plan_info = Arc::new(plan_info(&directory, topology.name()));
+        let layout = Arc::new(json!(railit_layout::layout(&topology)));
         Self {
             directory,
             topology,
@@ -131,9 +133,15 @@ impl Service {
             snapshot,
             events,
             plan_info,
+            layout,
             audit,
             operators_from_users,
         }
+    }
+
+    /// Spurplan des Netzes (Geometrie für Bedienplätze).
+    pub(crate) fn layout(&self) -> Arc<Value> {
+        Arc::clone(&self.layout)
     }
 
     /// Aktuelles Zustandsbild.

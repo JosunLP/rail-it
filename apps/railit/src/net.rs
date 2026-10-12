@@ -58,6 +58,32 @@ pub(crate) fn export(file: &Path, out: Option<&Path>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Spurplan als SVG bzw. JSON nach `out` (ohne `out`: Standardausgabe).
+pub(crate) fn layout(file: &Path, out: Option<&Path>, output: Output) -> ExitCode {
+    let validated = match load(file) {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            print!("{e}");
+            return ExitCode::from(EXIT_INVALID);
+        }
+        Err(msg) => return fail_usage(&msg),
+    };
+    let layout = railit_layout::layout(&validated.topology);
+    let text = match output {
+        Output::Json => serde_json::to_string_pretty(&layout).unwrap_or_default(),
+        Output::Text => railit_layout::to_svg(&layout),
+    };
+    match out {
+        None => println!("{text}"),
+        Some(path) => {
+            if let Err(e) = std::fs::write(path, text) {
+                return fail_usage(&format!("{}: {e}", path.display()));
+            }
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 pub(crate) fn validate(file: &Path, output: Output) -> ExitCode {
     let (result, import_warnings) = match load_with_warnings(file) {
         Ok(Ok((v, warnings))) => (Ok(v), warnings),

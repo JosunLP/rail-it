@@ -306,6 +306,20 @@ message EtcsSection {
   optional uint32 speed_kmh = 4;
 }
 
+// ── Infrastruktur ────────────────────────────────────────────────────────────────────────
+
+service Infrastructure {
+  // Spurplan: schematische Geometrie des Netzes für Bedienplätze.
+  rpc GetLayout(GetLayoutRequest) returns (Layout);
+}
+
+message GetLayoutRequest {}
+
+message Layout {
+  // Geometrie als JSON wie GET /v1/layout.
+  string json = 1;
+}
+
 // ── Sicherheitsschicht ───────────────────────────────────────────────────────────────────
 
 service Safety {

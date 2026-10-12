@@ -105,6 +105,7 @@ type ApiResult = Result<Response, ApiError>;
 pub(crate) fn router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/v1/plan", get(plan))
+        .route("/v1/layout", get(layout))
         .route("/v1/state", get(snapshot))
         .route("/v1/areas", get(areas))
         .route("/v1/routes/{name}/set", post(set_route))
@@ -215,6 +216,10 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
 
 async fn plan(State(state): State<AppState>) -> Json<Value> {
     Json(state.service.plan_info().as_ref().clone())
+}
+
+async fn layout(State(state): State<AppState>) -> Json<Value> {
+    Json(state.service.layout().as_ref().clone())
 }
 
 async fn snapshot(State(state): State<AppState>) -> Json<Snapshot> {

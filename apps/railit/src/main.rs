@@ -315,6 +315,14 @@ enum NetCommand {
         /// Netzbeschreibung: rail-it-TOML oder railML 3 (`.xml`, `.railml`).
         file: PathBuf,
     },
+    /// Spurplan eines Netzes als SVG (mit `--output json` die Geometrie als JSON).
+    Layout {
+        /// Netzbeschreibung: rail-it-TOML oder railML 3.
+        file: PathBuf,
+        /// Zieldatei; ohne Angabe Standardausgabe.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Schreibt ein gültiges Netz als railML 3.
     Export {
         /// Netzbeschreibung: rail-it-TOML oder railML 3.
@@ -578,6 +586,9 @@ fn main() -> ExitCode {
         Command::Net(NetCommand::Validate { file }) => net::validate(&file, output),
         Command::Net(NetCommand::Info { file }) => net::info(&file, output),
         Command::Net(NetCommand::Export { file, out }) => net::export(&file, out.as_deref()),
+        Command::Net(NetCommand::Layout { file, out }) => {
+            net::layout(&file, out.as_deref(), output)
+        }
         Command::Plan(PlanCommand::Keygen { prefix }) => plan::keygen(&prefix, output),
         Command::Plan(PlanCommand::Compile { network, out, key }) => {
             plan::compile(&network, &out, key.as_deref(), output)
