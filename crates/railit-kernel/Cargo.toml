@@ -39,5 +39,9 @@ required-features = ["alloc"]
 name = "phase2"
 required-features = ["alloc"]
 
+[[test]]
+name = "borders"
+required-features = ["alloc"]
+
 [lints]
 workspace = true

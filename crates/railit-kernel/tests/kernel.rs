@@ -404,6 +404,7 @@ fn state_buffers_must_match_plan() {
     let mut signals = vec![SignalState::default(); plan.signal_count()];
     let mut routes = vec![RouteState::default(); plan.route_count()];
     let mut lxs = vec![LxState::default(); plan.lx_count()];
+    let mut borders = vec![BorderState::default(); plan.border_count()];
     let mut aux = vec![None; AUX_SLOTS];
     let mut active = vec![0u64; plan.route_set_words()];
     let mut meta = Meta::default();
@@ -415,6 +416,7 @@ fn state_buffers_must_match_plan() {
             signals: &mut signals,
             routes: &mut routes,
             lxs: &mut lxs,
+            borders: &mut borders,
             aux: &mut aux,
             active: &mut active,
             meta: &mut meta,

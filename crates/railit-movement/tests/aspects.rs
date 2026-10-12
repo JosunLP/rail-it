@@ -123,7 +123,7 @@ impl Station {
                         LxReport::Open
                     };
                 }
-                Command::SetSubstitute { .. } | Command::ResetTvd(_) => {}
+                Command::SetSubstitute { .. } | Command::ResetTvd(_) | Command::Border { .. } => {}
             }
         }
     }

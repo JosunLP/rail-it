@@ -5,7 +5,7 @@ use railit_kernel::{
     RoutePhase, SignalReport,
 };
 use railit_plan::{PlanView, RouteEnd};
-use railit_types::{LxId, PointId, PointPosition, RouteId, SignalId, Tick, TvdId};
+use railit_types::{BorderId, LxId, PointId, PointPosition, RouteId, SignalId, Tick, TvdId};
 use serde::{Deserialize, Serialize};
 
 fn point_name(plan: &PlanView<'_>, id: PointId) -> String {
@@ -24,6 +24,10 @@ fn route_name(plan: &PlanView<'_>, id: RouteId) -> String {
     plan.route_name(id).unwrap_or("?").to_string()
 }
 
+fn border_name(plan: &PlanView<'_>, id: BorderId) -> String {
+    plan.border_name(id).unwrap_or("?").to_string()
+}
+
 fn lx_name(plan: &PlanView<'_>, id: LxId) -> String {
     plan.lx_name(id).unwrap_or("?").to_string()
 }
@@ -40,6 +44,8 @@ pub enum AuxKind {
     Substitute,
     /// Weiche im gestörten Abschnitt umstellen (Element: Weiche, dazu die Lage).
     ForcePoint,
+    /// Erlaubnis an einer Bereichsgrenze zurückholen (Element: Grenze).
+    TakePermission,
 }
 
 /// Hilfshandlung mit fachlichen Namen.
@@ -64,6 +70,7 @@ impl NamedAux {
             AuxOperation::ForcePoint(p, pos) => {
                 (AuxKind::ForcePoint, point_name(plan, p), Some(pos))
             }
+            AuxOperation::TakePermission(b) => (AuxKind::TakePermission, border_name(plan, b), None),
         };
         Self {
             kind,
@@ -87,6 +94,9 @@ impl NamedAux {
             }
             AuxKind::Substitute => {
                 AuxOperation::Substitute(plan.find_route(&self.element).ok_or_else(unknown)?)
+            }
+            AuxKind::TakePermission => {
+                AuxOperation::TakePermission(plan.find_border(&self.element).ok_or_else(unknown)?)
             }
             AuxKind::ForcePoint => AuxOperation::ForcePoint(
                 plan.find_point(&self.element).ok_or_else(unknown)?,
@@ -152,6 +162,13 @@ pub enum NamedEvent {
         /// Kennung.
         aux: u32,
     },
+    /// Erlaubnis an einer Bereichsgrenze übernommen oder abgegeben.
+    Permission {
+        /// Grenze.
+        border: String,
+        /// Hält der Bereich die Erlaubnis jetzt?
+        holding: bool,
+    },
 }
 
 impl NamedEvent {
@@ -178,6 +195,7 @@ impl NamedEvent {
                     Rejection::AuxExpired => ("aux_expired", None),
                     Rejection::SameOperator => ("same_operator", None),
                     Rejection::AuxNotApplicable => ("aux_not_applicable", None),
+                    Rejection::NoPermission(b) => ("no_permission", Some(border_name(plan, b))),
                 };
                 Self::Rejected {
                     request: id.0,
@@ -205,6 +223,10 @@ impl NamedEvent {
                     Alarm::SignalPassedAtDanger(r) => {
                         ("signal_passed_at_danger", Some(route_name(plan, r)))
                     }
+                    Alarm::BorderLost(b) => ("border_lost", Some(border_name(plan, b))),
+                    Alarm::PermissionConflict(b) => {
+                        ("permission_conflict", Some(border_name(plan, b)))
+                    }
                 };
                 Self::Alarm {
                     alarm: alarm.into(),
@@ -222,6 +244,10 @@ impl NamedEvent {
                 counter,
             },
             Event::AuxExpired(aux) => Self::AuxExpired { aux: aux.0 },
+            Event::Permission { border, holding } => Self::Permission {
+                border: border_name(plan, border),
+                holding,
+            },
         }
     }
 }

@@ -6,13 +6,16 @@
 //! berechnet und mit den Zählern im Zustand verglichen. Eine Verletzung führt in den
 //! sicheren Zustand.
 
-use railit_plan::{PlanView, Protection, RouteView};
+use railit_plan::{PlanView, Protection, RouteEnd, RouteView};
 use railit_types::bitset::BitSet;
-use railit_types::{Duration, LxId, PointId, PointPosition, RouteId, SignalId, Tick, TvdId};
+use railit_types::{
+    BorderId, Duration, LxId, PointId, PointPosition, RouteId, SignalId, Tick, TvdId,
+};
 
 use crate::io::{Aspect, Occupancy, RoutePhase, SafeStateReason, SignalReport};
 use crate::kernel::{
-    effective_occupancy, effective_position, lx, lx_closed, point, route, signal, tvd,
+    border, effective_occupancy, effective_position, fresh, lx, lx_closed, point, route, signal,
+    tvd,
 };
 use crate::state::{KernelState, RouteState};
 
@@ -23,6 +26,18 @@ const HOLD: SafeStateReason = SafeStateReason::HoldMismatch;
 
 fn route_ids(plan: &PlanView<'_>) -> impl Iterator<Item = RouteId> {
     (0..plan.route_count()).filter_map(RouteId::from_index)
+}
+
+fn border_ids(plan: &PlanView<'_>) -> impl Iterator<Item = BorderId> {
+    (0..plan.border_count()).filter_map(BorderId::from_index)
+}
+
+/// Grenzen, deren Annäherungsabschnitt verschlossen ist.
+fn locked_borders<'a>(
+    plan: &'a PlanView<'_>,
+    st: &'a KernelState<'_>,
+) -> impl Iterator<Item = BorderId> + 'a {
+    border_ids(plan).filter(move |b| border(st, *b).is_ok_and(|s| s.lock))
 }
 
 /// Eingestellte Fahrstraßen mit Zustand und Plansicht.
@@ -58,6 +73,7 @@ pub(crate) fn check(
     point_locks_match_routes(plan, st)?;
     signal_holds_match_routes(plan, st)?;
     level_crossings_match_routes(plan, st)?;
+    borders_are_consistent(plan, st)?;
     substitute_only_when_justified(plan, st, now, timeout)?;
     proceed_only_when_safe(plan, st, now, timeout)
 }
@@ -167,9 +183,58 @@ fn point_locks_match_routes(plan: &PlanView<'_>, st: &KernelState<'_>) -> Res<()
                 }
             }
         }
+        for b in locked_borders(plan, st) {
+            for (q, want) in plan.border_approach_points(b) {
+                if q == p {
+                    holds = holds.checked_add(1).ok_or(HOLD)?;
+                    merge_position(&mut locked, want)?;
+                }
+            }
+        }
         lock_matches(state.owner, owner)?;
         if state.holds != holds || state.locked_pos != locked {
             return Err(HOLD);
+        }
+    }
+    Ok(())
+}
+
+/// Grenzen (REQ-IXL-017 … REQ-IXL-020):
+///
+/// - Der Annäherungsabschnitt ist genau dann verschlossen, wenn die Erlaubnis nicht gehalten
+///   wird, und die Zähler der Abschnitte stimmen damit überein.
+/// - Eine eingestellte Fahrstraße über eine Grenze setzt die Erlaubnis voraus.
+/// - Verschlossene Annäherungsabschnitte gehören nur Fahrstraßen ab dem Einfahrsignal.
+fn borders_are_consistent(plan: &PlanView<'_>, st: &KernelState<'_>) -> Res<()> {
+    for b in border_ids(plan) {
+        let state = border(st, b)?;
+        if state.lock == state.holding || (state.holding && state.offering) {
+            return Err(HOLD);
+        }
+    }
+    for (index, state) in st.tvds.iter().enumerate() {
+        let t = TvdId::from_index(index).ok_or(IDX)?;
+        let mut count: u8 = 0;
+        for b in locked_borders(plan, st) {
+            if plan.border_approach_tvds(b).any(|x| x == t) {
+                count = count.checked_add(1).ok_or(HOLD)?;
+                let entry = plan.border_entry_signal(b);
+                for owner in [state.owner, state.overlap_owner].into_iter().flatten() {
+                    if plan.route(owner).map(|r| r.start()) != entry {
+                        return Err(HOLD);
+                    }
+                }
+            }
+        }
+        if state.border_locks != count {
+            return Err(HOLD);
+        }
+    }
+    for (_, _, view) in active_routes(plan, st) {
+        if let RouteEnd::Border(b) = view.end()
+            && !border(st, b)?.holding
+        {
+            return Err(SafeStateReason::MissingLock(view.id()));
         }
     }
     Ok(())
@@ -310,6 +375,12 @@ fn proceed_only_when_safe(
                 let state = tvd(st, t)?;
                 ok &= effective_occupancy(&state, now, timeout) == Occupancy::Clear;
                 ok &= state.overlap_owner == Some(r);
+            }
+            if let RouteEnd::Border(b) = view.end() {
+                let state = border(st, b)?;
+                ok &= state.holding
+                    && state.peer.is_some_and(|p| p.approach_clear && !p.holding)
+                    && fresh(state.peer_at, now, timeout);
             }
             justified |= ok;
         }

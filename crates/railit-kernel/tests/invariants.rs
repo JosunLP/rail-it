@@ -167,7 +167,8 @@ fn check_outputs(h: &Harness, field_points: &[PointReport], field_tvds: &[Occupa
             Command::SetSignal { .. }
             | Command::SetSubstitute { .. }
             | Command::SetLevelCrossing { .. }
-            | Command::ResetTvd(_) => {}
+            | Command::ResetTvd(_)
+            | Command::Border { .. } => {}
         }
     }
 

@@ -1,6 +1,6 @@
 //! Eingaben, Befehle und Ereignisse des Kerns.
 
-use railit_types::{LxId, PointId, PointPosition, RouteId, SignalId, TvdId};
+use railit_types::{BorderId, LxId, PointId, PointPosition, RouteId, SignalId, TvdId};
 
 /// Meldung einer Weiche.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -78,6 +78,28 @@ pub enum LxReport {
     Disturbed,
 }
 
+/// Meldung an den Kern des Nachbarbereichs über eine gemeinsame Grenze (Erlaubniswechsel,
+/// Konzept Abschnitt 10.4).
+///
+/// Jeder Kern sendet sie in jedem Zyklus; ausbleibende Meldungen gelten nach dem
+/// Meldungsalter als gestört.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+// Die Merkmale sind voneinander unabhängige Protokollzustände.
+#[allow(clippy::struct_excessive_bools)]
+pub struct BorderMessage {
+    /// Der Absender hält die Erlaubnis: Nur er darf Züge über die Grenze schicken.
+    pub holding: bool,
+    /// Laufende Nummer der Erlaubnis beim Absender.
+    pub seq: u32,
+    /// Der Absender hat die Erlaubnis abgegeben und bietet sie mit `seq` an.
+    pub offer: bool,
+    /// Der Annäherungsabschnitt des Absenders ist frei, verschlossen und gesichert.
+    pub approach_clear: bool,
+    /// Der Absender möchte die Erlaubnis haben.
+    pub request: bool,
+}
+
 /// Bedienerkennung für zählpflichtige Hilfshandlungen.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -108,6 +130,9 @@ pub enum AuxOperation {
     Substitute(RouteId),
     /// Umstellen einer unverschlossenen Weiche in einem gestörten Abschnitt.
     ForcePoint(PointId, PointPosition),
+    /// Erlaubnis zurückholen, wenn der Nachbar sie nicht hält, aber auch nicht abgibt
+    /// (z. B. nach seinem Neustart). Der Kern übernimmt sie erst nach der Einschwingzeit.
+    TakePermission(BorderId),
 }
 
 /// Signalbegriff, den der Kern befiehlt.
@@ -149,6 +174,10 @@ pub enum Request {
         /// Anfordernder Bediener.
         operator: OperatorId,
     },
+    /// Erlaubnis für eine Grenze anfordern (Erlaubniswechsel).
+    RequestPermission(BorderId),
+    /// Anforderung der Erlaubnis zurückziehen.
+    WithdrawPermissionRequest(BorderId),
     /// Hilfshandlung bestätigen (zweiter Bediener).
     AuxConfirm {
         /// Kennung aus [`Event::AuxPending`].
@@ -190,6 +219,13 @@ pub enum Input {
         lx: LxId,
         /// Meldung.
         report: LxReport,
+    },
+    /// Meldung des Nachbarkerns über eine Grenze.
+    Border {
+        /// Grenze (aus Sicht dieses Kerns).
+        border: BorderId,
+        /// Meldung.
+        message: BorderMessage,
     },
     /// Bedienanforderung.
     Request {
@@ -235,6 +271,13 @@ pub enum Command {
     },
     /// Gleisfreimeldeabschnitt zurücksetzen (Achszählgrundstellung).
     ResetTvd(TvdId),
+    /// Meldung an den Nachbarkern über eine Grenze (jeden Zyklus).
+    Border {
+        /// Grenze (aus Sicht dieses Kerns).
+        border: BorderId,
+        /// Meldung.
+        message: BorderMessage,
+    },
 }
 
 /// Phase einer Fahrstraße (Konzept, Abschnitt 10.2).
@@ -297,6 +340,8 @@ pub enum Rejection {
     SameOperator,
     /// Die Voraussetzungen der Hilfshandlung sind nicht erfüllt.
     AuxNotApplicable,
+    /// Für die Grenze fehlt die Erlaubnis; sie muss erst angefordert werden.
+    NoPermission(BorderId),
 }
 
 /// Störungs- und Gefahrenmeldung.
@@ -321,6 +366,10 @@ pub enum Alarm {
     UnauthorizedOccupancy(TvdId),
     /// Ein Zug ist an einem Halt zeigenden Signal vorbeigefahren.
     SignalPassedAtDanger(RouteId),
+    /// Die Verbindung zum Nachbarkern an einer Grenze ist gestört (keine aktuelle Meldung).
+    BorderLost(BorderId),
+    /// Beide Seiten einer Grenze melden, die Erlaubnis zu halten.
+    PermissionConflict(BorderId),
 }
 
 /// Ereignis eines Zyklus.
@@ -356,6 +405,13 @@ pub enum Event {
     },
     /// Hilfshandlung verfallen (nicht rechtzeitig bestätigt).
     AuxExpired(AuxId),
+    /// Die Erlaubnis für eine Grenze wurde übernommen (`holding`) oder abgegeben.
+    Permission {
+        /// Grenze.
+        border: BorderId,
+        /// Hält dieser Kern die Erlaubnis jetzt?
+        holding: bool,
+    },
 }
 
 /// Grund für den Übergang in den sicheren Zustand.

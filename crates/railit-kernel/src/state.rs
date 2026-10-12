@@ -20,8 +20,8 @@ use railit_plan::PlanView;
 use railit_types::{PointPosition, RouteId, Tick};
 
 use crate::io::{
-    Aspect, AuxId, AuxOperation, LxReport, Occupancy, OperatorId, PointReport, RoutePhase,
-    SafeStateReason, SignalReport,
+    Aspect, AuxId, AuxOperation, BorderMessage, LxReport, Occupancy, OperatorId, PointReport,
+    RoutePhase, SafeStateReason, SignalReport,
 };
 
 /// Empfohlene Anzahl gleichzeitig offener Hilfshandlungen.
@@ -83,6 +83,8 @@ pub struct TvdState {
     pub(crate) owner: Option<RouteId>,
     pub(crate) overlap_owner: Option<RouteId>,
     pub(crate) seen_occupied: bool,
+    /// Anzahl der Grenzen, deren Annäherungsabschnitt den Abschnitt verschließt.
+    pub(crate) border_locks: u8,
 }
 
 impl TvdState {
@@ -104,6 +106,12 @@ impl TvdState {
     /// Fahrstraße, deren Durchrutschweg den Abschnitt verschlossen hat.
     pub const fn overlap_owner(&self) -> Option<RouteId> {
         self.overlap_owner
+    }
+
+    /// Ist der Abschnitt als Annäherungsabschnitt einer Grenze verschlossen (Züge aus dem
+    /// Nachbarbereich dürfen kommen)?
+    pub const fn border_locked(&self) -> bool {
+        self.border_locks > 0
     }
 }
 
@@ -179,6 +187,68 @@ impl LxState {
     }
 }
 
+/// Zustand einer Grenze zu einem Nachbarbereich (Erlaubniswechsel).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+// Die Merkmale sind voneinander unabhängige Protokollzustände.
+#[allow(clippy::struct_excessive_bools)]
+pub struct BorderState {
+    /// Dieser Kern hält die Erlaubnis.
+    pub(crate) holding: bool,
+    /// Laufende Nummer der Erlaubnis.
+    pub(crate) seq: u32,
+    /// Die Erlaubnis wurde abgegeben und wird mit `seq` angeboten.
+    pub(crate) offering: bool,
+    /// Die Erlaubnis ist angefordert (Bedienung oder Zuglenkung).
+    pub(crate) want: bool,
+    /// Hilfshandlung „Erlaubnis zurückholen“ wartet auf die Einschwingzeit.
+    pub(crate) take_back: bool,
+    /// Der Annäherungsabschnitt ist verschlossen (gilt genau dann, wenn die Erlaubnis nicht
+    /// gehalten wird).
+    pub(crate) lock: bool,
+    /// Letzte Meldung des Nachbarn.
+    pub(crate) peer: Option<BorderMessage>,
+    pub(crate) peer_at: Tick,
+    /// Seit wann der Nachbar ununterbrochen meldet, die Erlaubnis nicht zu halten.
+    pub(crate) peer_free_since: Option<Tick>,
+    pub(crate) lost_alarmed: bool,
+    pub(crate) conflict_alarmed: bool,
+}
+
+impl BorderState {
+    /// Hält dieser Kern die Erlaubnis?
+    pub const fn holding(&self) -> bool {
+        self.holding
+    }
+
+    /// Laufende Nummer der Erlaubnis.
+    pub const fn seq(&self) -> u32 {
+        self.seq
+    }
+
+    /// Wird die Erlaubnis gerade angeboten (abgegeben, noch nicht übernommen)?
+    pub const fn offering(&self) -> bool {
+        self.offering
+    }
+
+    /// Ist die Erlaubnis angefordert?
+    pub const fn requested(&self) -> bool {
+        self.want
+    }
+
+    /// Ist der Annäherungsabschnitt verschlossen?
+    pub const fn approach_locked(&self) -> bool {
+        self.lock
+    }
+
+    /// Letzte Meldung des Nachbarn und ihr Zeitpunkt.
+    pub const fn peer(&self) -> Option<(BorderMessage, Tick)> {
+        match self.peer {
+            Some(m) => Some((m, self.peer_at)),
+            None => None,
+        }
+    }
+}
+
 /// Zustand einer Fahrstraße.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct RouteState {
@@ -250,6 +320,8 @@ pub struct Meta {
     pub(crate) safe_state: Option<SafeStateReason>,
     pub(crate) aux_counter: u64,
     pub(crate) next_aux: u32,
+    /// Zeitpunkt des ersten Zyklus nach dem (Neu-)Start.
+    pub(crate) started_at: Tick,
 }
 
 impl Meta {
@@ -277,6 +349,7 @@ pub struct KernelState<'s> {
     pub(crate) signals: &'s mut [SignalState],
     pub(crate) routes: &'s mut [RouteState],
     pub(crate) lxs: &'s mut [LxState],
+    pub(crate) borders: &'s mut [BorderState],
     /// Plätze für offene Hilfshandlungen; die Anzahl wählt der Aufrufer.
     pub(crate) aux: &'s mut [Option<AuxSlot>],
     /// Bitmenge der eingestellten Fahrstraßen.
@@ -297,6 +370,8 @@ pub struct Buffers<'s> {
     pub routes: &'s mut [RouteState],
     /// Bahnübergänge, Länge = Anzahl Bahnübergänge im Plan.
     pub lxs: &'s mut [LxState],
+    /// Grenzen, Länge = Anzahl Grenzen im Plan.
+    pub borders: &'s mut [BorderState],
     /// Plätze für offene Hilfshandlungen (beliebige Anzahl, empfohlen [`AUX_SLOTS`]).
     pub aux: &'s mut [Option<AuxSlot>],
     /// Bitmenge der eingestellten Fahrstraßen, Länge = `PlanView::route_set_words`.
@@ -317,6 +392,7 @@ impl<'s> KernelState<'s> {
             signals,
             routes,
             lxs,
+            borders,
             aux,
             active,
             meta,
@@ -326,6 +402,7 @@ impl<'s> KernelState<'s> {
             || signals.len() != plan.signal_count()
             || routes.len() != plan.route_count()
             || lxs.len() != plan.lx_count()
+            || borders.len() != plan.border_count()
             || active.len() != plan.route_set_words()
         {
             return Err(SafeStateReason::StateMismatch);
@@ -336,6 +413,7 @@ impl<'s> KernelState<'s> {
             signals,
             routes,
             lxs,
+            borders,
             aux,
             active,
             meta,
@@ -352,6 +430,7 @@ impl<'s> KernelState<'s> {
         self.signals.fill(SignalState::default());
         self.routes.fill(RouteState::default());
         self.lxs.fill(LxState::default());
+        self.borders.fill(BorderState::default());
         self.aux.fill(None);
         self.active.fill(0);
         *self.meta = Meta::default();
@@ -388,6 +467,11 @@ impl<'s> KernelState<'s> {
         self.aux.iter().flatten()
     }
 
+    /// Grenzzustände, Index = `BorderId`.
+    pub fn borders(&self) -> &[BorderState] {
+        self.borders
+    }
+
     /// Globaler Zustand.
     pub fn meta(&self) -> &Meta {
         self.meta
@@ -400,8 +484,8 @@ mod owned {
     use alloc::vec::Vec;
 
     use super::{
-        AUX_SLOTS, AuxSlot, KernelState, LxState, Meta, PointState, RouteState, SignalState,
-        TvdState,
+        AUX_SLOTS, AuxSlot, BorderState, KernelState, LxState, Meta, PointState, RouteState,
+        SignalState, TvdState,
     };
     use crate::io::{Command, Event, Outputs};
     use railit_plan::PlanView;
@@ -414,6 +498,7 @@ mod owned {
         signals: Vec<SignalState>,
         routes: Vec<RouteState>,
         lxs: Vec<LxState>,
+        borders: Vec<BorderState>,
         aux: Vec<Option<AuxSlot>>,
         active: Vec<u64>,
         meta: Meta,
@@ -428,6 +513,7 @@ mod owned {
                 signals: vec![SignalState::default(); plan.signal_count()],
                 routes: vec![RouteState::default(); plan.route_count()],
                 lxs: vec![LxState::default(); plan.lx_count()],
+                borders: vec![BorderState::default(); plan.border_count()],
                 aux: vec![None; AUX_SLOTS],
                 active: vec![0; plan.route_set_words()],
                 meta: Meta::default(),
@@ -442,6 +528,7 @@ mod owned {
                 signals: &mut self.signals,
                 routes: &mut self.routes,
                 lxs: &mut self.lxs,
+                borders: &mut self.borders,
                 aux: &mut self.aux,
                 active: &mut self.active,
                 meta: &mut self.meta,
@@ -476,6 +563,11 @@ mod owned {
         /// Offene Hilfshandlungen.
         pub fn pending_aux(&self) -> impl Iterator<Item = &AuxSlot> {
             self.aux.iter().flatten()
+        }
+
+        /// Grenzzustände.
+        pub fn borders(&self) -> &[BorderState] {
+            &self.borders
         }
 
         /// Globaler Zustand.

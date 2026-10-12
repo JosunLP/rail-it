@@ -1,6 +1,10 @@
 //! Zyklus des Sicherheitskerns.
 
-use railit_plan::{PlanView, Protection, RouteView};
+mod border;
+
+pub(crate) use border::border;
+
+use railit_plan::{PlanView, Protection, RouteEnd, RouteView};
 use railit_rules::RuleSet;
 use railit_types::bitset::{BitSet, BitSetMut};
 use railit_types::{LxId, PointId, PointPosition, RouteId, SignalId, Tick, TvdId};
@@ -214,6 +218,9 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
         out: &mut O,
     ) -> Res<()> {
         let first_cycle = st.meta.cycle == 0;
+        if first_cycle {
+            st.meta.started_at = now;
+        }
         self.record_reports(st, now, inputs, out);
 
         for input in inputs {
@@ -222,6 +229,8 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
             }
         }
         self.expire_aux(st, now, out);
+        self.step_borders(st, now, out)?;
+        self.sync_border_locks(st, now, out)?;
 
         for index in 0..self.plan.route_count() {
             let r = RouteId::from_index(index).ok_or(IDX)?;
@@ -230,6 +239,7 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
 
         self.drive_level_crossings(st, now, first_cycle, out)?;
         self.drive_signals(st, now, first_cycle, out)?;
+        self.send_border_messages(st, now, out)?;
         invariants::check(&self.plan, st, now, self.rules.report_timeout())
     }
 
@@ -284,6 +294,7 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
                         l.reported_at = now;
                     })
                     .is_ok(),
+                Input::Border { border, message } => Self::record_border(st, now, border, message),
                 Input::Request { .. } => true,
             };
             if !known {
@@ -306,7 +317,10 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
                 RoutePhase::Locked => r.substitute_since.is_some(),
                 RoutePhase::Idle | RoutePhase::Setting => false,
             }),
-            None => state.overlap_owner.is_none() && self.plan.tvd_is_entry(t),
+            None => {
+                state.overlap_owner.is_none()
+                    && (self.plan.tvd_is_entry(t) || state.border_locks > 0)
+            }
         }
     }
 
@@ -328,6 +342,8 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
             Request::AuxConfirm { aux, operator } => {
                 self.aux_confirm(st, now, aux, operator, out)?
             }
+            Request::RequestPermission(b) => self.request_permission(st, b, true)?,
+            Request::WithdrawPermissionRequest(b) => self.request_permission(st, b, false)?,
         };
         out.event(match result {
             Ok(()) => Event::Accepted(id),
@@ -369,6 +385,16 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
         }
         if signal(st, view.start())?.stop_holds > 0 {
             return Ok(Err(Rejection::SignalHeld(view.start())));
+        }
+        if let RouteEnd::Border(b) = view.end()
+            && !self.exit_permitted(st, b, now, false)?
+        {
+            return Ok(Err(Rejection::NoPermission(b)));
+        }
+        for t in view.tvds().chain(view.overlap_tvds()) {
+            if self.border_blocks(st, t, view.start())? {
+                return Ok(Err(Rejection::Conflict));
+            }
         }
         for t in view.tvds() {
             if tvd(st, t)?.owner.is_some() {
@@ -582,6 +608,10 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
                 matches!(route(st, r)?.phase, RoutePhase::Locked | RoutePhase::Halted)
                     && self.substitute_possible(st, &view, now)?
             }
+            AuxOperation::TakePermission(b) => match self.take_back_applicable(st, b, now)? {
+                Some(applicable) => applicable,
+                None => return Ok(Err(Rejection::UnknownElement)),
+            },
             AuxOperation::ForcePoint(p, _) => {
                 let (Some(t), Ok(state)) = (self.plan.point_tvd(p), point(st, p)) else {
                     return Ok(Err(Rejection::UnknownElement));
@@ -689,6 +719,7 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
             AuxOperation::ForcePoint(p, pos) => {
                 self.command_point(st, now, p, pos, None, true, out)
             }
+            AuxOperation::TakePermission(b) => Self::take_back(st, b),
         }
     }
 
@@ -761,6 +792,11 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
                 return Ok(false);
             }
         }
+        if let RouteEnd::Border(b) = view.end()
+            && !self.exit_permitted(st, b, now, false)?
+        {
+            return Ok(false);
+        }
         Ok(signal(st, view.start())?.stop_holds == 0)
     }
 
@@ -778,6 +814,11 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
             if !self.tvd_clear(st, t, now)? {
                 return Ok(false);
             }
+        }
+        if let RouteEnd::Border(b) = view.end()
+            && !self.exit_permitted(st, b, now, true)?
+        {
+            return Ok(false);
         }
         Ok(signal(st, view.start())?.report != Some(SignalReport::Defective))
     }

@@ -8,7 +8,7 @@
 use railit_kernel::*;
 use railit_plan::{Plan, PlanView, RouteId, SignalId};
 use railit_rules::GenericRules;
-use railit_types::{Duration, LxId, PointId, PointPosition, Tick, TvdId};
+use railit_types::{BorderId, Duration, LxId, PointId, PointPosition, Tick, TvdId};
 
 const EXAMPLE: &str = include_str!("../../../../examples/beispielstadt.toml");
 
@@ -38,6 +38,10 @@ pub struct Harness {
     pub substitutes: Vec<SignalId>,
     /// Bahnübergänge, die Befehle ignorieren.
     pub stuck_lxs: Vec<LxId>,
+    /// Meldungen des Nachbarn je Grenze, in jedem Zyklus gesendet (`None`: keine Meldung).
+    pub border_in: Vec<Option<BorderMessage>>,
+    /// Zuletzt gesendete Meldungen an die Nachbarn.
+    pub border_out: Vec<Option<BorderMessage>>,
     /// Weichen, die Stellbefehle ignorieren.
     pub stuck_points: Vec<PointId>,
     /// Abschnitte, die nicht mehr melden.
@@ -66,6 +70,8 @@ impl Harness {
             lxs_before: vec![LxReport::Open; plan.lx_count()],
             substitutes: Vec::new(),
             stuck_lxs: Vec::new(),
+            border_in: vec![None; plan.border_count()],
+            border_out: vec![None; plan.border_count()],
             stuck_points: Vec::new(),
             silent_tvds: Vec::new(),
             stuck_signals: Vec::new(),
@@ -172,6 +178,14 @@ impl Harness {
                 report: *r,
             });
         }
+        for (i, m) in self.border_in.iter().enumerate() {
+            if let Some(message) = m {
+                inputs.push(Input::Border {
+                    border: BorderId::from_index(i).unwrap(),
+                    message: *message,
+                });
+            }
+        }
         inputs
     }
 
@@ -242,6 +256,9 @@ impl Harness {
                 }
                 Command::ResetTvd(tvd) => {
                     self.tvds[tvd.index().unwrap()] = Occupancy::Clear;
+                }
+                Command::Border { border, message } => {
+                    self.border_out[border.index().unwrap()] = Some(message);
                 }
             }
         }

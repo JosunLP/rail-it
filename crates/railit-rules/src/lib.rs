@@ -44,6 +44,11 @@ pub trait RuleSet {
 
     /// Höchste Leuchtdauer des Ersatzsignals (Zs1).
     fn substitute_duration(&self) -> Duration;
+
+    /// Einschwingzeit des Erlaubniswechsels: So lange muss der Nachbar ununterbrochen melden,
+    /// dass er die Erlaubnis nicht hält, bevor dieser Kern sie beim Anlauf oder nach der
+    /// Hilfshandlung übernimmt. Muss größer sein als jede Laufzeit einer Grenzmeldung.
+    fn border_settle_time(&self) -> Duration;
 }
 
 /// Lehr- und Testregelwerk mit einstellbaren Zeiten.
@@ -61,11 +66,14 @@ pub struct GenericRules {
     pub aux_confirm_timeout: Duration,
     /// Siehe [`RuleSet::substitute_duration`].
     pub substitute_duration: Duration,
+    /// Siehe [`RuleSet::border_settle_time`].
+    pub border_settle_time: Duration,
 }
 
 impl Default for GenericRules {
     /// Weichenumstellung 10 s, Meldungsalter 2 s, Zeitverschluss 60 s, Auflösung des
-    /// Durchrutschwegs 30 s, Bestätigungsfrist 30 s, Ersatzsignal 90 s.
+    /// Durchrutschwegs 30 s, Bestätigungsfrist 30 s, Ersatzsignal 90 s, Einschwingzeit des
+    /// Erlaubniswechsels 5 s.
     fn default() -> Self {
         Self {
             point_move_timeout: Duration::from_millis(10_000),
@@ -74,6 +82,7 @@ impl Default for GenericRules {
             overlap_release_time: Duration::from_millis(30_000),
             aux_confirm_timeout: Duration::from_millis(30_000),
             substitute_duration: Duration::from_millis(90_000),
+            border_settle_time: Duration::from_millis(5_000),
         }
     }
 }
@@ -101,5 +110,9 @@ impl RuleSet for GenericRules {
 
     fn substitute_duration(&self) -> Duration {
         self.substitute_duration
+    }
+
+    fn border_settle_time(&self) -> Duration {
+        self.border_settle_time
     }
 }

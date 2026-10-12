@@ -76,6 +76,13 @@ pub struct Rules {
     pub aux_confirm_timeout_ms: u64,
     /// Höchstdauer des Ersatzsignals.
     pub substitute_duration_ms: u64,
+    /// Einschwingzeit des Erlaubniswechsels.
+    #[serde(default = "default_settle_ms")]
+    pub border_settle_time_ms: u64,
+}
+
+const fn default_settle_ms() -> u64 {
+    5_000
 }
 
 impl From<&GenericRules> for Rules {
@@ -87,6 +94,7 @@ impl From<&GenericRules> for Rules {
             overlap_release_time_ms: r.overlap_release_time.as_millis(),
             aux_confirm_timeout_ms: r.aux_confirm_timeout.as_millis(),
             substitute_duration_ms: r.substitute_duration.as_millis(),
+            border_settle_time_ms: r.border_settle_time.as_millis(),
         }
     }
 }
@@ -100,6 +108,7 @@ impl From<Rules> for GenericRules {
             overlap_release_time: Duration::from_millis(r.overlap_release_time_ms),
             aux_confirm_timeout: Duration::from_millis(r.aux_confirm_timeout_ms),
             substitute_duration: Duration::from_millis(r.substitute_duration_ms),
+            border_settle_time: Duration::from_millis(r.border_settle_time_ms),
         }
     }
 }

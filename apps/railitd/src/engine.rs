@@ -113,6 +113,9 @@ pub(crate) async fn run(mut rt: Runtime<Simulator>, mut ch: Channels, period: Du
                                 let _ = reply.send(Answer { answer: named.clone(), aux });
                             }
                         }
+                        NamedEvent::Permission { border, holding } => {
+                            tracing::info!(border, holding, "Erlaubniswechsel");
+                        }
                         NamedEvent::RoutePhase { .. } => {}
                     }
                     let value = serde_json::to_value(&named).unwrap_or(Value::Null);
@@ -144,32 +147,36 @@ pub(crate) async fn run(mut rt: Runtime<Simulator>, mut ch: Channels, period: Du
                     waiting.insert(next_id, reply);
                 }
                 Some(EngineMsg::Sim { command, reply }) => {
-                    let sim = rt.field_mut();
-                    let result = match command {
-                        SimCommand::AddTrain(spec) => match sim.add_train(spec) {
-                            Ok(()) => SimReply::Done,
-                            Err(e) => SimReply::Error(e.to_string()),
-                        },
-                        SimCommand::RemoveTrain(name) => {
-                            if sim.remove_train(&name) {
-                                SimReply::Done
-                            } else {
-                                SimReply::Error(format!("Zug „{name}“ nicht gefunden"))
-                            }
-                        }
-                        SimCommand::Trains => SimReply::Trains(sim.trains()),
-                        SimCommand::Fault(fault, true) => {
-                            sim.inject(fault);
-                            SimReply::Done
-                        }
-                        SimCommand::Fault(fault, false) => {
-                            sim.clear(fault);
-                            SimReply::Done
-                        }
-                    };
+                    let result = sim_command(rt.field_mut(), command);
                     let _ = reply.send(result);
                 }
             },
+        }
+    }
+}
+
+/// Führt einen Simulationsbefehl aus.
+fn sim_command(sim: &mut Simulator, command: SimCommand) -> SimReply {
+    match command {
+        SimCommand::AddTrain(spec) => match sim.add_train(spec) {
+            Ok(()) => SimReply::Done,
+            Err(e) => SimReply::Error(e.to_string()),
+        },
+        SimCommand::RemoveTrain(name) => {
+            if sim.remove_train(&name) {
+                SimReply::Done
+            } else {
+                SimReply::Error(format!("Zug „{name}“ nicht gefunden"))
+            }
+        }
+        SimCommand::Trains => SimReply::Trains(sim.trains()),
+        SimCommand::Fault(fault, true) => {
+            sim.inject(fault);
+            SimReply::Done
+        }
+        SimCommand::Fault(fault, false) => {
+            sim.clear(fault);
+            SimReply::Done
         }
     }
 }

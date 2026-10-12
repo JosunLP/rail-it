@@ -465,6 +465,8 @@ impl Simulator {
                         }
                     }
                 }
+                // Grenzmeldungen stellt die Runtime dem Nachbarkern zu.
+                Command::Border { .. } => {}
                 Command::ResetTvd(tvd) => {
                     // Achszählgrundstellung: Eine Störung des Zählpunkts wird aufgehoben.
                     if let Some(f) = tvd.index().and_then(|i| self.tvd_faults.get_mut(i))
