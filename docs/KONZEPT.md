@@ -1,6 +1,6 @@
 # rail-it – Konzept einer Engine für Netz- und Stellwerkmanagement
 
-> Status: **v0.6** (Phasen 0 bis 4 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
+> Status: **v0.7** (Phasen 0 bis 5 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
 >
 > v0.2 arbeitet die Grundsatzentscheidungen aus Abschnitt 2 ein: vollständiger Netz- und
 > Bahnbetrieb, deutsches ESTW **und** europäisches System (ETCS/EULYNX), Server **und**
@@ -553,6 +553,17 @@ Damit der Kern auf beiden Plattformen läuft, gelten diese Regeln:
 2. **Verteilt:** Kern und Safety laufen auf sicheren Rechnern. `railitd` läuft auf Linux mit
    Betriebsführung und API. Die Verbindung erfolgt über RaSTA.
 
+**Stand Phase 5:** `railit-embedded` ist die Runtime des sicheren Rechners (`no_std`, ohne
+Allokator, gebaut für `armv7r-none-eabihf` und `thumbv7em-none-eabihf`). Der **Knoten** führt
+den Kern in bis zu drei Kanälen mit Voter und Watchdog aus; den Zyklus stößt sein Timer an,
+nicht der Host. Zustandsspeicher fester Größe (`ChannelMemory<N>`) legt der Aufrufer an, das
+Plan-Image wird ohne Kopie gelesen. Ein- und Ausgaben laufen als Binärtelegramme (postcard)
+in RaSTA-Nutzdaten: Eingaben und Handlungen an der Sicherheitsschicht vom Host, je Zyklus
+vollständige Ausgaben (`Begin` … `End` mit Anzahlen) vom Knoten. Bricht die Verbindung ab,
+rechnet der Knoten weiter und nimmt mangels Meldungen die Fahrt zurück (REQ-EMB-001 … 004).
+Die Gegenstelle `NodeClient` ist Teil des Crates; die Einbindung in `railitd` folgt mit der
+Wahl der Hardware (Abschnitt 19).
+
 ---
 
 ## 14. Dienst, API und CLI
@@ -639,6 +650,15 @@ Beispiel durch Rückmeldung mit Prüfcode. Die API ist darauf von Beginn an ausg
 - Ein Watchdog überwacht die Zyklus-Deadline.
 - Hot Standby, indem ein zweiter Rechner das Journal mitliest.
 
+**Stand Phase 5:** `railit-safety` setzt Kanäle, Voter, Watchdog und den sicheren Zustand um
+(REQ-SAF-001 … 005). Jeder Kanal hat seinen eigenen Zustandsspeicher; sein Digest ist ein
+SHA-256 über Ergebnis, Befehle, Ereignisse und Zustand, plattformunabhängig kodiert. Der
+Voter ist eine reine Funktion und mit Kani für alle Eingaben nachgewiesen. Im sicheren
+Zustand gibt die Schicht keine Kanalausgabe mehr weiter, sondern stellt allein aus dem Plan
+alle Signale auf Halt. Die Runtime betreibt jeden Stellbereich mit 1, 2 oder 3 Kanälen
+(`railitd --channels`, `--watchdog-ms`); Ausschluss, Wiederaufnahme, Abschaltung und
+Rücksetzen stehen im Journal. Diversitäre Kanäle und Hot Standby sind noch offen.
+
 **Neustart**
 
 Nach einem Neustart gelten alle Elemente als unbekannt, alle Fahrerlaubnisse sind
@@ -675,10 +695,10 @@ Die Mittel dafür:
 | Systemdefinition, Betriebsszenarien | `docs/` | 0 |
 | Gefährdungsliste (Hazard Log) | `docs/safety/hazard-log.md` | 0 |
 | Anforderungen mit IDs (`REQ-…`) | `docs/requirements/` | 0 |
-| Rückverfolgbarkeit Anforderung → Code → Test | CI-Bericht | 1 |
+| Rückverfolgbarkeit Anforderung → Code → Test | [`docs/safety/traceability.md`](safety/traceability.md), erzeugt und in der CI geprüft mit `cargo xtask trace` | 5 ✔ |
 | Architektur- und Modulentwürfe | `docs/` | 1 |
 | Verifikations- und Validierungsberichte | CI-Artefakte | 2 |
-| Sicherheitsnachweis (Safety Case) | `docs/safety/` | 5 |
+| Sicherheitsnachweis (Safety Case) | [`docs/safety/safety-case.md`](safety/safety-case.md) | 5 ✔ |
 
 **Hinweis zur Organisation:** Die Normen verlangen unabhängige Rollen für Implementierung,
 Verifikation, Validierung und Begutachtung (ISA). Diese Rollen müssen vor einer Zulassung
@@ -690,8 +710,8 @@ besetzt werden.
 |-------|----------|
 | Lints | `clippy` mit `unwrap_used`, `expect_used`, `panic`, `indexing_slicing` und `arithmetic_side_effects` auf `deny` in allen Crates mit SIL 4 |
 | Tests | `cargo test`, `proptest` (Invarianten), deklarative Szenarien |
-| Formal | `kani` (Bounded Model Checking) für Invarianten und Zustandsübergänge |
-| Robustheit | `cargo-fuzz` (Importer, Plan-Image, Protokolle), `cargo-mutants` |
+| Formal | `kani` (Bounded Model Checking): umgesetzt für Voter, Watchdog, Ausgabepuffer, Bitmengen, Zeit, MD4, RaSTA-Empfang, Telegramm-Paketierung (REQ-SAF-006). Offen: Kernzyklus |
+| Robustheit | `cargo-fuzz`: umgesetzt für Plan-Image (bis in Kern und Fahrerlaubnis), rail-it-TOML, railML 3, Fahrplan, Journal, RaSTA, EULYNX SCI, Binärprotokoll des sicheren Rechners (REQ-SAF-007). Offen: `cargo-mutants` |
 | Lieferkette | `cargo-deny` (Lizenzen, Advisories), `cargo-audit`, SBOM, gepinnte Toolchain |
 | Toolchain | Langfristig eine qualifizierte Toolchain (z. B. Ferrocene) für die Crates mit SIL 4 |
 
@@ -723,15 +743,17 @@ Daraus folgen diese Regeln:
 | **2 – ESTW vollständig** | Durchrutschwege, Flankenschutz, Hilfshandlungen mit Zählwerk, Signalbegriffe Ks und H/V (`railit-movement`), BÜ, Erkennung unerlaubter Besetzungen, Journal und Replay | Fachlich vollständiges Einzelstellwerk nach `de-estw` | ✔ |
 | **3 – Netz & Betrieb** | Mehrere Stellbereiche, Streckenblock, Zugnummern, Fahrplan, Zuglenkung, Disposition, gRPC-Vertrag, Rollen, mTLS, Audit | Betrieb eines Netzes mit mehreren Bahnhöfen in der Simulation („Nordbahn“, `examples/nordbahn.toml` mit Fahrplan `examples/nordbahn-fahrplan.toml`) | ✔ |
 | **4 – Europa** | ETCS Level 2 (MA-Erzeugung, RBC-Funktion), EULYNX SCI-P/-LS/-TDS/-LX über RaSTA zu simulierten Objektsteuerungen, Import und Export von railML 3 | Mischbetrieb ESTW/ETCS in der Simulation (Szenarien 16 bis 19); Feldanbindung bereit für Prüfstände | ✔ (PlanPro-Import und SCI-ILS offen) |
-| **5 – Sicherheit & Embedded** | Redundante Kanäle, Voter, Cortex-R-Runtime, Kani-Nachweise, Fuzzing, Safety Case | Zulassungsreifer Kandidat für das Labor | offen |
+| **5 – Sicherheit & Embedded** | Redundante Kanäle, Voter, Watchdog, Cortex-R-Runtime, Kani-Nachweise, Fuzzing, Safety Case, Rückverfolgbarkeit | Kandidat für das Labor mit [Sicherheitsnachweis](safety/safety-case.md) (Szenarien 20, 21) | ✔ (Hardware, Einbindung des sicheren Rechners in `railitd` offen) |
 | **6 – UI** | Spurplan-UI als API-Client mit sicherer Anzeige- und Bestätigungskette | Bedienplatz | offen |
 
-**Umgesetzte Crates (Stand Phase 4):** `railit-types`, `railit-topology`, `railit-plan`,
-`railit-planning`, `railit-rules`, `railit-kernel`, `railit-movement` (Ks, H/V, ETCS-Fahrerlaubnis),
+**Umgesetzte Crates (Stand Phase 5):** `railit-types`, `railit-topology`, `railit-plan`,
+`railit-planning`, `railit-rules`, `railit-kernel`, `railit-safety` (Kanäle, Voter, Watchdog),
+`railit-embedded` (sicherer Rechner), `railit-movement` (Ks, H/V, ETCS-Fahrerlaubnis),
 `railit-etcs` (RBC-Funktion), `railit-rasta`, `railit-adapters` (EULYNX SCI), `railit-journal`
 (mit Auditprotokoll), `railit-sim`, `railit-ops` (Zugnummernmeldung, Fahrplan, Zuglenkung,
 Disposition), `railit-runtime` (mehrere Stellbereiche, Szenario-Runner,
-Schlüsselverwaltung), `railit-import` (rail-it-TOML, railML 3) sowie die Anwendungen `railit` und `railitd` (REST,
+Schlüsselverwaltung, redundante Kanäle), `railit-import` (rail-it-TOML, railML 3),
+`railit-fuzz` (Fuzz-Ziele) sowie die Anwendungen `railit` und `railitd` (REST,
 gRPC, TLS/mTLS, Rollen, Feldanbindung über EULYNX). Das Regelwerk `de-estw` ist
 noch das Lehrregelwerk `GenericRules` mit den Zeiten aus Phase 2 (Auflösezeit des
 Durchrutschwegs, Bestätigungsfrist, Leuchtdauer Zs1). Die übrigen Crates aus Abschnitt 5 entstehen in den
@@ -741,7 +763,11 @@ jeweiligen Phasen.
 
 ## 19. Noch offene Punkte
 
-1. **Konkrete Embedded-Hardware** für den sicheren Rechner (wichtig ab Phase 5).
-2. **Besetzung der unabhängigen Rollen** (Verifikation, Validierung, ISA) mit Blick auf eine
+1. **Konkrete Embedded-Hardware** für den sicheren Rechner. Die Runtime (`railit-embedded`)
+   ist fertig; Startcode, Uhr, Netzwerk und Speicherprüfungen hängen von der Hardware ab,
+   ebenso die Einbindung in `railitd`.
+2. **Offene Punkte bis zu einer Zulassung:** siehe
+   [Sicherheitsnachweis, Teil 7](safety/safety-case.md#teil-7--offene-punkte-bis-zu-einer-zulassung).
+3. **Besetzung der unabhängigen Rollen** (Verifikation, Validierung, ISA) mit Blick auf eine
    spätere Zulassung.
-3. **Beitragsmodell:** CLA ja oder nein.
+4. **Beitragsmodell:** CLA ja oder nein.

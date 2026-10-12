@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Wöchentlich: Fuzzing mit längerer Laufzeit.
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -31,6 +35,14 @@ jobs:
         run: cargo doc --workspace --all-features --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings
+      - name: Rückverfolgbarkeit Anforderung → Code → Nachweis
+        run: cargo xtask trace --check
+      - name: Bericht zur Rückverfolgbarkeit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rueckverfolgbarkeit
+          path: docs/safety/traceability.md
 
   properties:
     name: Eigenschaftstests (Kern, RaSTA)
@@ -52,18 +64,78 @@ jobs:
           PROPTEST_CASES: "5000"
 
   no-std:
-    name: no_std-Build (Cortex-M)
+    name: no_std-Build (Cortex-M, Cortex-R)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [thumbv7em-none-eabihf, armv7r-none-eabihf]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain installieren
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Sicherheitsrelevante Crates ohne std und ohne Allokator bauen
+        run: >
+          cargo build --locked --target ${{ matrix.target }}
+          -p railit-types -p railit-topology -p railit-plan -p railit-rules -p railit-kernel
+          -p railit-movement -p railit-rasta -p railit-safety -p railit-embedded
+
+  kani:
+    name: Formale Nachweise (Kani)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain installieren
-        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target thumbv7em-none-eabihf
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal
+      - name: Kani installieren
+        run: |
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup
+      - name: Voter, Watchdog, Ausgabepuffer
+        run: cargo kani -p railit-safety
+      - name: Bitmengen, Zeit
+        run: cargo kani -p railit-types
+      - name: Telegramme des sicheren Rechners
+        run: cargo kani -p railit-embedded
+      - name: RaSTA und MD4
+        run: cargo kani -p railit-rasta -Z stubbing
+
+  fuzz:
+    name: Fuzzing (libFuzzer)
+    runs-on: ubuntu-latest
+    env:
+      # Bei jedem Lauf kurz, wöchentlich länger.
+      FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '600' || '30' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchains installieren
+        run: |
+          rustup toolchain install "$TOOLCHAIN" --profile minimal
+          rustup toolchain install nightly --profile minimal
       - uses: Swatinem/rust-cache@v2
-      - name: Sicherheitsrelevante Crates ohne std bauen
-        run: >
-          cargo build --locked --target thumbv7em-none-eabihf
-          -p railit-types -p railit-topology -p railit-plan -p railit-rules -p railit-kernel
-          -p railit-movement -p railit-rasta
+        with:
+          workspaces: |
+            .
+            fuzz
+      - name: cargo-fuzz installieren
+        run: cargo install --locked cargo-fuzz
+      - name: Startkorpus
+        run: |
+          cargo build --release --locked -p railit
+          sh fuzz/seed.sh
+      - name: Fuzz-Ziele ausführen
+        run: |
+          for target in $(cargo +nightly fuzz list); do
+            echo "::group::$target"
+            cargo +nightly fuzz run -O "$target" -- -max_total_time="$FUZZ_SECONDS" -rss_limit_mb=4096
+            echo "::endgroup::"
+          done
+      - name: Funde sichern
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-funde
+          path: fuzz/artifacts
 
   deny:
     name: Lizenzen & Advisories

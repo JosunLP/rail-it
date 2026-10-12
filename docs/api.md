@@ -29,7 +29,7 @@ cert_cn = "fdl-adorf"      # oder: Common Name des Client-Zertifikats
 | `beobachter` | lesen (Zustand, Plan, Ereignisse, Betriebsführung) |
 | `fahrdienstleiter` | lesen, Fahrstraßen, Weichen, Erlaubnisse, Hilfshandlungen |
 | `disponent` | lesen, Betriebsführung (`/v1/ops/…`) |
-| `instandhaltung` | lesen, Simulation (`/v1/sim/…`, Störungen der Feldanbindung), Auditprotokoll |
+| `instandhaltung` | lesen, Simulation (`/v1/sim/…`, Störungen der Feldanbindung), Auditprotokoll, Sicherheitsschicht (`/v1/safety/…`: Prüffehler, Wiederaufnahme, Rücksetzen) |
 | `projektierer` | lesen, Auditprotokoll |
 | `administration` | alles |
 
@@ -67,6 +67,10 @@ Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`). TLS:
 | DELETE | `/v1/sim/trains/{name}` | Zug entfernen | 200 / 400 |
 | POST | `/v1/sim/faults` | Störung setzen/aufheben, Body `{"kind","element","active"?}` | 200 / 404 |
 | GET | `/v1/etcs` | ETCS-Züge: `train`, `mode` (`stand_by`, `full_supervision`, `trip`), `authority` (siehe unten), `end`, `eoa_mm`, `danger_point_mm` | JSON-Liste |
+| GET | `/v1/safety` | Je Stellbereich: `area`, `redundancy` (`single`, `two_out_of_two`, `two_out_of_three`), `channels` (`channel`, `active`), `trip` (Grund der Abschaltung oder `null`) | JSON-Liste |
+| POST | `/v1/safety/faults` | Fehler in einen Kanal einbringen (Prüfung), Body `{"area"?,"channel","fault"}` mit `fault` aus `drop_inputs`, `stray_command`, `stall` | 200 / 400 |
+| POST | `/v1/safety/reintegrate` | Ausgeschlossenen Kanal wieder aufnehmen, Body `{"area"?,"channel"}` | 200 / 400 |
+| POST | `/v1/safety/reset` | Sicheren Zustand zurücksetzen (Neubeginn wie nach einem Neustart), Body `{"area"?}` | 200 / 400 |
 | GET | `/v1/field/links` | Verbindungen zu den Objektsteuerungen (nur mit `--field eulynx`) | JSON-Liste |
 | POST | `/v1/field/links/{Objektsteuerung}` | Übertragungsstrecke stören, Body `{"down"?,"loss_percent"?,"corrupt_percent"?,"delay_ms"?}`; `{}` hebt alle Störungen auf | 200 / 400 |
 
@@ -144,6 +148,7 @@ Jedes Ereignis trägt `time_ms` (Simulationszeit) und `type`:
 | `aux_pending` / `aux_executed` / `aux_expired` | `aux`, `op`, `operator` bzw. `counter` | Hilfshandlung angefordert, ausgeführt, verfallen |
 | `train_described`, `train_moved`, `train_left`, `train_erased`, `arrived`, `departed`, `route_requested`, `permission_requested`, `spawned`, `spawn_failed` | `train`, … (`"source":"ops"`) | Betriebsführung: Zugnummern, Halte mit `delay_s`, Anforderungen der Zuglenkung |
 | `train_registered`, `train_deregistered`, `authority_granted`, `authority_shortened`, `emergency_stop` | `train`, `end`, `eoa_mm` bzw. `reason` (`"source":"etcs"`) | RBC: Anmeldung, Fahrerlaubnis, Verkürzung, Notbremsung |
+| `safety` | `event` (`channel_excluded` mit `channel`, `divergence`; `tripped` mit `trip`), `area` | Sicherheitsschicht: Kanal ausgeschlossen, Abschaltung |
 | `sim` | `event`, `train`, … | Simulation: `train_stopped`, `train_started`, `train_left`, `train_arrived`, `train_derailed`, `point_trailed`, `signal_passed_at_danger`, `substitute_passed`, `level_crossing_not_closed` |
 
 ## Störungsarten der Simulation
@@ -175,6 +180,15 @@ zeigt je Verbindung `controller`, `interface`, `elements`, `up`, `discarded` (ve
 PDUs), `bad_telegrams` und die eingestellten `faults`. Fällt eine Verbindung aus, behandelt
 der Kern ihre Elemente nach der Meldezeit als gestört (REQ-COM-006).
 
+## Redundante Kanäle
+
+Mit `railitd --channels 2` (2-von-2) bzw. `--channels 3` (2-von-3) rechnet jeder Stellbereich
+in so vielen Kanälen; der Voter gibt nur übereinstimmende Ausgaben weiter. `--watchdog-ms N`
+überwacht die Rechenzeit je Zyklus. Ist die Sicherheitsschicht abgeschaltet, zeigt
+`/v1/state` `safe_state`, alle Signale stehen auf Halt und Anforderungen werden mit `409`
+abgelehnt, bis `/v1/safety/reset` den Bereich neu beginnen lässt. `railit safety` zeigt den
+Zustand auf der Kommandozeile.
+
 ## Journal
 
 Mit `railitd --journal DATEI [--checkpoint-every N]` schreibt der Dienst ein Betriebsjournal
@@ -201,6 +215,7 @@ Vertrag: [`proto/railit/v1/railit.proto`](../proto/railit/v1/railit.proto). Dien
 | `railit.v1.Simulation` | `ListTrains`, `AddTrain`, `RemoveTrain`, `SetFault` |
 | `railit.v1.Events` | `Subscribe` (Server-Streaming, optional nach `type` gefiltert) |
 | `railit.v1.Etcs` | `GetTrains` |
+| `railit.v1.Safety` | `GetSafety`, `InjectFault`, `Reintegrate`, `Reset` |
 | `railit.v1.Diagnostics` | `WhoAmI`, `GetPlan`, `GetAudit` |
 
 gRPC läuft über HTTP/2 auf dem Port der REST-API (ohne TLS als h2c, mit TLS per ALPN).

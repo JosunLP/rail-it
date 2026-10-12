@@ -23,6 +23,7 @@ members = [
     "crates/railit-import",
     "apps/railit",
     "apps/railitd",
+    "xtask",
 ]
 
 [workspace.package]

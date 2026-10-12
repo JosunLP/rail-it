@@ -26,7 +26,10 @@ Erkennung unerlaubter Besetzung, Signalbegriffe Ks und H/V, Journal und Replay) 
 Erlaubniswechsel, Zugnummernmeldung, Fahrplan, Zuglenkung, Disposition, gRPC-Vertrag,
 Benutzer mit Rollen, TLS/mTLS, Auditprotokoll) und Phase 4 (Europa: ETCS Level 2 mit
 RBC-Funktion und Mischbetrieb, Feldanbindung über EULYNX SCI und RaSTA, Import und Export von
-railML 3) sind umgesetzt.
+railML 3) und Phase 5 (Sicherheit und Embedded: redundante Kanäle mit Voter und Watchdog,
+Runtime für den sicheren Rechner auf Cortex-R, formale Nachweise mit Kani, Fuzzing,
+[Sicherheitsnachweis](docs/safety/safety-case.md) und automatische
+[Rückverfolgbarkeit](docs/safety/traceability.md)) sind umgesetzt.
 
 | Crate | Inhalt | |
 |-------|--------|---|
@@ -37,6 +40,8 @@ railML 3) sind umgesetzt.
 | `railit-rules` | Regelwerk-Schnittstelle, Lehrregelwerk | `no_std` |
 | `railit-kernel` | Sicherheitskern: Fahrwegsicherung, Hilfshandlungen, Invarianten, sicherer Zustand | `no_std`, ohne Allokator |
 | `railit-movement` | Signalbegriffe Ks und H/V und ETCS-Fahrerlaubnis aus dem Kernzustand | `no_std`, ohne Allokator |
+| `railit-safety` | Redundante Kanäle, Voter (2-von-2, 2-von-3), Watchdog, sicherer Zustand | `no_std`, ohne Allokator |
+| `railit-embedded` | Runtime für den sicheren Rechner (Cortex-R): Knoten mit Kanälen, Binärprotokoll über RaSTA | `no_std`, ohne Allokator |
 | `railit-etcs` | RBC-Funktion für ETCS Level 2: Anmeldung, Fahrerlaubnis über Bereichsgrenzen, Notbremsung | |
 | `railit-rasta` | RaSTA-Sicherheits- und Wiederholschicht nach EN 50159 | `no_std`, ohne Allokator |
 | `railit-adapters` | Feldanbindung über EULYNX SCI-P/-LS/-TDS/-LX und RaSTA zu simulierten Objektsteuerungen | |
@@ -45,6 +50,7 @@ railML 3) sind umgesetzt.
 | `railit-ops` | Zugnummernmeldung, Fahrplan, Zuglenkung, Selbstblock, Disposition | |
 | `railit-runtime` | Zyklus Kerne ↔ Feld für mehrere Stellbereiche, Zustandsbild, Szenarien, Schlüssel | |
 | `railit-import` | rail-it-TOML, railML 3 (Import und Export) | |
+| `railit-fuzz` | Fuzz-Ziele für alle Eingangsschnittstellen (mit `fuzz/` für cargo-fuzz) | |
 | `railitd` | Dienst mit REST/JSON-API, gRPC (`proto/railit/v1`), Ereignisstrom, Rollen, TLS/mTLS, Audit | |
 | `railit` | Kommandozeile (offline und online) | |
 
@@ -111,6 +117,14 @@ railit etcs             # angemeldete Züge, Betriebsart, Fahrerlaubnis (online)
 railitd --network examples/beispielstadt.toml --plan beispielstadt.rplan \
         --trusted-key railit.pub --field eulynx &
 
+# Redundanz: drei Kanäle je Stellbereich (2-von-3) mit Watchdog
+railitd --network examples/beispielstadt.toml --plan beispielstadt.rplan \
+        --trusted-key railit.pub --channels 3 --watchdog-ms 50 &
+railit safety                     # Redundanz, mitwählende Kanäle, Abschaltung
+railit safety fault 2 stall       # Prüfung: Kanal 2 fällt aus und wird ausgeschlossen
+railit safety reintegrate 2       # Kanal 2 übernimmt den Zustand und wählt wieder mit
+railit scenario run tests/scenarios/2[01]_*.toml
+
 # Netz als railML 3 ausgeben und wieder einlesen
 railit net export examples/nordbahn.toml --out nordbahn.railml
 railit net validate nordbahn.railml
@@ -130,13 +144,19 @@ Verbindungsfehler. Mit `--output json` liefern alle Befehle JSON.
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
-cargo build --target thumbv7em-none-eabihf \
+cargo build --target armv7r-none-eabihf \
       -p railit-types -p railit-topology -p railit-plan -p railit-rules -p railit-kernel \
-      -p railit-movement -p railit-rasta
+      -p railit-movement -p railit-rasta -p railit-safety -p railit-embedded
 cargo deny check
+cargo xtask trace            # Rückverfolgbarkeit prüfen, docs/safety/traceability.md erzeugen
 PROPTEST_CASES=10000 cargo test --release -p railit-kernel --all-features \
       --test invariants --test borders
 PROPTEST_CASES=10000 cargo test --release -p railit-rasta --test rasta
+
+# Formale Nachweise (Kani) und Fuzzing (Nightly, cargo-fuzz)
+cargo kani -p railit-safety && cargo kani -p railit-types && cargo kani -p railit-embedded
+cargo kani -p railit-rasta -Z stubbing
+sh fuzz/seed.sh && cargo +nightly fuzz run plan_image -- -max_total_time=60
 ```
 
 Die Toolchain ist in `rust-toolchain.toml` festgelegt. Die sicherheitsrelevanten Crates

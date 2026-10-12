@@ -1,0 +1,3 @@
+[alias]
+# Werkzeuge des Projekts, z. B. `cargo xtask trace` (Rückverfolgbarkeit).
+xtask = "run --quiet -p xtask --"

@@ -12,6 +12,8 @@ Anforderung → Code → Test (Konzept, Abschnitt 16).
 | [fahrerlaubnis.md](fahrerlaubnis.md) | `REQ-MOV`: Signalbegriffe Ks und H/V, ETCS-Fahrerlaubnis |
 | [etcs.md](etcs.md) | `REQ-ETCS`: RBC-Funktion für ETCS Level 2 |
 | [kommunikation.md](kommunikation.md) | `REQ-COM`: sichere Übertragung (RaSTA, EULYNX SCI) |
+| [sicherheitsschicht.md](sicherheitsschicht.md) | `REQ-SAF`: redundante Kanäle, Voter, Watchdog, formale Nachweise, Fuzzing |
+| [embedded.md](embedded.md) | `REQ-EMB`: sicherer Rechner (Cortex-R) |
 | [journal.md](journal.md) | `REQ-JRN`: Betriebsjournal und Replay |
 | [dienst.md](dienst.md) | `REQ-SVC`: Dienst, API und Bedienung |
 | [betrieb.md](betrieb.md) | `REQ-OPS`: Betriebsführung (Zugnummern, Fahrplan, Zuglenkung, Disposition) |

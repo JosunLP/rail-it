@@ -1,0 +1,13 @@
+# Anforderungen an den sicheren Rechner (`REQ-EMB`)
+
+Umgesetzt in `crates/railit-embedded` (Knoten, Zustandsspeicher, Binärprotokoll; `no_std`,
+ohne Allokator). Nachweise in `crates/railit-embedded/tests/node.rs`, den Modultests in
+`wire.rs`, dem Kani-Nachweis `proofs.rs`, dem Fuzz-Ziel `node_wire` und dem Build für
+`armv7r-none-eabihf` (Cortex-R) in der CI.
+
+| ID | Anforderung | Gefährdung | Nachweis |
+|----|-------------|------------|----------|
+| REQ-EMB-001 | Der Knoten rechnet den Kern in bis zu drei Kanälen mit Voter (REQ-SAF-001/002) ohne Betriebssystem und ohne Allokator; das Plan-Image wird ohne Kopie gelesen, der Zustand liegt in Speichern fester Größe. Ein Plan, der nicht in den Speicher passt, wird abgewiesen. Über RaSTA liefert der Knoten genau die Ausgaben des Kerns. | H-007, H-015 | `node_matches_reference_kernel`, `memory_capacity_is_checked`, Build für `armv7r-none-eabihf` in der CI |
+| REQ-EMB-002 | Den Zyklus stößt der Timer des Knotens an, nicht der Host. Bricht die Verbindung ab, rechnet der Knoten weiter: Die Meldungen fehlen, der Kern behandelt die Elemente nach der Meldezeit als gestört und nimmt die Fahrt zurück. Der Host baut die Verbindung neu auf. | H-005, H-014 | `link_loss_is_fail_safe` |
+| REQ-EMB-003 | Ausgaben gehen je Zyklus vollständig an den Host (`Begin` … `End` mit Anzahlen); der Host wendet nur vollständige, stimmige Zyklen an. Ein unlesbares Telegramm hinter gültigem Sicherheitscode und ein voller Sendepuffer bauen die Verbindung ab; verlorene Eingaben werden gemeldet. Handlungen an der Sicherheitsschicht (Fehler, Wiederaufnahme, Rücksetzen) laufen über dieselbe Verbindung. | H-014 | `safety_layer_over_the_wire`, `malformed_payload_drops_the_link`, `roundtrip_across_payloads`, `garbage_is_malformed`, Kani `packer_respects_the_payload_limit`, Fuzz-Ziel `node_wire` |
+| REQ-EMB-004 | Der Knoten hat einen eigenen Watchdog (REQ-SAF-005). | H-007, H-015 | `watchdog_trips_on_overrun` |
