@@ -14,6 +14,11 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use ureq::tls::{Certificate, ClientCert, PrivateKey, RootCerts, TlsConfig, TlsProvider};
 
+#[allow(missing_docs, unreachable_pub, clippy::all, clippy::pedantic)]
+mod pb {
+    include!(concat!(env!("OUT_DIR"), "/railit.v1.rs"));
+}
+
 const BEISPIELSTADT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/beispielstadt.toml"
@@ -457,6 +462,40 @@ fn mutual_tls_identifies_users_by_certificate() {
     let (status, body) = call(&fdl2, "POST", &confirm, None, None).unwrap();
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["aux"]["type"], "aux_executed");
+
+    // gRPC über dieselbe TLS-Verbindung (ALPN h2) mit Client-Zertifikat.
+    let key = KeyPair::generate().unwrap();
+    let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+    params.distinguished_name.push(DnType::CommonName, "fdl2");
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+    let cert = params.signed_by(&key, &issuer).unwrap();
+    let name = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let tls = tonic::transport::ClientTlsConfig::new()
+                .ca_certificate(tonic::transport::Certificate::from_pem(&pki.ca))
+                .identity(tonic::transport::Identity::from_pem(
+                    cert.pem(),
+                    key.serialize_pem(),
+                ))
+                .domain_name("localhost");
+            let channel = tonic::transport::Channel::from_shared(d.url.clone())
+                .unwrap()
+                .tls_config(tls)
+                .unwrap()
+                .connect()
+                .await
+                .unwrap();
+            pb::diagnostics_client::DiagnosticsClient::new(channel)
+                .who_am_i(pb::WhoAmIRequest {})
+                .await
+                .unwrap()
+                .into_inner()
+                .name
+        });
+    assert_eq!(name, "fdl2");
     drop(d);
 
     let text = std::fs::read_to_string(&audit).unwrap();

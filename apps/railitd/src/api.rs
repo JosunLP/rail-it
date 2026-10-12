@@ -125,11 +125,14 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/v1/sim/faults", post(fault))
         .route("/v1/whoami", get(whoami))
         .route("/v1/audit", get(audit))
+        .with_state(state.clone())
+        // gRPC `railit.v1` auf demselben Port, hinter derselben Anmeldung.
+        .merge(crate::grpc::router(&state.service))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
     Router::new()
         .route("/v1/health", get(health))
-        .merge(protected)
         .with_state(state)
+        .merge(protected)
 }
 
 async fn auth(State(state): State<AppState>, mut request: HttpRequest, next: Next) -> Response {
@@ -142,10 +145,22 @@ async fn auth(State(state): State<AppState>, mut request: HttpRequest, next: Nex
         .extensions()
         .get::<PeerIdentity>()
         .and_then(|p| p.0.as_deref());
+    // gRPC-Clients erwarten einen gRPC-Status statt einer JSON-Fehlerantwort.
+    let grpc = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("application/grpc"));
     let Some(principal) = state.auth.authenticate(bearer, cn) else {
+        if grpc {
+            return tonic::Status::unauthenticated("Anmeldung erforderlich").into_http();
+        }
         return ApiError(StatusCode::UNAUTHORIZED, "Anmeldung erforderlich".into()).into_response();
     };
     if !principal.may(Permission::Read) {
+        if grpc {
+            return tonic::Status::permission_denied("keine Leseberechtigung").into_http();
+        }
         return ApiError(StatusCode::FORBIDDEN, "keine Leseberechtigung".into()).into_response();
     }
     request.extensions_mut().insert(principal);

@@ -1,0 +1,300 @@
+// gRPC-Vertrag von rail-it, Version 1.
+//
+// Der Dienst `railitd` bietet diese Schnittstelle auf demselben Port wie die REST-API an
+// (HTTP/2; mit TLS per ALPN). Anmeldung und Rechte sind dieselben: Client-Zertifikat (mTLS)
+// oder `authorization: Bearer <token>` als Metadaten. Jede Bedienung prüft die Rolle des
+// Benutzers und landet im Auditprotokoll.
+//
+// Aufzählungswerte (Phasen, Signalbegriffe, Gründe) sind Zeichenketten wie in der REST-API,
+// z. B. "proceed", "conflict", "left". So bleiben beide Schnittstellen deckungsgleich.
+//
+// Eine Ablehnung durch den Stellwerkskern ist kein gRPC-Fehler: `Answer.accepted` ist dann
+// false und `reason` nennt den Grund. gRPC-Fehler bedeuten: NOT_FOUND (Element unbekannt),
+// INVALID_ARGUMENT, PERMISSION_DENIED (Rolle oder Stellbereich), UNAUTHENTICATED,
+// UNAVAILABLE (Engine oder Auditprotokoll), DEADLINE_EXCEEDED (keine Antwort des Kerns).
+
+syntax = "proto3";
+
+package railit.v1;
+
+// ── Stellwerk ────────────────────────────────────────────────────────────────────────────
+
+service Interlocking {
+  // Zustandsbild aller Stellbereiche.
+  rpc GetState(GetStateRequest) returns (State);
+  // Fahrstraße einstellen bzw. zurücknehmen.
+  rpc SetRoute(RouteRequest) returns (Answer);
+  rpc CancelRoute(RouteRequest) returns (Answer);
+  // Weiche einzeln umstellen.
+  rpc MovePoint(MovePointRequest) returns (Answer);
+  // Erlaubnis an einer Bereichsgrenze anfordern bzw. die Anforderung zurückziehen.
+  rpc RequestPermission(BorderRequest) returns (Answer);
+  rpc WithdrawPermission(BorderRequest) returns (Answer);
+  // Zählpflichtige Hilfshandlung anfordern und durch einen zweiten Bediener bestätigen.
+  rpc RequestAux(AuxRequest) returns (Answer);
+  rpc ConfirmAux(ConfirmAuxRequest) returns (Answer);
+}
+
+message GetStateRequest {}
+
+message RouteRequest {
+  string route = 1;
+}
+
+message MovePointRequest {
+  string point = 1;
+  // "left" oder "right".
+  string position = 2;
+}
+
+message BorderRequest {
+  // Adresse "Bereich>Nachbar", z. B. "Adorf>Strecke".
+  string border = 1;
+}
+
+message AuxRequest {
+  // "release_route", "reset_tvd", "substitute", "force_point", "take_permission".
+  string kind = 1;
+  string element = 2;
+  // Nur für "force_point": "left" oder "right".
+  string position = 3;
+  // Bedienernummer; nur ohne Benutzerverwaltung nötig.
+  optional uint32 operator = 4;
+}
+
+message ConfirmAuxRequest {
+  uint32 aux = 1;
+  // Stellbereich; nötig bei mehreren Bereichen.
+  string area = 2;
+  optional uint32 operator = 3;
+}
+
+// Antwort eines Stellwerkskerns.
+message Answer {
+  string area = 1;
+  bool accepted = 2;
+  // Grund der Ablehnung, z. B. "conflict", "no_permission".
+  string reason = 3;
+  // Betroffenes Element der Ablehnung.
+  string element = 4;
+  // Zugehöriges Ereignis einer Hilfshandlung.
+  optional AuxEvent aux = 5;
+}
+
+message AuxEvent {
+  // "aux_pending", "aux_executed", "aux_expired".
+  string type = 1;
+  uint32 aux = 2;
+  uint32 operator = 3;
+  uint64 counter = 4;
+}
+
+message State {
+  string network = 1;
+  uint64 time_ms = 2;
+  uint64 cycle = 3;
+  // Leer, solange kein Bereich im sicheren Zustand ist.
+  string safe_state = 4;
+  repeated AreaState areas = 5;
+  repeated RouteState routes = 6;
+  repeated SignalState signals = 7;
+  repeated PointState points = 8;
+  repeated TvdState tvds = 9;
+  uint64 aux_counter = 10;
+  // Vollständiges Zustandsbild als JSON (wie GET /v1/state).
+  string json = 11;
+}
+
+message AreaState {
+  string name = 1;
+  uint64 cycle = 2;
+  string safe_state = 3;
+  string plan_digest = 4;
+  repeated BorderState borders = 5;
+  uint64 aux_counter = 6;
+}
+
+message BorderState {
+  string name = 1;
+  bool holding = 2;
+  uint32 seq = 3;
+  bool offering = 4;
+  bool requested = 5;
+  bool approach_locked = 6;
+}
+
+message RouteState {
+  string area = 1;
+  string name = 2;
+  string start = 3;
+  string end = 4;
+  string phase = 5;
+}
+
+message SignalState {
+  string area = 1;
+  string name = 2;
+  string commanded = 3;
+  string picture = 4;
+  bool substitute = 5;
+}
+
+message PointState {
+  string area = 1;
+  string name = 2;
+  string report = 3;
+  string locked_by = 4;
+}
+
+message TvdState {
+  string area = 1;
+  string name = 2;
+  string occupancy = 3;
+  string locked_by = 4;
+}
+
+// ── Betriebsführung ──────────────────────────────────────────────────────────────────────
+
+service Operations {
+  rpc GetOperations(GetOperationsRequest) returns (OperationsState);
+  rpc SetArs(SetArsRequest) returns (Done);
+  rpc Describe(DescribeRequest) returns (Done);
+  rpc Erase(TrainRequest) returns (Done);
+  rpc Hold(TrainRequest) returns (Done);
+  rpc Release(TrainRequest) returns (Done);
+  rpc SetPlatform(SetPlatformRequest) returns (Done);
+  rpc Delay(DelayRequest) returns (Done);
+}
+
+message GetOperationsRequest {}
+
+message OperationsState {
+  bool ars = 1;
+  string timetable = 2;
+  repeated TrainOperation trains = 3;
+}
+
+message TrainOperation {
+  string number = 1;
+  string berth = 2;
+  bool left = 3;
+  bool timetabled = 4;
+  bool hold = 5;
+  string next_stop = 6;
+  string at_stop = 7;
+  optional int64 delay_s = 8;
+  uint64 extra_delay_s = 9;
+}
+
+message SetArsRequest {
+  bool on = 1;
+}
+
+message DescribeRequest {
+  string train = 1;
+  string signal = 2;
+}
+
+message TrainRequest {
+  string train = 1;
+}
+
+message SetPlatformRequest {
+  string train = 1;
+  string station = 2;
+  string platform = 3;
+}
+
+message DelayRequest {
+  string train = 1;
+  uint32 seconds = 2;
+}
+
+message Done {}
+
+// ── Simulation ───────────────────────────────────────────────────────────────────────────
+
+service Simulation {
+  rpc ListTrains(ListTrainsRequest) returns (TrainList);
+  rpc AddTrain(AddTrainRequest) returns (Done);
+  rpc RemoveTrain(TrainRequest) returns (Done);
+  rpc SetFault(FaultRequest) returns (Done);
+}
+
+message ListTrainsRequest {}
+
+message TrainList {
+  // Züge als JSON (wie GET /v1/sim/trains).
+  string json = 1;
+}
+
+message AddTrainRequest {
+  string name = 1;
+  string signal = 2;
+  uint32 length_m = 3;
+  uint32 speed_kmh = 4;
+  bool ignore_signals = 5;
+}
+
+message FaultRequest {
+  // "point_disturbed", "tvd_disturbed", "tvd_occupied", "signal_defective", "lx_disturbed".
+  string kind = 1;
+  string element = 2;
+  bool active = 3;
+}
+
+// ── Ereignisse ───────────────────────────────────────────────────────────────────────────
+
+service Events {
+  // Ereignisstrom: Kerne, Betriebsführung und Simulation. Zu langsame Empfänger verpassen
+  // Ereignisse, statt die Kerne zu bremsen.
+  rpc Subscribe(SubscribeRequest) returns (stream EventMessage);
+}
+
+message SubscribeRequest {
+  // Nur diese Arten (Feld "type"), leer: alle.
+  repeated string types = 1;
+}
+
+message EventMessage {
+  uint64 time_ms = 1;
+  string area = 2;
+  string type = 3;
+  // Ereignis als JSON wie im SSE-Strom.
+  string json = 4;
+}
+
+// ── Diagnose ─────────────────────────────────────────────────────────────────────────────
+
+service Diagnostics {
+  rpc WhoAmI(WhoAmIRequest) returns (User);
+  rpc GetPlan(GetPlanRequest) returns (Plan);
+  rpc GetAudit(GetAuditRequest) returns (Audit);
+}
+
+message WhoAmIRequest {}
+
+message User {
+  string name = 1;
+  repeated string roles = 2;
+  optional uint32 operator = 3;
+  repeated string areas = 4;
+}
+
+message GetPlanRequest {}
+
+message Plan {
+  // Pläne, Fahrstraßen und Elemente als JSON (wie GET /v1/plan).
+  string json = 1;
+}
+
+message GetAuditRequest {
+  uint32 last = 1;
+}
+
+message Audit {
+  uint64 records = 1;
+  string head = 2;
+  // Letzte Einträge als JSON-Liste.
+  string json = 3;
+}

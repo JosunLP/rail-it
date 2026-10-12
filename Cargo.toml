@@ -48,7 +48,7 @@ proptest = "1"
 sha2 = { version = "0.10", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-axum = "0.8"
+axum = { version = "0.8", features = ["http2"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ureq = { version = "3", default-features = false, features = ["json"] }
@@ -61,6 +61,11 @@ hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service"] }
 tower = { version = "0.5", features = ["util"] }
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "crypto"] }
+tonic = { version = "0.14", default-features = false, features = ["router", "codegen", "server"] }
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+prost = "0.14"
+protox = "0.10"
 ed25519-dalek = { version = "2", default-features = false, features = ["fast", "zeroize"] }
 
 [workspace.lints.rust]

@@ -19,6 +19,7 @@
 mod api;
 mod auth;
 mod engine;
+mod grpc;
 mod service;
 mod tls;
 
