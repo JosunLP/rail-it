@@ -1582,6 +1582,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "railit-safety"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "railit-import",
+ "railit-kernel",
+ "railit-plan",
+ "railit-planning",
+ "railit-rules",
+ "railit-types",
+ "serde",
+ "sha2",
+]
+
+[[package]]
 name = "railit-sim"
 version = "0.1.0"
 dependencies = [

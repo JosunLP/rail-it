@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 95706de24d507a1f9dd5e2e024b9d2d80a8edf3664486eeee4dd49b6cb00ecaa # shrinks to n = 2, faulty = 2, actions = [Fault(StrayCommand)]

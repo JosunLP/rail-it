@@ -7,6 +7,7 @@ members = [
     "crates/railit-planning",
     "crates/railit-rules",
     "crates/railit-kernel",
+    "crates/railit-safety",
     "crates/railit-movement",
     "crates/railit-journal",
     "crates/railit-sim",
@@ -37,6 +38,7 @@ railit-plan = { path = "crates/railit-plan" }
 railit-planning = { path = "crates/railit-planning" }
 railit-rules = { path = "crates/railit-rules" }
 railit-kernel = { path = "crates/railit-kernel" }
+railit-safety = { path = "crates/railit-safety" }
 railit-movement = { path = "crates/railit-movement" }
 railit-sim = { path = "crates/railit-sim" }
 railit-journal = { path = "crates/railit-journal" }
@@ -77,6 +79,7 @@ ed25519-dalek = { version = "2", default-features = false, features = ["fast", "
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)", "cfg(fuzzing)"] }
 missing_docs = "warn"
 unreachable_pub = "warn"
 

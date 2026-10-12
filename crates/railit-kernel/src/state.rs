@@ -342,7 +342,10 @@ impl Meta {
 }
 
 /// Veränderliche Sicht auf den Zustandsspeicher.
-#[derive(Debug)]
+///
+/// `Hash` deckt den gesamten Zustand ab; zwei Kanäle mit demselben Zustand haben denselben
+/// Hash (Voter, `railit-safety`).
+#[derive(Debug, Hash)]
 pub struct KernelState<'s> {
     pub(crate) points: &'s mut [PointState],
     pub(crate) tvds: &'s mut [TvdState],
@@ -418,6 +421,51 @@ impl<'s> KernelState<'s> {
             active,
             meta,
         })
+    }
+
+    /// Kürzere Sicht auf denselben Speicher.
+    pub fn reborrow(&mut self) -> KernelState<'_> {
+        KernelState {
+            points: self.points,
+            tvds: self.tvds,
+            signals: self.signals,
+            routes: self.routes,
+            lxs: self.lxs,
+            borders: self.borders,
+            aux: self.aux,
+            active: self.active,
+            meta: self.meta,
+        }
+    }
+
+    /// Übernimmt den gesamten Zustand eines anderen Speichers gleicher Größe (Wiederaufnahme
+    /// eines Kanals, REQ-SAF-003).
+    ///
+    /// # Errors
+    /// [`SafeStateReason::StateMismatch`], wenn die Größen verschieden sind; dann bleibt der
+    /// Zustand unverändert.
+    pub fn copy_from(&mut self, other: &KernelState<'_>) -> Result<(), SafeStateReason> {
+        if self.points.len() != other.points.len()
+            || self.tvds.len() != other.tvds.len()
+            || self.signals.len() != other.signals.len()
+            || self.routes.len() != other.routes.len()
+            || self.lxs.len() != other.lxs.len()
+            || self.borders.len() != other.borders.len()
+            || self.aux.len() != other.aux.len()
+            || self.active.len() != other.active.len()
+        {
+            return Err(SafeStateReason::StateMismatch);
+        }
+        self.points.copy_from_slice(other.points);
+        self.tvds.copy_from_slice(other.tvds);
+        self.signals.copy_from_slice(other.signals);
+        self.routes.copy_from_slice(other.routes);
+        self.lxs.copy_from_slice(other.lxs);
+        self.borders.copy_from_slice(other.borders);
+        self.aux.copy_from_slice(other.aux);
+        self.active.copy_from_slice(other.active);
+        *self.meta = *other.meta;
+        Ok(())
     }
 
     /// Setzt den gesamten Zustand auf den Anfangszustand zurück: keine Meldungen, alle

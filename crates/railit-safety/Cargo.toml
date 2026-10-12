@@ -1,0 +1,38 @@
+[package]
+name = "railit-safety"
+description = "Sicherheitsschicht von rail-it: redundante Kanäle, Voter (2-von-2, 2-von-3), Watchdog und sicherer Zustand, ohne std und ohne Allokation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+railit-types = { workspace = true }
+railit-plan = { workspace = true }
+railit-rules = { workspace = true }
+railit-kernel = { workspace = true }
+sha2 = { workspace = true }
+serde = { workspace = true, optional = true }
+
+[features]
+default = []
+# Zustandsspeicher und Ausgabepuffer auf Basis von Vec (Server).
+alloc = ["railit-kernel/alloc"]
+serde = ["dep:serde", "railit-kernel/serde"]
+
+[dev-dependencies]
+railit-kernel = { workspace = true, features = ["alloc"] }
+railit-plan = { workspace = true, features = ["alloc"] }
+railit-planning = { workspace = true }
+railit-import = { workspace = true }
+proptest = { workspace = true }
+
+[[test]]
+name = "voter"
+required-features = ["alloc"]
+
+[lints]
+workspace = true
