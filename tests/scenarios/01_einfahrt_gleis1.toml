@@ -21,10 +21,16 @@ timeout_s = 15
 expect = { accepted = true, signal = { A = "proceed" }, point = { W1 = "left" } }
 
 [[step]]
-note = "Zug fährt ein; Fahrstraße löst hinter ihm auf"
+note = "Zug fährt ein und erreicht den Zielabschnitt; der Durchrutschweg bleibt festgelegt"
+until = { route = { "A-N1" = "arrived" } }
+timeout_s = 120
+expect = { signal = { A = "stop" }, tvd = { T1 = "occupied" } }
+
+[[step]]
+note = "Nach der Auflösezeit ist auch der Durchrutschweg frei"
 until = { route = { "A-N1" = "idle" } }
 timeout_s = 120
-expect = { signal = { A = "stop" }, tvd = { TW = "clear", TW1 = "clear", T1 = "occupied" } }
+expect = { tvd = { TW = "clear", TW1 = "clear", T1 = "occupied" } }
 
 [[step]]
 note = "Zug hält vor N1"

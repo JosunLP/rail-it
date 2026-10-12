@@ -1,0 +1,26 @@
+[scenario]
+name = "Unerlaubte Besetzung und Haltüberfahrung"
+description = """
+Ein Abschnitt meldet besetzt, ohne dass eine Fahrt dorthin erlaubt ist; ein Zug überfährt
+das Halt zeigende Einfahrsignal. Der Kern meldet beides, bleibt aber betriebsbereit.
+"""
+network = "../../examples/beispielstadt.toml"
+
+[[step]]
+note = "Zug kommt von der Strecke vor F an: Einfahrabschnitt, kein Alarm"
+add_train = { name = "Gz2", signal = "F", length_m = 300, speed_kmh = 40 }
+wait_s = 1
+expect = { tvd = { TE = "occupied" }, train = { Gz2 = "waiting" }, no_alarm = ["unauthorized_occupancy"] }
+
+[[step]]
+note = "Zug überfährt A in Halt und besetzt TW1 ohne Fahrstraße"
+add_train = { name = "Lr9", signal = "A", length_m = 60, speed_kmh = 30, ignore_signals = true }
+until = { tvd = { TW1 = "occupied" } }
+timeout_s = 30
+expect = { alarm = ["unauthorized_occupancy"], sim_event = ["signal_passed_at_danger"], safe_state = false }
+
+[[step]]
+note = "Fahrzeug ohne Fahrstraße in Gleis 2"
+fault = { kind = "tvd_occupied", element = "T2" }
+wait_s = 1
+expect = { alarm = ["unauthorized_occupancy"], safe_state = false }

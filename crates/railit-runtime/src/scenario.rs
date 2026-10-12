@@ -25,23 +25,29 @@
 //! **Aktionen:** `set_route`, `cancel_route`, `move_point = { point, position }`,
 //! `add_train = { name, signal, length_m, speed_kmh, ignore_signals }`,
 //! `fault` / `clear_fault = { kind, element }` mit `kind` aus `point_disturbed`,
-//! `tvd_disturbed`, `tvd_occupied`, `signal_defective`.
+//! `tvd_disturbed`, `tvd_occupied`, `signal_defective`, `lx_disturbed`,
+//! `aux = { kind, element, position, operator }` (Hilfshandlung anfordern; `kind` aus
+//! `release_route`, `reset_tvd`, `substitute`, `force_point`),
+//! `confirm_aux = { operator }` (zuletzt angeforderte Hilfshandlung bestätigen).
 //!
-//! **Bedingungen** (`until`, `expect`): `route`, `signal` (befohlener Begriff), `point`,
-//! `tvd` (Meldung des Felds), `train`, `accepted`, `rejected` (Grund), `alarm` (Liste),
-//! `sim_event` (Liste), `safe_state`.
+//! **Bedingungen** (`until`, `expect`): `route`, `signal` (befohlener Begriff),
+//! `substitute` (Ersatzsignal ein/aus), `point`, `tvd` (Meldung des Felds), `lx` (Meldung
+//! des Bahnübergangs), `train`, `accepted`, `rejected` (Grund), `alarm` / `no_alarm`
+//! (Listen), `sim_event` (Liste), `aux_counter`, `safe_state`.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use railit_kernel::{Aspect, Occupancy, PointReport, Request, RequestId, RoutePhase};
+use railit_kernel::{
+    Aspect, AuxId, LxReport, Occupancy, OperatorId, PointReport, Request, RequestId, RoutePhase,
+};
 use railit_rules::GenericRules;
 use railit_sim::{Fault, SimConfig, SimEvent, Simulator, TrainSpec, TrainState};
 use railit_types::{Duration, Length, PointPosition, Speed};
 use serde::Deserialize;
 
-use crate::names::NamedEvent;
+use crate::names::{NamedAux, NamedEvent};
 use crate::runtime::Runtime;
 
 #[derive(Debug, Deserialize)]
@@ -64,6 +70,8 @@ struct Header {
     #[serde(default)]
     point_move_time_ms: Option<u64>,
     #[serde(default)]
+    lx_close_time_ms: Option<u64>,
+    #[serde(default)]
     points: BTreeMap<String, PointPosition>,
     #[serde(default)]
     rules: RulesEntry,
@@ -77,6 +85,9 @@ struct RulesEntry {
     point_move_timeout_ms: Option<u64>,
     report_timeout_ms: Option<u64>,
     cancel_time_lock_ms: Option<u64>,
+    overlap_release_time_ms: Option<u64>,
+    aux_confirm_timeout_ms: Option<u64>,
+    substitute_duration_ms: Option<u64>,
 }
 
 const fn default_cycle_ms() -> u64 {
@@ -105,6 +116,10 @@ struct Step {
     #[serde(default)]
     clear_fault: Option<FaultEntry>,
     #[serde(default)]
+    aux: Option<AuxEntry>,
+    #[serde(default)]
+    confirm_aux: Option<ConfirmEntry>,
+    #[serde(default)]
     wait_s: Option<f64>,
     #[serde(default)]
     until: Option<Conditions>,
@@ -132,6 +147,20 @@ struct TrainEntry {
     ignore_signals: bool,
 }
 
+// `deny_unknown_fields` verträgt sich nicht mit `flatten`.
+#[derive(Debug, Deserialize)]
+struct AuxEntry {
+    #[serde(flatten)]
+    op: NamedAux,
+    operator: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfirmEntry {
+    operator: u32,
+}
+
 #[derive(Copy, Clone, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum FaultKind {
@@ -139,6 +168,7 @@ enum FaultKind {
     TvdDisturbed,
     TvdOccupied,
     SignalDefective,
+    LxDisturbed,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,6 +186,10 @@ struct Conditions {
     #[serde(default)]
     signal: BTreeMap<String, Aspect>,
     #[serde(default)]
+    substitute: BTreeMap<String, bool>,
+    #[serde(default)]
+    lx: BTreeMap<String, LxReport>,
+    #[serde(default)]
     point: BTreeMap<String, PointReport>,
     #[serde(default)]
     tvd: BTreeMap<String, Occupancy>,
@@ -168,7 +202,11 @@ struct Conditions {
     #[serde(default)]
     alarm: Vec<String>,
     #[serde(default)]
+    no_alarm: Vec<String>,
+    #[serde(default)]
     sim_event: Vec<String>,
+    #[serde(default)]
+    aux_counter: Option<u64>,
     #[serde(default)]
     safe_state: Option<bool>,
 }
@@ -287,6 +325,9 @@ pub fn run_str(source: &str, base: &Path) -> Result<Outcome, ScenarioError> {
     if let Some(ms) = header.point_move_time_ms {
         cfg.point_move_time = Duration::from_millis(ms);
     }
+    if let Some(ms) = header.lx_close_time_ms {
+        cfg.lx_close_time = Duration::from_millis(ms);
+    }
     let mut sim = Simulator::new(net, cfg);
     for (name, pos) in &header.points {
         let id = plan
@@ -305,6 +346,15 @@ pub fn run_str(source: &str, base: &Path) -> Result<Outcome, ScenarioError> {
     if let Some(ms) = header.rules.cancel_time_lock_ms {
         rules.cancel_time_lock = Duration::from_millis(ms);
     }
+    if let Some(ms) = header.rules.overlap_release_time_ms {
+        rules.overlap_release_time = Duration::from_millis(ms);
+    }
+    if let Some(ms) = header.rules.aux_confirm_timeout_ms {
+        rules.aux_confirm_timeout = Duration::from_millis(ms);
+    }
+    if let Some(ms) = header.rules.substitute_duration_ms {
+        rules.substitute_duration = Duration::from_millis(ms);
+    }
 
     let mut ctx = Ctx {
         rt: Runtime::new(
@@ -318,6 +368,7 @@ pub fn run_str(source: &str, base: &Path) -> Result<Outcome, ScenarioError> {
         events: Vec::new(),
         sim_events: Vec::new(),
         requests: Vec::new(),
+        last_aux: None,
     };
     // Erster Zyklus: Grundstellung (alle Signale Halt, Meldungen übernommen).
     ctx.cycle();
@@ -342,6 +393,8 @@ struct Ctx {
     events: Vec<NamedEvent>,
     sim_events: Vec<SimEvent>,
     requests: Vec<u64>,
+    /// Zuletzt angeforderte Hilfshandlung (für `confirm_aux`).
+    last_aux: Option<u32>,
 }
 
 const fn sim_event_kind(e: &SimEvent) -> &'static str {
@@ -353,6 +406,8 @@ const fn sim_event_kind(e: &SimEvent) -> &'static str {
         SimEvent::TrainDerailed { .. } => "train_derailed",
         SimEvent::PointTrailed { .. } => "point_trailed",
         SimEvent::SignalPassedAtDanger { .. } => "signal_passed_at_danger",
+        SimEvent::SubstitutePassed { .. } => "substitute_passed",
+        SimEvent::LevelCrossingNotClosed { .. } => "level_crossing_not_closed",
     }
 }
 
@@ -378,7 +433,11 @@ impl Ctx {
         let out = self.rt.cycle(&self.pending);
         self.pending.clear();
         for e in &out.events {
-            self.events.push(self.rt.name_event(e));
+            let named = self.rt.name_event(e);
+            if let NamedEvent::AuxPending { aux, .. } = named {
+                self.last_aux = Some(aux);
+            }
+            self.events.push(named);
         }
         self.sim_events.extend(self.rt.field_mut().take_events());
     }
@@ -484,6 +543,7 @@ impl Ctx {
                 FaultKind::SignalDefective => {
                     plan.find_signal(&entry.element).map(Fault::SignalDefective)
                 }
+                FaultKind::LxDisturbed => plan.find_lx(&entry.element).map(Fault::LxDisturbed),
             };
             match (fault, on) {
                 (Some(f), true) => self.rt.field_mut().inject(f),
@@ -491,11 +551,29 @@ impl Ctx {
                 (None, _) => failures.push(format!("unbekanntes Element „{}“", entry.element)),
             }
         }
+        if let Some(a) = &step.aux {
+            match a.op.resolve(&plan) {
+                Ok(op) => self.request(Request::AuxRequest {
+                    op,
+                    operator: OperatorId(a.operator),
+                }),
+                Err(e) => failures.push(format!("Hilfshandlung: {e}")),
+            }
+        }
+        if let Some(c) = &step.confirm_aux {
+            match self.last_aux {
+                Some(aux) => self.request(Request::AuxConfirm {
+                    aux: AuxId(aux),
+                    operator: OperatorId(c.operator),
+                }),
+                None => failures.push("keine Hilfshandlung angefordert".into()),
+            }
+        }
         failures
     }
 
-    /// Prüft Bedingungen; gibt die Abweichungen zurück.
-    fn check(&self, c: &Conditions) -> Vec<String> {
+    /// Prüft die Zustände einzelner Elemente.
+    fn check_elements(&self, c: &Conditions) -> Vec<String> {
         let mut failures = Vec::new();
         let plan = *self.rt.plan();
         let state = self.rt.state();
@@ -521,6 +599,24 @@ impl Ctx {
                 failures.push(format!("Signal {name}: erwartet {want:?}, ist {got:?}"));
             }
         }
+        for (name, want) in &c.substitute {
+            let got = plan
+                .find_signal(name)
+                .and_then(railit_plan::SignalId::index)
+                .and_then(|i| state.signals().get(i))
+                .map(railit_kernel::SignalState::substitute);
+            if got != Some(*want) {
+                failures.push(format!("Ersatzsignal {name}: erwartet {want}, ist {got:?}"));
+            }
+        }
+        for (name, want) in &c.lx {
+            let got = plan.find_lx(name).and_then(|l| sim.lx_report(l));
+            if got != Some(*want) {
+                failures.push(format!(
+                    "Bahnübergang {name}: erwartet {want:?}, ist {got:?}"
+                ));
+            }
+        }
         for (name, want) in &c.point {
             let got = plan.find_point(name).and_then(|p| sim.point_report(p));
             if got != Some(*want) {
@@ -544,6 +640,13 @@ impl Ctx {
                 failures.push(format!("Zug {name}: erwartet {want:?}, ist {got:?}"));
             }
         }
+        failures
+    }
+
+    /// Prüft Bedingungen; gibt die Abweichungen zurück.
+    fn check(&self, c: &Conditions) -> Vec<String> {
+        let mut failures = self.check_elements(c);
+        let state = self.rt.state();
         let answers: Vec<&NamedEvent> = self
             .events
             .iter()
@@ -581,6 +684,21 @@ impl Ctx {
                 .any(|e| matches!(e, NamedEvent::Alarm { alarm: a, .. } if a == alarm));
             if !got {
                 failures.push(format!("Alarm „{alarm}“ erwartet"));
+            }
+        }
+        for alarm in &c.no_alarm {
+            let got = self
+                .events
+                .iter()
+                .any(|e| matches!(e, NamedEvent::Alarm { alarm: a, .. } if a == alarm));
+            if got {
+                failures.push(format!("Alarm „{alarm}“ nicht erwartet"));
+            }
+        }
+        if let Some(want) = c.aux_counter {
+            let got = state.meta().aux_counter();
+            if got != want {
+                failures.push(format!("Zählwerk: erwartet {want}, ist {got}"));
             }
         }
         for kind in &c.sim_event {

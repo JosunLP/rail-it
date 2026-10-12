@@ -1,0 +1,27 @@
+[scenario]
+name = "Hilfshandlung verfällt ohne Bestätigung"
+network = "../../examples/beispielstadt.toml"
+
+[scenario.rules]
+aux_confirm_timeout_ms = 10000
+
+[[step]]
+set_route = "A-N2"
+until = { route = { "A-N2" = "proceed" } }
+timeout_s = 15
+
+[[step]]
+note = "Hilfsauflösung angefordert, aber nicht bestätigt"
+aux = { kind = "release_route", element = "A-N2", operator = 7 }
+wait_s = 12
+
+[[step]]
+note = "Bestätigung nach Ablauf der Frist: Hilfshandlung unbekannt, nichts aufgelöst"
+confirm_aux = { operator = 8 }
+wait_s = 1
+expect = { rejected = "aux_unknown", route = { "A-N2" = "proceed" }, aux_counter = 0 }
+
+[[step]]
+note = "Nicht anwendbar: Abschnitt ist nicht gestört"
+aux = { kind = "reset_tvd", element = "T1", operator = 7 }
+expect = { rejected = "aux_not_applicable" }

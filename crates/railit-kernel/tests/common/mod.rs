@@ -8,7 +8,7 @@
 use railit_kernel::*;
 use railit_plan::{Plan, PlanView, RouteId, SignalId};
 use railit_rules::GenericRules;
-use railit_types::{Duration, PointId, PointPosition, Tick, TvdId};
+use railit_types::{Duration, LxId, PointId, PointPosition, Tick, TvdId};
 
 const EXAMPLE: &str = include_str!("../../../../examples/beispielstadt.toml");
 
@@ -31,6 +31,13 @@ pub struct Harness {
     pub points: Vec<PointReport>,
     pub tvds: Vec<Occupancy>,
     pub signals: Vec<SignalReport>,
+    pub lxs: Vec<LxReport>,
+    /// Bahnübergangsmeldungen vor dem letzten Zyklus (für Prüfungen).
+    pub lxs_before: Vec<LxReport>,
+    /// Signale mit eingeschaltetem Ersatzsignal.
+    pub substitutes: Vec<SignalId>,
+    /// Bahnübergänge, die Befehle ignorieren.
+    pub stuck_lxs: Vec<LxId>,
     /// Weichen, die Stellbefehle ignorieren.
     pub stuck_points: Vec<PointId>,
     /// Abschnitte, die nicht mehr melden.
@@ -55,6 +62,10 @@ impl Harness {
             points: vec![PointReport::Right; plan.point_count()],
             tvds: vec![Occupancy::Clear; plan.tvd_count()],
             signals: vec![SignalReport::Stop; plan.signal_count()],
+            lxs: vec![LxReport::Open; plan.lx_count()],
+            lxs_before: vec![LxReport::Open; plan.lx_count()],
+            substitutes: Vec::new(),
+            stuck_lxs: Vec::new(),
             stuck_points: Vec::new(),
             silent_tvds: Vec::new(),
             stuck_signals: Vec::new(),
@@ -84,6 +95,31 @@ impl Harness {
 
     pub fn signal(&self, name: &str) -> SignalId {
         self.plan().find_signal(name).unwrap()
+    }
+
+    pub fn lx(&self, name: &str) -> LxId {
+        self.plan().find_lx(name).unwrap()
+    }
+
+    pub fn set_lx(&mut self, name: &str, report: LxReport) {
+        let i = self.lx(name).index().unwrap();
+        self.lxs[i] = report;
+    }
+
+    pub fn lx_state(&self, name: &str) -> LxState {
+        self.state.level_crossings()[self.lx(name).index().unwrap()]
+    }
+
+    pub fn point_state(&self, name: &str) -> PointState {
+        self.state.points()[self.point(name).index().unwrap()]
+    }
+
+    pub fn tvd_state(&self, name: &str) -> TvdState {
+        self.state.tvds()[self.tvd(name).index().unwrap()]
+    }
+
+    pub fn signal_state(&self, name: &str) -> SignalState {
+        self.state.signals()[self.signal(name).index().unwrap()]
     }
 
     pub fn phase(&self, route: &str) -> RoutePhase {
@@ -127,6 +163,12 @@ impl Harness {
         for (i, r) in self.signals.iter().enumerate() {
             inputs.push(Input::Signal {
                 signal: SignalId::from_index(i).unwrap(),
+                report: *r,
+            });
+        }
+        for (i, r) in self.lxs.iter().enumerate() {
+            inputs.push(Input::LevelCrossing {
+                lx: LxId::from_index(i).unwrap(),
                 report: *r,
             });
         }
@@ -183,8 +225,45 @@ impl Harness {
                         }
                     }
                 }
+                Command::SetSubstitute { signal, on } => {
+                    self.substitutes.retain(|s| *s != signal);
+                    if on {
+                        self.substitutes.push(signal);
+                    }
+                }
+                Command::SetLevelCrossing { lx, close } => {
+                    if !self.stuck_lxs.contains(&lx) {
+                        self.lxs[lx.index().unwrap()] = if close {
+                            LxReport::Closed
+                        } else {
+                            LxReport::Open
+                        };
+                    }
+                }
+                Command::ResetTvd(tvd) => {
+                    self.tvds[tvd.index().unwrap()] = Occupancy::Clear;
+                }
             }
         }
+    }
+
+    /// Hilfshandlung anfordern (Bediener 1) und bestätigen (Bediener 2).
+    pub fn aux(&mut self, op: AuxOperation) -> Vec<Event> {
+        let mut events = self.step(&[Request::AuxRequest {
+            op,
+            operator: OperatorId(1),
+        }]);
+        let Some(aux) = events.iter().find_map(|e| match e {
+            Event::AuxPending { aux, .. } => Some(*aux),
+            _ => None,
+        }) else {
+            return events;
+        };
+        events.extend(self.step(&[Request::AuxConfirm {
+            aux,
+            operator: OperatorId(2),
+        }]));
+        events
     }
 
     pub fn set_route(&mut self, name: &str) -> Vec<Event> {

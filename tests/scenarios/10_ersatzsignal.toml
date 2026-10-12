@@ -1,0 +1,71 @@
+[scenario]
+name = "Ersatzsignal bei gestörter Gleisfreimeldung"
+description = """
+Die Gleisfreimeldung von T1 fällt aus, nachdem A-N1 Fahrt zeigt: Das Signal fällt auf Halt.
+Zwei Bediener schalten das Ersatzsignal Zs1; der Zug fährt daran vorbei, ohne dass eine
+Haltüberfahrung gemeldet wird. Danach werden Fahrstraße und Abschnitt mit Hilfshandlungen
+zurückgesetzt.
+"""
+network = "../../examples/beispielstadt.toml"
+
+[[step]]
+set_route = "A-N1"
+until = { route = { "A-N1" = "proceed" } }
+timeout_s = 15
+
+[[step]]
+note = "Gleisfreimeldung T1 gestört: Signalhaltfall"
+fault = { kind = "tvd_disturbed", element = "T1" }
+wait_s = 1
+expect = { route = { "A-N1" = "halted" }, signal = { A = "stop" }, alarm = ["signal_dropped"] }
+
+[[step]]
+note = "Zug kommt an und hält vor A"
+add_train = { name = "RE5", signal = "A", length_m = 100, speed_kmh = 40 }
+wait_s = 1
+expect = { train = { RE5 = "waiting" } }
+
+[[step]]
+note = "Ersatzsignal anfordern (Bediener 1)"
+aux = { kind = "substitute", element = "A-N1", operator = 1 }
+wait_s = 1
+expect = { accepted = true, substitute = { A = false } }
+
+[[step]]
+note = "Bestätigung durch denselben Bediener wird abgelehnt"
+confirm_aux = { operator = 1 }
+wait_s = 1
+expect = { rejected = "same_operator", substitute = { A = false } }
+
+[[step]]
+note = "Bediener 2 bestätigt: Zs1 leuchtet, Zug fährt vorbei"
+confirm_aux = { operator = 2 }
+until = { route = { "A-N1" = "occupied" } }
+timeout_s = 30
+expect = { aux_counter = 1, sim_event = ["substitute_passed"], no_alarm = ["signal_passed_at_danger", "unauthorized_occupancy"] }
+
+[[step]]
+note = "Zs1 ist mit der Einfahrt erloschen; Zug hält vor N1"
+until = { train = { RE5 = "waiting" } }
+timeout_s = 120
+expect = { substitute = { A = false }, route = { "A-N1" = "occupied" } }
+
+[[step]]
+note = "Fahrstraßenhilfsauflösung"
+aux = { kind = "release_route", element = "A-N1", operator = 2 }
+wait_s = 1
+
+[[step]]
+confirm_aux = { operator = 1 }
+wait_s = 1
+expect = { accepted = true, route = { "A-N1" = "idle" }, aux_counter = 2 }
+
+[[step]]
+note = "Achszählgrundstellung T1: der Zug wird wieder erkannt"
+aux = { kind = "reset_tvd", element = "T1", operator = 1 }
+wait_s = 1
+
+[[step]]
+confirm_aux = { operator = 2 }
+wait_s = 1
+expect = { accepted = true, aux_counter = 3, tvd = { T1 = "occupied" } }

@@ -1,0 +1,40 @@
+[scenario]
+name = "Bahnübergang"
+description = """
+N1-GE führt über den Bahnübergang BÜ1. Das Signal zeigt erst Fahrt, wenn der Bahnübergang
+geschlossen meldet; er öffnet erst, wenn der Zug ihn geräumt hat. Ein gestörter
+Bahnübergang verhindert die Fahrt.
+"""
+network = "../../examples/beispielstadt.toml"
+lx_close_time_ms = 8000
+
+[[step]]
+note = "Zug steht vor N1"
+add_train = { name = "RB3", signal = "N1", length_m = 100, speed_kmh = 60 }
+wait_s = 1
+expect = { train = { RB3 = "waiting" }, lx = { "BÜ1" = "open" } }
+
+[[step]]
+note = "N1-GE einstellen: Bahnübergang schließt, Signal bleibt zunächst Halt"
+set_route = "N1-GE"
+wait_s = 5
+expect = { accepted = true, lx = { "BÜ1" = "closing" }, signal = { N1 = "stop" }, route = { "N1-GE" = "locked" } }
+
+[[step]]
+note = "Bahnübergang geschlossen: Fahrt"
+until = { signal = { N1 = "proceed" } }
+timeout_s = 10
+expect = { lx = { "BÜ1" = "closed" } }
+
+[[step]]
+note = "Zug fährt über den geschlossenen Bahnübergang und verlässt das Netz"
+until = { train = { RB3 = "left" } }
+timeout_s = 200
+expect = { route = { "N1-GE" = "idle" }, lx = { "BÜ1" = "open" } }
+
+[[step]]
+note = "Gestörter Bahnübergang: Fahrstraße wird festgelegt, Signal bleibt Halt"
+fault = { kind = "lx_disturbed", element = "BÜ1" }
+set_route = "N1-GE"
+wait_s = 15
+expect = { accepted = true, route = { "N1-GE" = "locked" }, signal = { N1 = "stop" }, lx = { "BÜ1" = "disturbed" } }

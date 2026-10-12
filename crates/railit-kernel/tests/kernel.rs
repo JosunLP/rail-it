@@ -94,17 +94,34 @@ fn route_lifecycle_with_partial_release() {
     let events = h.step(&[Request::MovePoint(w1, PointPosition::Right)]);
     assert_eq!(rejected(&events), Some(Rejection::PointLocked(w1)));
 
-    // Zug erreicht T1 und räumt TW und TW1: TW1 und W1 werden aufgelöst …
+    // Zug räumt TW: TW1 bleibt verschlossen, solange der Zug darauf steht.
     h.set_tvd("TW", Occupancy::Clear);
-    h.set_tvd("T1", Occupancy::Occupied);
     h.step(&[]);
-    h.set_tvd("TW1", Occupancy::Clear);
+    assert_eq!(h.tvd_state("TW1").owner(), Some(h.route("A-N1")));
+
+    // Zug erreicht den Zielabschnitt T1: der ganze Fahrweg wird aufgelöst, der
+    // Durchrutschweg (TW2, TE, W2) bleibt festgelegt.
+    h.set_tvd("T1", Occupancy::Occupied);
     let events = h.step(&[]);
-    // … und weil der Zug den Zielabschnitt erreicht hat, die ganze Fahrstraße.
-    assert!(events.contains(&Event::RoutePhase(h.route("A-N1"), RoutePhase::Idle)));
-    let tvds = h.state.tvds();
-    assert!(tvds.iter().all(|t| t.owner().is_none()));
-    assert!(h.state.points().iter().all(|p| p.owner().is_none()));
+    let a_n1 = h.route("A-N1");
+    assert!(events.contains(&Event::RoutePhase(a_n1, RoutePhase::Arrived)));
+    assert!(h.state.tvds().iter().all(|t| t.owner().is_none()));
+    assert_eq!(h.tvd_state("TW2").overlap_owner(), Some(a_n1));
+    assert_eq!(h.tvd_state("TE").overlap_owner(), Some(a_n1));
+    assert!(h.point_state("W2").is_locked());
+    assert!(!h.point_state("W1").is_locked());
+    assert_eq!(
+        rejected(&h.cancel_route("A-N1")),
+        Some(Rejection::TrainInRoute)
+    );
+
+    // Nach der Auflösezeit des Durchrutschwegs ist alles frei.
+    h.set_tvd("TW1", Occupancy::Clear);
+    let events = h.step_after(30_000, &[]);
+    assert!(events.contains(&Event::RoutePhase(a_n1, RoutePhase::Idle)));
+    assert!(h.state.tvds().iter().all(|t| t.overlap_owner().is_none()));
+    assert!(h.state.points().iter().all(|p| !p.is_locked()));
+    assert!(h.state.signals().iter().all(|s| s.stop_holds() == 0));
 
     // Der Zug steht in T1: eine neue Fahrstraße dorthin ist nicht möglich.
     let events = h.set_route("A-N1");
@@ -386,16 +403,22 @@ fn state_buffers_must_match_plan() {
     let mut tvds = vec![TvdState::default(); plan.tvd_count()];
     let mut signals = vec![SignalState::default(); plan.signal_count()];
     let mut routes = vec![RouteState::default(); plan.route_count()];
+    let mut lxs = vec![LxState::default(); plan.lx_count()];
+    let mut aux = vec![None; AUX_SLOTS];
     let mut active = vec![0u64; plan.route_set_words()];
     let mut meta = Meta::default();
     let err = KernelState::new(
         &plan,
-        &mut points,
-        &mut tvds,
-        &mut signals,
-        &mut routes,
-        &mut active,
-        &mut meta,
+        Buffers {
+            points: &mut points,
+            tvds: &mut tvds,
+            signals: &mut signals,
+            routes: &mut routes,
+            lxs: &mut lxs,
+            aux: &mut aux,
+            active: &mut active,
+            meta: &mut meta,
+        },
     )
     .unwrap_err();
     assert_eq!(err, SafeStateReason::StateMismatch);

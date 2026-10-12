@@ -15,15 +15,18 @@
 //! - An Weichen folgt er der aktuellen Lage. Läuft die Weiche um, entgleist er; fährt er
 //!   von einem Strang auf eine falsch liegende Weiche, schneidet er sie auf.
 //! - An einer Netzgrenze verlässt er das Netz, am Prellbock bleibt er stehen.
+//! - Leuchtet an einem Halt zeigenden Signal das Ersatzsignal (Zs1), fährt er vorbei.
+//! - Bahnübergänge schließen mit einer Schließzeit; befährt ein Zug einen nicht
+//!   geschlossenen Bahnübergang, meldet der Simulator das.
 
 use std::collections::VecDeque;
 use std::fmt;
 
-use railit_kernel::{Aspect, Command, Input, Occupancy, PointReport, SignalReport};
+use railit_kernel::{Aspect, Command, Input, LxReport, Occupancy, PointReport, SignalReport};
 use railit_topology::{
     Direction, NodeRef, Port, PortRef, SignalKind, TerminalKind, Topology, TvdMember,
 };
-use railit_types::{Duration, Length, PointId, PointPosition, SignalId, Speed, Tick, TvdId};
+use railit_types::{Duration, Length, LxId, PointId, PointPosition, SignalId, Speed, Tick, TvdId};
 use serde::{Deserialize, Serialize};
 
 /// Parameter des Simulators.
@@ -33,6 +36,8 @@ pub struct SimConfig {
     pub point_move_time: Duration,
     /// Länge, mit der eine Weiche bei Zugfahrten gerechnet wird.
     pub point_length: Length,
+    /// Schließzeit eines Bahnübergangs (Gelblicht, Rotlicht, Schranken).
+    pub lx_close_time: Duration,
 }
 
 impl Default for SimConfig {
@@ -40,6 +45,7 @@ impl Default for SimConfig {
         Self {
             point_move_time: Duration::from_millis(4_000),
             point_length: Length::from_mm(30_000),
+            lx_close_time: Duration::from_millis(8_000),
         }
     }
 }
@@ -86,6 +92,8 @@ pub enum Fault {
     TvdOccupied(TvdId),
     /// Signal ist defekt.
     SignalDefective(SignalId),
+    /// Bahnübergang meldet Störung.
+    LxDisturbed(LxId),
 }
 
 /// Ereignis des Simulators.
@@ -125,6 +133,20 @@ pub enum SimEvent {
         train: String,
         /// Weiche.
         point: String,
+    },
+    /// Zug ist am Ersatzsignal (Zs1) vorbeigefahren.
+    SubstitutePassed {
+        /// Zug.
+        train: String,
+        /// Signal.
+        signal: String,
+    },
+    /// Zug hat einen nicht geschlossenen Bahnübergang befahren.
+    LevelCrossingNotClosed {
+        /// Zug.
+        train: String,
+        /// Bahnübergang.
+        lx: String,
     },
     /// Zug hat ein Halt zeigendes Signal überfahren.
     SignalPassedAtDanger {
@@ -186,6 +208,14 @@ struct SimPoint {
 struct SimSignal {
     aspect: Aspect,
     defective: bool,
+    substitute: bool,
+}
+
+#[derive(Clone, Debug)]
+struct SimLx {
+    closed: bool,
+    closing_until: Option<Tick>,
+    disturbed: bool,
 }
 
 /// Ein Element auf dem Weg eines Zuges.
@@ -220,6 +250,7 @@ pub struct Simulator {
     now: Tick,
     points: Vec<SimPoint>,
     signals: Vec<SimSignal>,
+    lxs: Vec<SimLx>,
     tvd_faults: Vec<Option<Occupancy>>,
     trains: Vec<Train>,
     events: Vec<SimEvent>,
@@ -254,9 +285,18 @@ impl Simulator {
         let signals = vec![
             SimSignal {
                 aspect: Aspect::Stop,
-                defective: false
+                defective: false,
+                substitute: false
             };
             net.signals().len()
+        ];
+        let lxs = vec![
+            SimLx {
+                closed: false,
+                closing_until: None,
+                disturbed: false
+            };
+            net.level_crossings().len()
         ];
         let tvd_faults = vec![None; net.tvds().len()];
         Self {
@@ -265,6 +305,7 @@ impl Simulator {
             now: Tick::ZERO,
             points,
             signals,
+            lxs,
             tvd_faults,
             trains: Vec::new(),
             events: Vec::new(),
@@ -311,6 +352,28 @@ impl Simulator {
         })
     }
 
+    /// Leuchtet das Ersatzsignal?
+    pub fn substitute(&self, signal: SignalId) -> bool {
+        signal
+            .index()
+            .and_then(|i| self.signals.get(i))
+            .is_some_and(|s| s.substitute)
+    }
+
+    /// Meldung eines Bahnübergangs.
+    pub fn lx_report(&self, lx: LxId) -> Option<LxReport> {
+        let l = self.lxs.get(lx.index()?)?;
+        Some(if l.disturbed {
+            LxReport::Disturbed
+        } else if l.closing_until.is_some() {
+            LxReport::Closing
+        } else if l.closed {
+            LxReport::Closed
+        } else {
+            LxReport::Open
+        })
+    }
+
     /// Meldung eines Gleisfreimeldeabschnitts.
     pub fn occupancy(&self, tvd: TvdId) -> Option<Occupancy> {
         if let Some(fault) = *self.tvd_faults.get(tvd.index()?)? {
@@ -350,6 +413,11 @@ impl Simulator {
                 inputs.push(Input::Signal { signal: id, report });
             }
         }
+        for (id, _) in self.net.level_crossings() {
+            if let Some(report) = self.lx_report(id) {
+                inputs.push(Input::LevelCrossing { lx: id, report });
+            }
+        }
         inputs
     }
 
@@ -372,6 +440,37 @@ impl Simulator {
                 Command::SetSignal { signal, aspect } => {
                     if let Some(s) = signal.index().and_then(|i| self.signals.get_mut(i)) {
                         s.aspect = aspect;
+                    }
+                }
+                Command::SetSubstitute { signal, on } => {
+                    if let Some(s) = signal.index().and_then(|i| self.signals.get_mut(i))
+                        && !s.defective
+                    {
+                        s.substitute = on;
+                    }
+                }
+                Command::SetLevelCrossing { lx, close } => {
+                    let until = self
+                        .now
+                        .checked_add(self.cfg.lx_close_time)
+                        .unwrap_or(self.now);
+                    if let Some(l) = lx.index().and_then(|i| self.lxs.get_mut(i))
+                        && !l.disturbed
+                    {
+                        if close && !l.closed && l.closing_until.is_none() {
+                            l.closing_until = Some(until);
+                        } else if !close {
+                            l.closed = false;
+                            l.closing_until = None;
+                        }
+                    }
+                }
+                Command::ResetTvd(tvd) => {
+                    // Achszählgrundstellung: Eine Störung des Zählpunkts wird aufgehoben.
+                    if let Some(f) = tvd.index().and_then(|i| self.tvd_faults.get_mut(i))
+                        && *f == Some(Occupancy::Disturbed)
+                    {
+                        *f = None;
                     }
                 }
             }
@@ -398,6 +497,11 @@ impl Simulator {
             Fault::SignalDefective(s) => {
                 if let Some(s) = s.index().and_then(|i| self.signals.get_mut(i)) {
                     s.defective = on;
+                }
+            }
+            Fault::LxDisturbed(l) => {
+                if let Some(l) = l.index().and_then(|i| self.lxs.get_mut(i)) {
+                    l.disturbed = on;
                 }
             }
             Fault::TvdDisturbed(t) | Fault::TvdOccupied(t) => {
@@ -535,6 +639,14 @@ impl Simulator {
                 p.moving = None;
             }
         }
+        for l in &mut self.lxs {
+            if let Some(until) = l.closing_until
+                && now >= until
+            {
+                l.closed = true;
+                l.closing_until = None;
+            }
+        }
         let mut trains = std::mem::take(&mut self.trains);
         for t in &mut trains {
             self.move_train(t, dt);
@@ -555,6 +667,7 @@ impl Simulator {
                 s.direction == dir
                     && delimits(s.kind)
                     && self.signal_report(*id) != Some(SignalReport::Proceed)
+                    && !self.substitute(*id)
             })
             .map(|(id, s)| {
                 let pos = u64::from(s.position.as_mm());
@@ -600,6 +713,8 @@ impl Simulator {
                 break;
             }
             if t.state == TrainState::Waiting {
+                // Anfahren am Signal: Ist es das Ersatzsignal, das die Fahrt erlaubt?
+                self.passing(t, &seg, t.head, t.head);
                 t.state = TrainState::Running;
                 self.events.push(SimEvent::TrainStarted {
                     train: t.name.clone(),
@@ -628,6 +743,7 @@ impl Simulator {
                 });
             }
             let advance_by = remaining.min(limit.saturating_sub(t.head));
+            self.passing(t, &seg, t.head, t.head.saturating_add(advance_by));
             t.head += advance_by;
             remaining -= advance_by;
 
@@ -640,6 +756,52 @@ impl Simulator {
             }
         }
         self.trim_tail(t);
+    }
+
+    /// Meldet, was die Zugspitze zwischen `from` (ausschließlich) und `to` (einschließlich)
+    /// passiert: Bahnübergänge, die nicht geschlossen sind, und Ersatzsignale. Mit
+    /// `from == to` (Anfahren aus dem Stand) zählt ein Signal genau an dieser Stelle.
+    fn passing(&mut self, t: &Train, seg: &Seg, from: u64, to: u64) {
+        let NodeRef::Track(track) = seg.node else {
+            return;
+        };
+        let dir = travel(seg.entry);
+        let offset = |pos: Length| {
+            let pos = u64::from(pos.as_mm());
+            if dir == Direction::AToB {
+                pos
+            } else {
+                seg.len.saturating_sub(pos)
+            }
+        };
+        let within = |o: u64| (o > from && o <= to) || (from == to && o == from);
+        let mut events = Vec::new();
+        for (id, l) in self.net.level_crossings_on(track) {
+            let o = offset(l.position);
+            if from < to && within(o) && self.lx_report(id) != Some(LxReport::Closed) {
+                events.push(SimEvent::LevelCrossingNotClosed {
+                    train: t.name.clone(),
+                    lx: l.name.clone(),
+                });
+            }
+        }
+        // Am Signal steht die Spitze genau an dessen Position; vorbeigefahren ist sie, sobald
+        // sie sich von dort weiterbewegt.
+        for (id, s) in self.net.signals_on(track) {
+            let o = offset(s.position);
+            if s.direction == dir
+                && delimits(s.kind)
+                && within(o)
+                && self.substitute(id)
+                && self.signal_report(id) != Some(SignalReport::Proceed)
+            {
+                events.push(SimEvent::SubstitutePassed {
+                    train: t.name.clone(),
+                    signal: s.name.clone(),
+                });
+            }
+        }
+        self.events.extend(events);
     }
 
     /// Betritt das nächste Element. `false`, wenn der Zug nicht weiterfahren kann.

@@ -1,6 +1,6 @@
 //! Eingaben, Befehle und Ereignisse des Kerns.
 
-use railit_types::{PointId, PointPosition, RouteId, SignalId, TvdId};
+use railit_types::{LxId, PointId, PointPosition, RouteId, SignalId, TvdId};
 
 /// Meldung einer Weiche.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -63,6 +63,53 @@ pub enum SignalReport {
     Defective,
 }
 
+/// Meldung eines Bahnübergangs.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum LxReport {
+    /// Geöffnet (Straßenverkehr frei).
+    Open,
+    /// Schließvorgang läuft.
+    Closing,
+    /// Geschlossen und gesichert.
+    Closed,
+    /// Gestört.
+    Disturbed,
+}
+
+/// Bedienerkennung für zählpflichtige Hilfshandlungen.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct OperatorId(pub u32);
+
+/// Kennung einer angeforderten Hilfshandlung.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct AuxId(pub u32);
+
+/// Zählpflichtige Hilfshandlung (Konzept, Abschnitt 10.6).
+///
+/// Hilfshandlungen heben Schutzmechanismen gezielt auf. Sie werden nur ausgeführt, wenn ein
+/// **zweiter, anderer** Bediener sie innerhalb der Bestätigungsfrist bestätigt; jede
+/// Ausführung erhöht das Zählwerk.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum AuxOperation {
+    /// Fahrstraßenhilfsauflösung: löst eine Fahrstraße samt Durchrutschweg sofort auf.
+    ReleaseRoute(RouteId),
+    /// Achszählgrundstellung: setzt einen gestörten, unverschlossenen Abschnitt zurück.
+    ResetTvd(TvdId),
+    /// Ersatzsignal (Zs1) für eine festgelegte Fahrstraße, deren Signal nicht Fahrt zeigen
+    /// kann.
+    Substitute(RouteId),
+    /// Umstellen einer unverschlossenen Weiche in einem gestörten Abschnitt.
+    ForcePoint(PointId, PointPosition),
+}
+
 /// Signalbegriff, den der Kern befiehlt.
 ///
 /// Phase 1 unterscheidet nur Halt und Fahrt. Die Abbildung auf Ks-/H/V-Begriffe und
@@ -95,6 +142,20 @@ pub enum Request {
     CancelRoute(RouteId),
     /// Einzelne, nicht verschlossene Weiche umstellen.
     MovePoint(PointId, PointPosition),
+    /// Hilfshandlung anfordern (erster Bediener).
+    AuxRequest {
+        /// Hilfshandlung.
+        op: AuxOperation,
+        /// Anfordernder Bediener.
+        operator: OperatorId,
+    },
+    /// Hilfshandlung bestätigen (zweiter Bediener).
+    AuxConfirm {
+        /// Kennung aus [`Event::AuxPending`].
+        aux: AuxId,
+        /// Bestätigender Bediener.
+        operator: OperatorId,
+    },
 }
 
 /// Eingabe eines Zyklus.
@@ -122,6 +183,13 @@ pub enum Input {
         signal: SignalId,
         /// Meldung.
         report: SignalReport,
+    },
+    /// Meldung eines Bahnübergangs.
+    LevelCrossing {
+        /// Bahnübergang.
+        lx: LxId,
+        /// Meldung.
+        report: LxReport,
     },
     /// Bedienanforderung.
     Request {
@@ -151,6 +219,22 @@ pub enum Command {
         /// Begriff.
         aspect: Aspect,
     },
+    /// Ersatzsignal (Zs1) ein- oder ausschalten.
+    SetSubstitute {
+        /// Signal.
+        signal: SignalId,
+        /// Ein oder aus.
+        on: bool,
+    },
+    /// Bahnübergang schließen oder öffnen.
+    SetLevelCrossing {
+        /// Bahnübergang.
+        lx: LxId,
+        /// Schließen (`true`) oder öffnen.
+        close: bool,
+    },
+    /// Gleisfreimeldeabschnitt zurücksetzen (Achszählgrundstellung).
+    ResetTvd(TvdId),
 }
 
 /// Phase einer Fahrstraße (Konzept, Abschnitt 10.2).
@@ -169,6 +253,9 @@ pub enum RoutePhase {
     Proceed,
     /// Ein Zug befährt die Fahrstraße; Abschnitte werden hinter ihm aufgelöst.
     Occupied,
+    /// Der Zug hat das Ziel erreicht; der Durchrutschweg bleibt bis zu seiner Auflösung
+    /// festgelegt.
+    Arrived,
     /// Zurückgenommen, Zeitverschluss läuft.
     Cancelling,
     /// Signal ist wegen einer Störung auf Halt gefallen; nur Rücknahme möglich.
@@ -198,6 +285,18 @@ pub enum Rejection {
     TrainInRoute,
     /// Der Kern ist im sicheren Zustand.
     SafeState,
+    /// Das Startsignal wird als Flankenschutz in Halt gehalten.
+    SignalHeld(SignalId),
+    /// Alle Plätze für offene Hilfshandlungen sind belegt.
+    AuxBusy,
+    /// Die Hilfshandlung ist unbekannt oder bereits erledigt.
+    AuxUnknown,
+    /// Die Bestätigungsfrist ist abgelaufen.
+    AuxExpired,
+    /// Anforderung und Bestätigung stammen vom selben Bediener.
+    SameOperator,
+    /// Die Voraussetzungen der Hilfshandlung sind nicht erfüllt.
+    AuxNotApplicable,
 }
 
 /// Störungs- und Gefahrenmeldung.
@@ -217,6 +316,11 @@ pub enum Alarm {
     SignalMismatch(SignalId),
     /// Eine Meldung betrifft ein Element, das es im Plan nicht gibt.
     UnknownElement,
+    /// Ein Abschnitt wurde besetzt, ohne dass eine Fahrt dorthin erlaubt war
+    /// (z. B. Haltüberfahrung, Fahrt in den Durchrutschweg, Fahrzeug ohne Fahrstraße).
+    UnauthorizedOccupancy(TvdId),
+    /// Ein Zug ist an einem Halt zeigenden Signal vorbeigefahren.
+    SignalPassedAtDanger(RouteId),
 }
 
 /// Ereignis eines Zyklus.
@@ -232,6 +336,26 @@ pub enum Event {
     RoutePhase(RouteId, RoutePhase),
     /// Störungs- oder Gefahrenmeldung.
     Alarm(Alarm),
+    /// Hilfshandlung angefordert; wartet auf Bestätigung durch einen zweiten Bediener.
+    AuxPending {
+        /// Kennung für die Bestätigung.
+        aux: AuxId,
+        /// Hilfshandlung.
+        op: AuxOperation,
+        /// Anfordernder Bediener.
+        operator: OperatorId,
+    },
+    /// Hilfshandlung ausgeführt.
+    AuxExecuted {
+        /// Kennung.
+        aux: AuxId,
+        /// Hilfshandlung.
+        op: AuxOperation,
+        /// Stand des Zählwerks nach der Ausführung.
+        counter: u64,
+    },
+    /// Hilfshandlung verfallen (nicht rechtzeitig bestätigt).
+    AuxExpired(AuxId),
 }
 
 /// Grund für den Übergang in den sicheren Zustand.
@@ -253,6 +377,15 @@ pub enum SafeStateReason {
     UnsafeProceed(SignalId),
     /// Stellbefehl an eine verschlossene Weiche.
     LockedPointCommanded(PointId),
+    /// Stellbefehl an eine Weiche in einem nicht freien Abschnitt.
+    PointMovedUnderOccupancy(PointId),
+    /// Haltezähler oder Lagenverschluss stimmen nicht mit den eingestellten Fahrstraßen
+    /// überein.
+    HoldMismatch,
+    /// Ein Bahnübergang soll öffnen, obwohl eine Fahrstraße ihn braucht.
+    UnsafeLevelCrossing(LxId),
+    /// Ersatzsignal ohne passende festgelegte Fahrstraße.
+    UnsafeSubstitute(SignalId),
 }
 
 /// Empfänger der Ausgaben eines Zyklus.

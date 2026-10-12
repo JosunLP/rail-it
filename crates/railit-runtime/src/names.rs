@@ -1,11 +1,12 @@
 //! Zustand und Ereignisse mit fachlichen Namen statt IDs.
 
 use railit_kernel::{
-    Alarm, Aspect, Event, Occupancy, OwnedState, PointReport, Rejection, RoutePhase, SignalReport,
+    Alarm, Aspect, AuxOperation, Event, LxReport, Occupancy, OwnedState, PointReport, Rejection,
+    RoutePhase, SignalReport,
 };
 use railit_plan::{PlanView, RouteEnd};
-use railit_types::{PointId, PointPosition, RouteId, SignalId, Tick, TvdId};
-use serde::Serialize;
+use railit_types::{LxId, PointId, PointPosition, RouteId, SignalId, Tick, TvdId};
+use serde::{Deserialize, Serialize};
 
 fn point_name(plan: &PlanView<'_>, id: PointId) -> String {
     plan.point_name(id).unwrap_or("?").to_string()
@@ -21,6 +22,79 @@ fn tvd_name(plan: &PlanView<'_>, id: TvdId) -> String {
 
 fn route_name(plan: &PlanView<'_>, id: RouteId) -> String {
     plan.route_name(id).unwrap_or("?").to_string()
+}
+
+fn lx_name(plan: &PlanView<'_>, id: LxId) -> String {
+    plan.lx_name(id).unwrap_or("?").to_string()
+}
+
+/// Art einer Hilfshandlung.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuxKind {
+    /// Fahrstraßenhilfsauflösung (Element: Fahrstraße).
+    ReleaseRoute,
+    /// Achszählgrundstellung (Element: Abschnitt).
+    ResetTvd,
+    /// Ersatzsignal (Element: Fahrstraße).
+    Substitute,
+    /// Weiche im gestörten Abschnitt umstellen (Element: Weiche, dazu die Lage).
+    ForcePoint,
+}
+
+/// Hilfshandlung mit fachlichen Namen.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamedAux {
+    /// Art.
+    pub kind: AuxKind,
+    /// Betroffenes Element.
+    pub element: String,
+    /// Ziellage (nur bei `force_point`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<PointPosition>,
+}
+
+impl NamedAux {
+    /// Übersetzt eine Hilfshandlung des Kerns.
+    pub fn new(plan: &PlanView<'_>, op: AuxOperation) -> Self {
+        let (kind, element, position) = match op {
+            AuxOperation::ReleaseRoute(r) => (AuxKind::ReleaseRoute, route_name(plan, r), None),
+            AuxOperation::ResetTvd(t) => (AuxKind::ResetTvd, tvd_name(plan, t), None),
+            AuxOperation::Substitute(r) => (AuxKind::Substitute, route_name(plan, r), None),
+            AuxOperation::ForcePoint(p, pos) => {
+                (AuxKind::ForcePoint, point_name(plan, p), Some(pos))
+            }
+        };
+        Self {
+            kind,
+            element,
+            position,
+        }
+    }
+
+    /// Löst die Namen gegen den Plan auf.
+    ///
+    /// # Errors
+    /// Beschreibung, wenn das Element unbekannt ist oder die Lage fehlt.
+    pub fn resolve(&self, plan: &PlanView<'_>) -> Result<AuxOperation, String> {
+        let unknown = || format!("unbekanntes Element „{}“", self.element);
+        Ok(match self.kind {
+            AuxKind::ReleaseRoute => {
+                AuxOperation::ReleaseRoute(plan.find_route(&self.element).ok_or_else(unknown)?)
+            }
+            AuxKind::ResetTvd => {
+                AuxOperation::ResetTvd(plan.find_tvd(&self.element).ok_or_else(unknown)?)
+            }
+            AuxKind::Substitute => {
+                AuxOperation::Substitute(plan.find_route(&self.element).ok_or_else(unknown)?)
+            }
+            AuxKind::ForcePoint => AuxOperation::ForcePoint(
+                plan.find_point(&self.element).ok_or_else(unknown)?,
+                self.position
+                    .ok_or_else(|| "force_point braucht eine Lage (position)".to_string())?,
+            ),
+        })
+    }
 }
 
 /// Ereignis mit Namen; Grundlage für API, CLI, Szenarien und Protokoll.
@@ -55,6 +129,29 @@ pub enum NamedEvent {
         /// Betroffenes Element, falls vorhanden.
         element: Option<String>,
     },
+    /// Hilfshandlung angefordert, wartet auf Bestätigung.
+    AuxPending {
+        /// Kennung für die Bestätigung.
+        aux: u32,
+        /// Hilfshandlung.
+        op: NamedAux,
+        /// Anfordernder Bediener.
+        operator: u32,
+    },
+    /// Hilfshandlung ausgeführt.
+    AuxExecuted {
+        /// Kennung.
+        aux: u32,
+        /// Hilfshandlung.
+        op: NamedAux,
+        /// Zählwerk nach der Ausführung.
+        counter: u64,
+    },
+    /// Hilfshandlung verfallen.
+    AuxExpired {
+        /// Kennung.
+        aux: u32,
+    },
 }
 
 impl NamedEvent {
@@ -75,6 +172,12 @@ impl NamedEvent {
                     }
                     Rejection::TrainInRoute => ("train_in_route", None),
                     Rejection::SafeState => ("safe_state", None),
+                    Rejection::SignalHeld(s) => ("signal_held", Some(signal_name(plan, s))),
+                    Rejection::AuxBusy => ("aux_busy", None),
+                    Rejection::AuxUnknown => ("aux_unknown", None),
+                    Rejection::AuxExpired => ("aux_expired", None),
+                    Rejection::SameOperator => ("same_operator", None),
+                    Rejection::AuxNotApplicable => ("aux_not_applicable", None),
                 };
                 Self::Rejected {
                     request: id.0,
@@ -96,12 +199,29 @@ impl NamedEvent {
                     Alarm::SignalDefective(s) => ("signal_defective", Some(signal_name(plan, s))),
                     Alarm::SignalMismatch(s) => ("signal_mismatch", Some(signal_name(plan, s))),
                     Alarm::UnknownElement => ("unknown_element", None),
+                    Alarm::UnauthorizedOccupancy(t) => {
+                        ("unauthorized_occupancy", Some(tvd_name(plan, t)))
+                    }
+                    Alarm::SignalPassedAtDanger(r) => {
+                        ("signal_passed_at_danger", Some(route_name(plan, r)))
+                    }
                 };
                 Self::Alarm {
                     alarm: alarm.into(),
                     element,
                 }
             }
+            Event::AuxPending { aux, op, operator } => Self::AuxPending {
+                aux: aux.0,
+                op: NamedAux::new(plan, op),
+                operator: operator.0,
+            },
+            Event::AuxExecuted { aux, op, counter } => Self::AuxExecuted {
+                aux: aux.0,
+                op: NamedAux::new(plan, op),
+                counter,
+            },
+            Event::AuxExpired(aux) => Self::AuxExpired { aux: aux.0 },
         }
     }
 }
@@ -115,8 +235,12 @@ pub struct PointSnapshot {
     pub report: Option<PointReport>,
     /// Zuletzt befohlene Lage.
     pub commanded: Option<PointPosition>,
-    /// Verschließende Fahrstraße.
+    /// Fahrstraße, die die Weiche im Fahrweg verschlossen hat.
     pub locked_by: Option<String>,
+    /// Verschlossene Lage (Fahrweg, Durchrutschweg oder Flankenschutz).
+    pub locked_position: Option<PointPosition>,
+    /// Anzahl geteilter Verschlüsse (Durchrutschweg, Flankenschutz).
+    pub holds: u8,
 }
 
 /// Zustand eines Signals.
@@ -128,6 +252,36 @@ pub struct SignalSnapshot {
     pub commanded: Aspect,
     /// Letzte Meldung.
     pub report: Option<SignalReport>,
+    /// Ersatzsignal (Zs1) eingeschaltet.
+    pub substitute: bool,
+    /// Anzahl der Fahrstraßen, die das Signal als Flankenschutz in Halt halten.
+    pub flank_holds: u8,
+}
+
+/// Zustand eines Bahnübergangs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct LxSnapshot {
+    /// Name.
+    pub name: String,
+    /// Letzte Meldung.
+    pub report: Option<LxReport>,
+    /// Schließen befohlen.
+    pub close_commanded: bool,
+    /// Anzahl der Fahrstraßen, die ihn geschlossen halten.
+    pub holds: u8,
+}
+
+/// Offene Hilfshandlung.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AuxSnapshot {
+    /// Kennung.
+    pub aux: u32,
+    /// Hilfshandlung.
+    pub op: NamedAux,
+    /// Anfordernder Bediener.
+    pub operator: u32,
+    /// Zeitpunkt der Anforderung in Millisekunden.
+    pub since_ms: u64,
 }
 
 /// Zustand eines Gleisfreimeldeabschnitts.
@@ -137,8 +291,10 @@ pub struct TvdSnapshot {
     pub name: String,
     /// Letzte Meldung.
     pub occupancy: Option<Occupancy>,
-    /// Verschließende Fahrstraße.
+    /// Fahrstraße, die den Abschnitt im Fahrweg verschlossen hat.
     pub locked_by: Option<String>,
+    /// Fahrstraße, deren Durchrutschweg den Abschnitt verschlossen hat.
+    pub overlap_of: Option<String>,
 }
 
 /// Zustand einer Fahrstraße.
@@ -173,6 +329,12 @@ pub struct Snapshot {
     pub tvds: Vec<TvdSnapshot>,
     /// Fahrstraßen.
     pub routes: Vec<RouteSnapshot>,
+    /// Bahnübergänge.
+    pub level_crossings: Vec<LxSnapshot>,
+    /// Offene Hilfshandlungen.
+    pub pending_aux: Vec<AuxSnapshot>,
+    /// Zählwerk der ausgeführten Hilfshandlungen.
+    pub aux_counter: u64,
 }
 
 impl Snapshot {
@@ -194,6 +356,8 @@ impl Snapshot {
                     report: p.report(),
                     commanded: p.commanded(),
                     locked_by: owner(p.owner()),
+                    locked_position: p.locked_position(),
+                    holds: p.holds(),
                 })
                 .collect(),
             signals: state
@@ -205,6 +369,8 @@ impl Snapshot {
                     name: signal_name(plan, id),
                     commanded: s.commanded(),
                     report: s.report(),
+                    substitute: s.substitute(),
+                    flank_holds: s.stop_holds(),
                 })
                 .collect(),
             tvds: state
@@ -216,6 +382,7 @@ impl Snapshot {
                     name: tvd_name(plan, id),
                     occupancy: t.occupancy(),
                     locked_by: owner(t.owner()),
+                    overlap_of: owner(t.overlap_owner()),
                 })
                 .collect(),
             routes: plan
@@ -236,6 +403,28 @@ impl Snapshot {
                         .unwrap_or_default(),
                 })
                 .collect(),
+            level_crossings: state
+                .level_crossings()
+                .iter()
+                .enumerate()
+                .filter_map(|(i, l)| Some((LxId::from_index(i)?, l)))
+                .map(|(id, l)| LxSnapshot {
+                    name: lx_name(plan, id),
+                    report: l.report(),
+                    close_commanded: l.closed_commanded(),
+                    holds: l.holds(),
+                })
+                .collect(),
+            pending_aux: state
+                .pending_aux()
+                .map(|a| AuxSnapshot {
+                    aux: a.id().0,
+                    op: NamedAux::new(plan, a.op()),
+                    operator: a.operator().0,
+                    since_ms: a.since().as_millis(),
+                })
+                .collect(),
+            aux_counter: state.meta().aux_counter(),
         }
     }
 }

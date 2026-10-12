@@ -18,7 +18,10 @@ mod runtime;
 pub mod scenario;
 
 pub use field::FieldAdapter;
-pub use names::{NamedEvent, PointSnapshot, RouteSnapshot, SignalSnapshot, Snapshot, TvdSnapshot};
+pub use names::{
+    AuxKind, AuxSnapshot, LxSnapshot, NamedAux, NamedEvent, PointSnapshot, RouteSnapshot,
+    SignalSnapshot, Snapshot, TvdSnapshot,
+};
 pub use runtime::{CycleOutput, Runtime};
 
 use railit_plan::{PlanError, PlanView, VerifyingKey};

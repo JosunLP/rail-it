@@ -1,0 +1,38 @@
+[scenario]
+name = "Durchrutschweg und Flankenschutz"
+description = """
+A-N1 verschließt den Durchrutschweg hinter N1 (TW2, TE, W2 links) und hält P2 und N2 als
+Schutzsignale in Halt. Feindliche Fahrstraßen in den Durchrutschweg oder ab einem
+Schutzsignal werden abgelehnt; die anschließende Fahrstraße N1-GE ist verträglich.
+"""
+network = "../../examples/beispielstadt.toml"
+points = { W2 = "right" }
+
+[[step]]
+note = "A-N1 einstellen: W1 und die Durchrutschweg-Weiche W2 laufen nach links"
+set_route = "A-N1"
+until = { route = { "A-N1" = "proceed" } }
+timeout_s = 15
+expect = { accepted = true, point = { W1 = "left", W2 = "left" }, signal = { A = "proceed" } }
+
+[[step]]
+note = "Fahrstraße entgegen in den Durchrutschweg: feindlich"
+set_route = "F-P1"
+expect = { rejected = "conflict" }
+
+[[step]]
+note = "Fahrstraße ab dem Schutzsignal P2: feindlich"
+set_route = "P2-GW"
+expect = { rejected = "conflict" }
+
+[[step]]
+note = "Durchrutschweg-Weiche ist für Einzelstellung gesperrt"
+move_point = { point = "W2", position = "right" }
+expect = { rejected = "point_locked" }
+
+[[step]]
+note = "Anschließende Fahrstraße nutzt den Durchrutschweg als Fahrweg"
+set_route = "N1-GE"
+until = { route = { "N1-GE" = "proceed" } }
+timeout_s = 30
+expect = { accepted = true, signal = { N1 = "proceed" } }

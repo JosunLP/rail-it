@@ -1,23 +1,48 @@
 //! Sicherheitsinvarianten, geprüft nach jedem Zyklus (REQ-IXL-008).
 //!
 //! Die Prüfungen sind bewusst unabhängig von der Logik in [`crate::kernel`] formuliert:
-//! Sie beschreiben, was **nie** gelten darf, nicht wie der Kern es verhindert. Eine
-//! Verletzung führt in den sicheren Zustand.
+//! Sie beschreiben, was **nie** gelten darf, nicht wie der Kern es verhindert. Insbesondere
+//! werden alle Verschlüsse aus den Phasen und dem Auflösefortschritt der Fahrstraßen neu
+//! berechnet und mit den Zählern im Zustand verglichen. Eine Verletzung führt in den
+//! sicheren Zustand.
 
-use railit_plan::PlanView;
+use railit_plan::{PlanView, Protection, RouteView};
 use railit_types::bitset::BitSet;
-use railit_types::{Duration, RouteId, SignalId, Tick};
+use railit_types::{Duration, LxId, PointId, PointPosition, RouteId, SignalId, Tick, TvdId};
 
 use crate::io::{Aspect, Occupancy, RoutePhase, SafeStateReason, SignalReport};
-use crate::kernel::{effective_occupancy, effective_position, point, route, signal, tvd};
-use crate::state::KernelState;
+use crate::kernel::{
+    effective_occupancy, effective_position, lx, lx_closed, point, route, signal, tvd,
+};
+use crate::state::{KernelState, RouteState};
 
 type Res<T> = Result<T, SafeStateReason>;
 
 const IDX: SafeStateReason = SafeStateReason::InternalIndex;
+const HOLD: SafeStateReason = SafeStateReason::HoldMismatch;
 
 fn route_ids(plan: &PlanView<'_>) -> impl Iterator<Item = RouteId> {
     (0..plan.route_count()).filter_map(RouteId::from_index)
+}
+
+/// Eingestellte Fahrstraßen mit Zustand und Plansicht.
+fn active_routes<'a, 'p>(
+    plan: &'a PlanView<'p>,
+    st: &'a KernelState<'_>,
+) -> impl Iterator<Item = (RouteId, RouteState, RouteView<'p>)> + 'a {
+    route_ids(plan).filter_map(move |r| {
+        let state = route(st, r).ok()?;
+        if state.phase == RoutePhase::Idle {
+            return None;
+        }
+        Some((r, state, plan.route(r)?))
+    })
+}
+
+/// Wurde der Abschnitt `t` des Fahrwegs bereits aufgelöst?
+fn released(view: &RouteView<'_>, state: &RouteState, t: TvdId) -> bool {
+    let n = usize::try_from(state.next_release).unwrap_or(usize::MAX);
+    view.tvds().take(n).any(|x| x == t)
 }
 
 /// Prüft alle Invarianten.
@@ -28,9 +53,12 @@ pub(crate) fn check(
     timeout: Duration,
 ) -> Res<()> {
     active_set_matches_phases(plan, st)?;
-    no_orphan_locks(st)?;
-    active_routes_hold_their_locks(plan, st)?;
     no_conflicting_routes(plan, st)?;
+    tvd_locks_match_routes(plan, st)?;
+    point_locks_match_routes(plan, st)?;
+    signal_holds_match_routes(plan, st)?;
+    level_crossings_match_routes(plan, st)?;
+    substitute_only_when_justified(plan, st, now, timeout)?;
     proceed_only_when_safe(plan, st, now, timeout)
 }
 
@@ -41,46 +69,6 @@ fn active_set_matches_phases(plan: &PlanView<'_>, st: &KernelState<'_>) -> Res<(
         let is_active = route(st, r)?.phase != RoutePhase::Idle;
         if is_active != active.contains(r.index().ok_or(IDX)?) {
             return Err(SafeStateReason::OrphanLock);
-        }
-    }
-    Ok(())
-}
-
-/// Kein Element ist von einer nicht eingestellten Fahrstraße verschlossen.
-fn no_orphan_locks(st: &KernelState<'_>) -> Res<()> {
-    let owners = st
-        .tvds
-        .iter()
-        .map(|t| t.owner)
-        .chain(st.points.iter().map(|p| p.owner));
-    for owner in owners.flatten() {
-        if route(st, owner)?.phase == RoutePhase::Idle {
-            return Err(SafeStateReason::OrphanLock);
-        }
-    }
-    Ok(())
-}
-
-/// Jede eingestellte Fahrstraße hält alle noch nicht aufgelösten Abschnitte und deren Weichen.
-fn active_routes_hold_their_locks(plan: &PlanView<'_>, st: &KernelState<'_>) -> Res<()> {
-    for r in route_ids(plan) {
-        let state = route(st, r)?;
-        if state.phase == RoutePhase::Idle {
-            continue;
-        }
-        let view = plan.route(r).ok_or(IDX)?;
-        let released = usize::try_from(state.next_release).map_err(|_| IDX)?;
-        let unreleased = || view.tvds().skip(released);
-        if unreleased().any(|t| tvd(st, t).map_or(true, |s| s.owner != Some(r))) {
-            return Err(SafeStateReason::MissingLock(r));
-        }
-        for (p, _) in view.points() {
-            let in_unreleased = plan
-                .point_tvd(p)
-                .is_some_and(|pt| unreleased().any(|t| t == pt));
-            if in_unreleased && point(st, p)?.owner != Some(r) {
-                return Err(SafeStateReason::MissingLock(r));
-            }
         }
     }
     Ok(())
@@ -102,8 +90,199 @@ fn no_conflicting_routes(plan: &PlanView<'_>, st: &KernelState<'_>) -> Res<()> {
     Ok(())
 }
 
+/// Vergleicht einen Verschluss im Zustand mit dem erwarteten.
+fn lock_matches(actual: Option<RouteId>, expected: Option<RouteId>) -> Res<()> {
+    if actual == expected {
+        return Ok(());
+    }
+    Err(expected.map_or(SafeStateReason::OrphanLock, SafeStateReason::MissingLock))
+}
+
+/// Setzt den erwarteten exklusiven Verschluss; zwei Halter sind ein Widerspruch.
+fn claim(slot: &mut Option<RouteId>, r: RouteId) -> Res<()> {
+    if slot.replace(r).is_some() {
+        return Err(HOLD);
+    }
+    Ok(())
+}
+
+/// Jeder Abschnitt ist genau von den Fahrstraßen verschlossen, deren noch nicht
+/// aufgelöster Fahrweg bzw. deren Durchrutschweg ihn enthält.
+fn tvd_locks_match_routes(plan: &PlanView<'_>, st: &KernelState<'_>) -> Res<()> {
+    for (index, state) in st.tvds.iter().enumerate() {
+        let t = TvdId::from_index(index).ok_or(IDX)?;
+        let mut owner = None;
+        let mut overlap = None;
+        for (r, rs, view) in active_routes(plan, st) {
+            if view.tvds().any(|x| x == t) && !released(&view, &rs, t) {
+                claim(&mut owner, r)?;
+            }
+            if view.overlap_tvds().any(|x| x == t) {
+                claim(&mut overlap, r)?;
+            }
+        }
+        lock_matches(state.owner, owner)?;
+        lock_matches(state.overlap_owner, overlap)?;
+    }
+    Ok(())
+}
+
+fn merge_position(locked: &mut Option<PointPosition>, want: PointPosition) -> Res<()> {
+    if locked.is_some_and(|p| p != want) {
+        return Err(HOLD);
+    }
+    *locked = Some(want);
+    Ok(())
+}
+
+/// Jede Weiche ist genau von den Fahrstraßen verschlossen, die sie im Fahrweg,
+/// Durchrutschweg oder Flankenschutz brauchen, und alle verlangen dieselbe Lage.
+fn point_locks_match_routes(plan: &PlanView<'_>, st: &KernelState<'_>) -> Res<()> {
+    for (index, state) in st.points.iter().enumerate() {
+        let p = PointId::from_index(index).ok_or(IDX)?;
+        let mut owner = None;
+        let mut holds: u8 = 0;
+        let mut locked = None;
+        for (r, rs, view) in active_routes(plan, st) {
+            for (q, want) in view.points() {
+                let held = plan.point_tvd(q).is_none_or(|t| !released(&view, &rs, t));
+                if q == p && held {
+                    claim(&mut owner, r)?;
+                    merge_position(&mut locked, want)?;
+                }
+            }
+            for (q, want) in view.overlap_points() {
+                if q == p {
+                    holds = holds.checked_add(1).ok_or(HOLD)?;
+                    merge_position(&mut locked, want)?;
+                }
+            }
+            for f in view.flank() {
+                if let Protection::Point(q, want) = f.protection
+                    && q == p
+                    && !released(&view, &rs, f.protects)
+                {
+                    holds = holds.checked_add(1).ok_or(HOLD)?;
+                    merge_position(&mut locked, want)?;
+                }
+            }
+        }
+        lock_matches(state.owner, owner)?;
+        if state.holds != holds || state.locked_pos != locked {
+            return Err(HOLD);
+        }
+    }
+    Ok(())
+}
+
+/// Die Haltezähler der Schutzsignale stimmen mit den Fahrstraßen überein.
+fn signal_holds_match_routes(plan: &PlanView<'_>, st: &KernelState<'_>) -> Res<()> {
+    for (index, state) in st.signals.iter().enumerate() {
+        let s = SignalId::from_index(index).ok_or(IDX)?;
+        let mut holds: u8 = 0;
+        for (_, rs, view) in active_routes(plan, st) {
+            for f in view.flank() {
+                if f.protection == Protection::Signal(s) && !released(&view, &rs, f.protects) {
+                    holds = holds.checked_add(1).ok_or(HOLD)?;
+                }
+            }
+        }
+        if state.stop_holds != holds {
+            return Err(HOLD);
+        }
+    }
+    Ok(())
+}
+
+/// Die Haltezähler der Bahnübergänge stimmen mit den Fahrstraßen überein, und jeder
+/// gebrauchte Bahnübergang ist zum Schließen angesteuert.
+fn level_crossings_match_routes(plan: &PlanView<'_>, st: &KernelState<'_>) -> Res<()> {
+    for (index, state) in st.lxs.iter().enumerate() {
+        let l = LxId::from_index(index).ok_or(IDX)?;
+        let t = plan.lx_tvd(l).ok_or(IDX)?;
+        let mut holds: u8 = 0;
+        for (_, rs, view) in active_routes(plan, st) {
+            if view.level_crossings().any(|x| x == l) && !released(&view, &rs, t) {
+                holds = holds.checked_add(1).ok_or(HOLD)?;
+            }
+        }
+        if state.holds != holds {
+            return Err(HOLD);
+        }
+        if holds > 0 && !state.closed_commanded {
+            return Err(SafeStateReason::UnsafeLevelCrossing(l));
+        }
+    }
+    Ok(())
+}
+
+/// Weichen, Schutzsignale und Bahnübergänge einer Fahrstraße sind gesichert.
+fn secured(st: &KernelState<'_>, view: &RouteView<'_>, now: Tick, timeout: Duration) -> Res<bool> {
+    let mut ok = signal(st, view.start())?.stop_holds == 0;
+    for (p, pos) in view.points().chain(view.overlap_points()) {
+        ok &= effective_position(&point(st, p)?, now, timeout) == Some(pos);
+    }
+    for f in view.flank() {
+        match f.protection {
+            Protection::Point(p, pos) => {
+                ok &= effective_position(&point(st, p)?, now, timeout) == Some(pos);
+            }
+            Protection::Signal(s) => {
+                let state = signal(st, s)?;
+                ok &=
+                    state.commanded == Aspect::Stop && state.report != Some(SignalReport::Proceed);
+            }
+        }
+    }
+    for l in view.level_crossings() {
+        let state = lx(st, l)?;
+        ok &= state.closed_commanded && lx_closed(&state, now, timeout);
+    }
+    Ok(ok)
+}
+
+/// Das Ersatzsignal leuchtet nur für eine festgelegte (oder haltgefallene) Fahrstraße ab
+/// diesem Signal, deren Weichen, Schutzsignale und Bahnübergänge gesichert sind.
+fn substitute_only_when_justified(
+    plan: &PlanView<'_>,
+    st: &KernelState<'_>,
+    now: Tick,
+    timeout: Duration,
+) -> Res<()> {
+    for r in route_ids(plan) {
+        let state = route(st, r)?;
+        let view = plan.route(r).ok_or(IDX)?;
+        if state.substitute_since.is_some()
+            && !matches!(state.phase, RoutePhase::Locked | RoutePhase::Halted)
+        {
+            return Err(SafeStateReason::UnsafeSubstitute(view.start()));
+        }
+    }
+    for (index, s) in st.signals.iter().enumerate() {
+        if !s.substitute {
+            continue;
+        }
+        let id = SignalId::from_index(index).ok_or(IDX)?;
+        let mut justified = false;
+        for (_, rs, view) in active_routes(plan, st) {
+            if view.start() == id
+                && rs.substitute_since.is_some()
+                && matches!(rs.phase, RoutePhase::Locked | RoutePhase::Halted)
+            {
+                justified |= secured(st, &view, now, timeout)?;
+            }
+        }
+        if !justified {
+            return Err(SafeStateReason::UnsafeSubstitute(id));
+        }
+    }
+    Ok(())
+}
+
 /// Ein Signal ist nur auf Fahrt gestellt, wenn eine Fahrstraße ab diesem Signal die
-/// Fahrerlaubnis hat und alle Bedingungen **jetzt** erfüllt sind.
+/// Fahrerlaubnis hat und alle Bedingungen **jetzt** erfüllt sind: Fahrweg und
+/// Durchrutschweg frei und verschlossen, alle Weichen in Lage, Schutzsignale in Halt,
+/// Bahnübergänge geschlossen.
 fn proceed_only_when_safe(
     plan: &PlanView<'_>,
     st: &KernelState<'_>,
@@ -116,18 +295,21 @@ fn proceed_only_when_safe(
         }
         let id = SignalId::from_index(index).ok_or(IDX)?;
         let mut justified = false;
-        for r in route_ids(plan) {
-            let view = plan.route(r).ok_or(IDX)?;
-            if view.start() != id || route(st, r)?.phase != RoutePhase::Proceed {
+        for (r, rs, view) in active_routes(plan, st) {
+            if view.start() != id || rs.phase != RoutePhase::Proceed {
                 continue;
             }
-            let mut ok = signal(st, id)?.report != Some(SignalReport::Defective);
-            for (p, pos) in view.points() {
-                ok &= effective_position(&point(st, p)?, now, timeout) == Some(pos);
-            }
+            let mut ok =
+                s.report != Some(SignalReport::Defective) && secured(st, &view, now, timeout)?;
             for t in view.tvds() {
-                ok &= effective_occupancy(&tvd(st, t)?, now, timeout) == Occupancy::Clear;
-                ok &= tvd(st, t)?.owner == Some(r);
+                let state = tvd(st, t)?;
+                ok &= effective_occupancy(&state, now, timeout) == Occupancy::Clear;
+                ok &= state.owner == Some(r);
+            }
+            for t in view.overlap_tvds() {
+                let state = tvd(st, t)?;
+                ok &= effective_occupancy(&state, now, timeout) == Occupancy::Clear;
+                ok &= state.overlap_owner == Some(r);
             }
             justified |= ok;
         }
