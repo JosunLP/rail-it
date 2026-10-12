@@ -29,6 +29,7 @@
 //! railit areas
 //! railit border request|withdraw BEREICH>NACHBAR
 //! railit ops list|ars on|off|describe|erase|hold|release|platform|delay …
+//! railit etcs
 //! railit whoami
 //! railit audit show [--last N]
 //! railit watch
@@ -137,6 +138,8 @@ enum Command {
     /// Betriebsführung: Zugnummern, Zuglenkung, Disposition (online).
     #[command(subcommand)]
     Ops(OpsCommand),
+    /// ETCS: angemeldete Züge mit Betriebsart und Fahrerlaubnis (online).
+    Etcs,
     /// Angemeldeter Benutzer (online).
     Whoami,
     /// Auditprotokoll prüfen (offline) oder anzeigen (online).
@@ -444,6 +447,9 @@ enum TrainCommand {
         /// Halt zeigende Signale überfahren (Störungsfall).
         #[arg(long)]
         ignore_signals: bool,
+        /// Zug mit ETCS-Fahrzeuggerät (fährt nach der Fahrerlaubnis des RBC).
+        #[arg(long)]
+        etcs: bool,
     },
     /// Alle Züge.
     List,
@@ -598,6 +604,7 @@ fn run_online(
         Command::Watch => online::watch(c, output),
         Command::Areas => online::areas(c, output),
         Command::Whoami => online::whoami(c, output),
+        Command::Etcs => online::etcs(c, output),
         Command::Border(b) => {
             let (address, verb, what) = match b {
                 BorderCommand::Request { address } => (address, "request", "anfordern"),
@@ -636,10 +643,11 @@ fn run_sim(
             length,
             speed,
             ignore_signals,
+            etcs,
         }) => {
             let body = json!({
                 "name": name, "signal": at, "length_m": length, "speed_kmh": speed,
-                "ignore_signals": ignore_signals,
+                "ignore_signals": ignore_signals, "etcs": etcs,
             });
             online::sim_done(
                 c.post("/v1/sim/trains", Some(body)),

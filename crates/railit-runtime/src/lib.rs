@@ -24,6 +24,7 @@ pub use names::{
     AreaSnapshot, AuxKind, AuxSnapshot, BorderSnapshot, LxSnapshot, NamedAux, NamedEvent,
     PointSnapshot, RouteSnapshot, SignalSnapshot, Snapshot, TvdSnapshot,
 };
+pub use railit_etcs;
 pub use railit_ops;
 pub use runtime::{Addressed, AreaEvent, CycleOutput, OPS_REQUEST_BASE, Runtime};
 

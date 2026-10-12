@@ -435,6 +435,9 @@ pub struct Snapshot {
     /// Betriebsführung (Zugnummern, Fahrplanlage), falls eingeschaltet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ops: Option<railit_ops::OpsSnapshot>,
+    /// Angemeldete ETCS-Züge mit Fahrerlaubnis.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub etcs: Vec<railit_etcs::TrainSnapshot>,
 }
 
 impl Snapshot {
@@ -463,6 +466,7 @@ impl Snapshot {
             pending_aux: Vec::new(),
             aux_counter: 0,
             ops: None,
+            etcs: Vec::new(),
         };
         let prefixed = areas.len() > 1;
         for (name, plan, state) in areas {

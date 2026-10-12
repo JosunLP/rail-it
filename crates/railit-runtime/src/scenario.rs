@@ -23,7 +23,7 @@
 //! ```
 //!
 //! **Aktionen:** `set_route`, `cancel_route`, `move_point = { point, position }`,
-//! `add_train = { name, signal, length_m, speed_kmh, ignore_signals }`,
+//! `add_train = { name, signal, length_m, speed_kmh, ignore_signals, etcs }`,
 //! `fault` / `clear_fault = { kind, element }` mit `kind` aus `point_disturbed`,
 //! `tvd_disturbed`, `tvd_occupied`, `signal_defective`, `lx_disturbed`,
 //! `aux = { kind, element, position, operator }` (Hilfshandlung anfordern; `kind` aus
@@ -43,7 +43,9 @@
 //! (Listen), `sim_event` (Liste), `aux_counter`, `safe_state`, `permission` (Grenze →
 //! Erlaubnis gehalten), `berth` (Zugnummer → Signal, `"left"` nach Verlassen des Netzes),
 //! `at_stop` (Zugnummer → `"Betriebsstelle/Gleis"`), `ops_event` (Liste der Ereignisarten
-//! der Betriebsführung).
+//! der Betriebsführung), `etcs` (Zug → Betriebsart des Fahrzeuggeräts: `stand_by`,
+//! `full_supervision`, `trip`), `etcs_end` (Zug → Ende der Fahrerlaubnis, z. B. Signalname
+//! oder `"Netzgrenze"`), `etcs_event` (Liste der Ereignisarten des RBC).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -202,6 +204,8 @@ struct TrainEntry {
     speed_kmh: u16,
     #[serde(default)]
     ignore_signals: bool,
+    #[serde(default)]
+    etcs: bool,
 }
 
 // `deny_unknown_fields` verträgt sich nicht mit `flatten`.
@@ -298,6 +302,12 @@ struct Conditions {
     at_stop: BTreeMap<String, String>,
     #[serde(default)]
     ops_event: Vec<String>,
+    #[serde(default)]
+    etcs: BTreeMap<String, String>,
+    #[serde(default)]
+    etcs_end: BTreeMap<String, String>,
+    #[serde(default)]
+    etcs_event: Vec<String>,
 }
 
 /// Szenario konnte nicht ausgeführt werden (im Unterschied zu einem fehlgeschlagenen Schritt).
@@ -453,6 +463,7 @@ pub fn run_str(source: &str, base: &Path) -> Result<Outcome, ScenarioError> {
         events: Vec::new(),
         sim_events: Vec::new(),
         ops_events: Vec::new(),
+        etcs_events: Vec::new(),
         requests: Vec::new(),
         last_aux: None,
     };
@@ -479,6 +490,7 @@ struct Ctx {
     events: Vec<NamedEvent>,
     sim_events: Vec<SimEvent>,
     ops_events: Vec<OpsEvent>,
+    etcs_events: Vec<railit_etcs::RbcEvent>,
     requests: Vec<u64>,
     /// Zuletzt angeforderte Hilfshandlung mit Bereich (für `confirm_aux`).
     last_aux: Option<(usize, u32)>,
@@ -495,6 +507,7 @@ const fn sim_event_kind(e: &SimEvent) -> &'static str {
         SimEvent::SignalPassedAtDanger { .. } => "signal_passed_at_danger",
         SimEvent::SubstitutePassed { .. } => "substitute_passed",
         SimEvent::LevelCrossingNotClosed { .. } => "level_crossing_not_closed",
+        SimEvent::EmergencyBrake { .. } => "emergency_brake",
     }
 }
 
@@ -528,6 +541,7 @@ impl Ctx {
         }
         self.sim_events.extend(self.rt.field_mut().take_events());
         self.ops_events.extend(out.ops);
+        self.etcs_events.extend(out.etcs);
     }
 
     fn request(&mut self, area: usize, request: Request) {
@@ -549,6 +563,7 @@ impl Ctx {
         self.events.clear();
         self.sim_events.clear();
         self.ops_events.clear();
+        self.etcs_events.clear();
         self.requests.clear();
         let mut failures = self.actions(step);
 
@@ -683,6 +698,7 @@ impl Ctx {
                 length,
                 speed: Speed::from_kmh(t.speed_kmh),
                 ignore_signals: t.ignore_signals,
+                etcs: t.etcs,
             });
         match spec.map(|s| self.rt.field_mut().add_train(s)) {
             Some(Ok(())) => {
@@ -737,6 +753,36 @@ impl Ctx {
             .flatten()
             .filter_map(Result::err)
             .collect()
+    }
+
+    /// Prüft Bedingungen des RBC.
+    fn check_etcs(&self, c: &Conditions) -> Vec<String> {
+        let mut failures = Vec::new();
+        let rbc = self.rt.rbc();
+        for (train, want) in &c.etcs {
+            let got = rbc.mode(train).map(|m| match m {
+                railit_etcs::Mode::StandBy => "stand_by",
+                railit_etcs::Mode::FullSupervision => "full_supervision",
+                railit_etcs::Mode::Trip => "trip",
+            });
+            if got != Some(want.as_str()) {
+                failures.push(format!("ETCS {train}: erwartet {want}, ist {got:?}"));
+            }
+        }
+        for (train, want) in &c.etcs_end {
+            let got = rbc.authority(train).map(|a| a.end.as_str());
+            if got != Some(want.as_str()) {
+                failures.push(format!(
+                    "Fahrerlaubnis {train}: Ende erwartet {want}, ist {got:?}"
+                ));
+            }
+        }
+        for kind in &c.etcs_event {
+            if !self.etcs_events.iter().any(|e| e.kind() == kind) {
+                failures.push(format!("RBC-Ereignis „{kind}“ erwartet"));
+            }
+        }
+        failures
     }
 
     /// Prüft Bedingungen der Betriebsführung.
@@ -881,6 +927,7 @@ impl Ctx {
     fn check(&self, c: &Conditions) -> Vec<String> {
         let mut failures = self.check_elements(c);
         failures.extend(self.check_ops(c));
+        failures.extend(self.check_etcs(c));
         let states: Vec<&railit_kernel::OwnedState> = (0..self.rt.area_count())
             .filter_map(|a| self.rt.state_of(a))
             .collect();

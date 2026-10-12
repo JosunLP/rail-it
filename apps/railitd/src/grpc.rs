@@ -31,6 +31,7 @@ pub(crate) mod pb {
 }
 
 use pb::diagnostics_server::{Diagnostics, DiagnosticsServer};
+use pb::etcs_server::{Etcs, EtcsServer};
 use pb::events_server::{Events, EventsServer};
 use pb::interlocking_server::{Interlocking, InterlockingServer};
 use pb::operations_server::{Operations, OperationsServer};
@@ -45,6 +46,7 @@ pub(crate) fn router(service: &Service) -> axum::Router {
         .add_service(OperationsServer::new(api.clone()))
         .add_service(SimulationServer::new(api.clone()))
         .add_service(EventsServer::new(api.clone()))
+        .add_service(EtcsServer::new(api.clone()))
         .add_service(DiagnosticsServer::new(api))
         .into_axum_router()
 }
@@ -396,6 +398,7 @@ impl Simulation for Grpc {
             speed_kmh: u16::try_from(r.speed_kmh)
                 .map_err(|_| Status::invalid_argument("Geschwindigkeit zu groß"))?,
             ignore_signals: r.ignore_signals,
+            etcs: r.etcs,
         };
         self.service.add_train(&who, train).await?;
         Ok(done())
@@ -414,6 +417,40 @@ impl Simulation for Grpc {
         let kind: FaultKind = parse("Störung", &r.kind)?;
         self.service.fault(&who, kind, &r.element, r.active).await?;
         Ok(done())
+    }
+}
+
+#[tonic::async_trait]
+impl Etcs for Grpc {
+    async fn get_trains(&self, _request: Request<pb::GetEtcsTrainsRequest>) -> Res<pb::EtcsTrains> {
+        let snap = self.service.snapshot();
+        Ok(Response::new(pb::EtcsTrains {
+            trains: snap
+                .etcs
+                .iter()
+                .map(|t| pb::EtcsTrain {
+                    train: t.train.clone(),
+                    mode: name(&t.mode),
+                    reference: t.reference.clone(),
+                    passed: t.passed,
+                    authority: t.authority.as_ref().map(|a| pb::EtcsAuthority {
+                        sections: a
+                            .sections
+                            .iter()
+                            .map(|s| pb::EtcsSection {
+                                area: s.area.clone(),
+                                route: s.route.clone().unwrap_or_default(),
+                                length_mm: s.length_mm,
+                                speed_kmh: s.speed_kmh.map(u32::from),
+                            })
+                            .collect(),
+                        end: a.end.clone(),
+                        eoa_mm: a.eoa_mm,
+                        danger_point_mm: a.danger_point_mm,
+                    }),
+                })
+                .collect(),
+        }))
     }
 }
 

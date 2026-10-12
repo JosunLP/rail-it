@@ -1432,6 +1432,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "railit-etcs"
+version = "0.1.0"
+dependencies = [
+ "railit-import",
+ "railit-kernel",
+ "railit-movement",
+ "railit-plan",
+ "railit-planning",
+ "railit-rules",
+ "railit-types",
+ "serde",
+]
+
+[[package]]
 name = "railit-import"
 version = "0.1.0"
 dependencies = [
@@ -1529,6 +1543,7 @@ name = "railit-runtime"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
+ "railit-etcs",
  "railit-import",
  "railit-journal",
  "railit-kernel",

@@ -234,6 +234,8 @@ message AddTrainRequest {
   uint32 length_m = 3;
   uint32 speed_kmh = 4;
   bool ignore_signals = 5;
+  // Zug mit ETCS-Fahrzeuggerät (fährt nach der Fahrerlaubnis des RBC).
+  bool etcs = 6;
 }
 
 message FaultRequest {
@@ -262,6 +264,46 @@ message EventMessage {
   string type = 3;
   // Ereignis als JSON wie im SSE-Strom.
   string json = 4;
+}
+
+// ── ETCS ─────────────────────────────────────────────────────────────────────────────────
+
+service Etcs {
+  // Angemeldete Züge mit Betriebsart und Fahrerlaubnis (RBC).
+  rpc GetTrains(GetEtcsTrainsRequest) returns (EtcsTrains);
+}
+
+message GetEtcsTrainsRequest {}
+
+message EtcsTrains {
+  repeated EtcsTrain trains = 1;
+}
+
+message EtcsTrain {
+  string train = 1;
+  // "stand_by", "full_supervision", "trip".
+  string mode = 2;
+  // Bezugspunkt: zuletzt passiertes Signal bzw. Signal, vor dem der Zug steht.
+  string reference = 3;
+  bool passed = 4;
+  // Fahrerlaubnis; ohne Fahrerlaubnis leer.
+  optional EtcsAuthority authority = 5;
+}
+
+message EtcsAuthority {
+  repeated EtcsSection sections = 1;
+  // Ende: Signal, "Netzgrenze", "Prellbock" oder Grenze.
+  string end = 2;
+  uint64 eoa_mm = 3;
+  uint64 danger_point_mm = 4;
+}
+
+message EtcsSection {
+  string area = 1;
+  // Fahrstraße; leer für den Annäherungsabschnitt hinter einer Bereichsgrenze.
+  string route = 2;
+  uint64 length_mm = 3;
+  optional uint32 speed_kmh = 4;
 }
 
 // ── Diagnose ─────────────────────────────────────────────────────────────────────────────

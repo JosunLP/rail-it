@@ -19,7 +19,7 @@
 //! - Bahnübergänge schließen mit einer Schließzeit; befährt ein Zug einen nicht
 //!   geschlossenen Bahnübergang, meldet der Simulator das.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fmt;
 
 use railit_kernel::{Aspect, Command, Input, LxReport, Occupancy, PointReport, SignalReport};
@@ -64,6 +64,8 @@ pub enum TrainState {
     Left,
     /// Entgleist.
     Derailed,
+    /// ETCS: Notbremsung (Trip), wartet auf eine neue Fahrerlaubnis.
+    Tripped,
 }
 
 /// Neuer Zug.
@@ -79,6 +81,9 @@ pub struct TrainSpec {
     pub speed: Speed,
     /// Überfährt Halt zeigende Signale (Störungsfall).
     pub ignore_signals: bool,
+    /// Zug mit ETCS-Fahrzeuggerät (Level 2): fährt nach der Fahrerlaubnis des RBC statt nach
+    /// den Signalbegriffen.
+    pub etcs: bool,
 }
 
 /// Einspeisbare Störung.
@@ -148,6 +153,11 @@ pub enum SimEvent {
         /// Bahnübergang.
         lx: String,
     },
+    /// ETCS: Notbremsung, weil die Fahrerlaubnis entzogen wurde.
+    EmergencyBrake {
+        /// Zug.
+        train: String,
+    },
     /// Zug hat ein Halt zeigendes Signal überfahren.
     SignalPassedAtDanger {
         /// Zug.
@@ -195,6 +205,10 @@ pub struct TrainInfo {
     pub head_offset_m: f64,
     /// Belegte Gleisfreimeldeabschnitte.
     pub occupied: Vec<String>,
+    /// Zug mit ETCS-Fahrzeuggerät.
+    pub etcs: bool,
+    /// Zuletzt passiertes Signal bzw. Signal, vor dem der Zug steht.
+    pub reference: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -240,6 +254,11 @@ struct Train {
     path: VecDeque<Seg>,
     /// Position der Spitze im letzten Element, in mm ab dessen Eingang.
     head: u64,
+    /// Bezugspunkt: zuletzt passiertes Signal (`true`) bzw. Signal, vor dem der Zug steht.
+    reference: (SignalId, bool),
+    /// ETCS-Fahrzeuggerät mit den Signalen, die die Fahrerlaubnis freigibt (leer: keine
+    /// Fahrerlaubnis); `None` bei Zügen ohne ETCS.
+    cab: Option<HashSet<SignalId>>,
 }
 
 /// Simulierte Feldebene.
@@ -562,8 +581,41 @@ impl Simulator {
             state: TrainState::Running,
             path: VecDeque::from([seg]),
             head,
+            reference: (spec.signal, false),
+            cab: spec.etcs.then(HashSet::new),
         });
         Ok(())
+    }
+
+    /// Positionsmeldungen der Züge mit ETCS-Fahrzeuggerät: (Zug, Bezugspunkt, passiert).
+    pub fn etcs_reports(&self) -> Vec<(String, SignalId, bool)> {
+        self.trains
+            .iter()
+            .filter(|t| t.cab.is_some() && t.state != TrainState::Left)
+            .map(|t| (t.name.clone(), t.reference.0, t.reference.1))
+            .collect()
+    }
+
+    /// Übergibt einem ETCS-Fahrzeuggerät die Signale, die seine Fahrerlaubnis freigibt; eine
+    /// leere Liste: vor dem nächsten Signal halten. `None` ist die Notbremsung des RBC: Ein
+    /// fahrender Zug hält sofort (Trip). Eine neue Fahrerlaubnis hebt den Trip auf.
+    pub fn set_cab_authority(&mut self, train: &str, authority: Option<Vec<SignalId>>) {
+        let Some(t) = self.trains.iter_mut().find(|t| t.name == train) else {
+            return;
+        };
+        let Some(cab) = &mut t.cab else {
+            return;
+        };
+        let has = authority.is_some();
+        *cab = authority.unwrap_or_default().into_iter().collect();
+        if !has && t.state == TrainState::Running {
+            t.state = TrainState::Tripped;
+            self.events.push(SimEvent::EmergencyBrake {
+                train: t.name.clone(),
+            });
+        } else if has && t.state == TrainState::Tripped {
+            t.state = TrainState::Waiting;
+        }
     }
 
     /// Entfernt einen Zug.
@@ -613,6 +665,8 @@ impl Simulator {
             head_element,
             head_offset_m,
             occupied,
+            etcs: t.cab.is_some(),
+            reference: self.net.signal(t.reference.0).map(|s| s.name.clone()),
         }
     }
 
@@ -658,7 +712,12 @@ impl Simulator {
     }
 
     /// Nächstes Halt zeigendes Hauptsignal im aktuellen Element ab Position `head`.
-    fn stop_ahead(&self, seg: &Seg, head: u64) -> Option<(u64, SignalId)> {
+    fn stop_ahead(
+        &self,
+        seg: &Seg,
+        head: u64,
+        cab: Option<&HashSet<SignalId>>,
+    ) -> Option<(u64, SignalId)> {
         let NodeRef::Track(track) = seg.node else {
             return None;
         };
@@ -668,8 +727,14 @@ impl Simulator {
             .filter(|(id, s)| {
                 s.direction == dir
                     && delimits(s.kind)
-                    && self.signal_report(*id) != Some(SignalReport::Proceed)
-                    && !self.substitute(*id)
+                    && match cab {
+                        // ETCS: nur die Fahrerlaubnis zählt, nicht der Signalbegriff.
+                        Some(authority) => !authority.contains(id),
+                        None => {
+                            self.signal_report(*id) != Some(SignalReport::Proceed)
+                                && !self.substitute(*id)
+                        }
+                    }
             })
             .map(|(id, s)| {
                 let pos = u64::from(s.position.as_mm());
@@ -687,7 +752,7 @@ impl Simulator {
     fn move_train(&mut self, t: &mut Train, dt: u64) {
         if matches!(
             t.state,
-            TrainState::Arrived | TrainState::Left | TrainState::Derailed
+            TrainState::Arrived | TrainState::Left | TrainState::Derailed | TrainState::Tripped
         ) {
             return;
         }
@@ -700,7 +765,7 @@ impl Simulator {
             let stop = if t.ignore_signals {
                 None
             } else {
-                self.stop_ahead(&seg, t.head)
+                self.stop_ahead(&seg, t.head, t.cab.as_ref())
             };
 
             if let Some((offset, _)) = stop
@@ -716,7 +781,9 @@ impl Simulator {
             }
             if t.state == TrainState::Waiting {
                 // Anfahren am Signal: Ist es das Ersatzsignal, das die Fahrt erlaubt?
-                self.passing(t, &seg, t.head, t.head);
+                if let Some(s) = self.passing(t, &seg, t.head, t.head) {
+                    t.reference = (s, true);
+                }
                 t.state = TrainState::Running;
                 self.events.push(SimEvent::TrainStarted {
                     train: t.name.clone(),
@@ -731,7 +798,7 @@ impl Simulator {
                 limit = limit.min(offset);
             }
             if t.ignore_signals
-                && let Some((offset, signal)) = self.stop_ahead(&seg, t.head)
+                && let Some((offset, signal)) = self.stop_ahead(&seg, t.head, None)
                 && offset <= t.head.saturating_add(remaining)
             {
                 let name = self
@@ -745,7 +812,9 @@ impl Simulator {
                 });
             }
             let advance_by = remaining.min(limit.saturating_sub(t.head));
-            self.passing(t, &seg, t.head, t.head.saturating_add(advance_by));
+            if let Some(s) = self.passing(t, &seg, t.head, t.head.saturating_add(advance_by)) {
+                t.reference = (s, true);
+            }
             t.head += advance_by;
             remaining -= advance_by;
 
@@ -753,8 +822,14 @@ impl Simulator {
             if t.head < seg.len || stop.is_some_and(|(offset, _)| offset == t.head) {
                 continue;
             }
+            // Hauptsignale stehen am Gleisende: Mit dem Übergang ins nächste Element ist der
+            // Zug an ihnen vorbei.
+            let at_end = self.signal_at_end(&seg);
             if !self.enter_next(t, &seg) {
                 break;
+            }
+            if let Some(s) = at_end {
+                t.reference = (s, true);
             }
         }
         self.trim_tail(t);
@@ -763,9 +838,10 @@ impl Simulator {
     /// Meldet, was die Zugspitze zwischen `from` (ausschließlich) und `to` (einschließlich)
     /// passiert: Bahnübergänge, die nicht geschlossen sind, und Ersatzsignale. Mit
     /// `from == to` (Anfahren aus dem Stand) zählt ein Signal genau an dieser Stelle.
-    fn passing(&mut self, t: &Train, seg: &Seg, from: u64, to: u64) {
+    /// Gibt das zuletzt passierte Hauptsignal bzw. die zuletzt passierte Halt-Tafel zurück.
+    fn passing(&mut self, t: &Train, seg: &Seg, from: u64, to: u64) -> Option<SignalId> {
         let NodeRef::Track(track) = seg.node else {
-            return;
+            return None;
         };
         let dir = travel(seg.entry);
         let offset = |pos: Length| {
@@ -778,6 +854,7 @@ impl Simulator {
         };
         let within = |o: u64| (o > from && o <= to) || (from == to && o == from);
         let mut events = Vec::new();
+        let mut passed: Option<(u64, SignalId)> = None;
         for (id, l) in self.net.level_crossings_on(track) {
             let o = offset(l.position);
             if from < to && within(o) && self.lx_report(id) != Some(LxReport::Closed) {
@@ -791,6 +868,15 @@ impl Simulator {
         // sie sich von dort weiterbewegt.
         for (id, s) in self.net.signals_on(track) {
             let o = offset(s.position);
+            // Die Spitze steht am Signal und fährt an bzw. ist darüber hinweggefahren.
+            let crossed = (o >= from && o < to) || (from == to && o == from);
+            if s.direction == dir
+                && delimits(s.kind)
+                && crossed
+                && passed.is_none_or(|(p, _)| o >= p)
+            {
+                passed = Some((o, id));
+            }
             if s.direction == dir
                 && delimits(s.kind)
                 && within(o)
@@ -804,6 +890,27 @@ impl Simulator {
             }
         }
         self.events.extend(events);
+        passed.map(|(_, id)| id)
+    }
+
+    /// Hauptsignal bzw. Halt-Tafel am Ende des Elements in Fahrtrichtung.
+    fn signal_at_end(&self, seg: &Seg) -> Option<SignalId> {
+        let NodeRef::Track(track) = seg.node else {
+            return None;
+        };
+        let dir = travel(seg.entry);
+        self.net
+            .signals_on(track)
+            .find(|(_, s)| {
+                let pos = u64::from(s.position.as_mm());
+                let offset = if dir == Direction::AToB {
+                    pos
+                } else {
+                    seg.len.saturating_sub(pos)
+                };
+                s.direction == dir && delimits(s.kind) && offset == seg.len
+            })
+            .map(|(id, _)| id)
     }
 
     /// Betritt das nächste Element. `false`, wenn der Zug nicht weiterfahren kann.

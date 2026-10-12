@@ -81,6 +81,8 @@ pub(crate) struct NewTrain {
     pub(crate) speed_kmh: u16,
     #[serde(default)]
     pub(crate) ignore_signals: bool,
+    #[serde(default)]
+    pub(crate) etcs: bool,
 }
 
 /// Gemeinsamer Zugang zu Engine, Zustandsbild und Ereignissen.
@@ -409,6 +411,7 @@ impl Service {
             length,
             speed: Speed::from_kmh(train.speed_kmh),
             ignore_signals: train.ignore_signals,
+            etcs: train.etcs,
         });
         self.act(
             who,

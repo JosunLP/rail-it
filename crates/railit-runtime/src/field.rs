@@ -21,6 +21,14 @@ pub trait FieldAdapter {
         let _ = (spawn, signal);
         Err("die Feldebene setzt keine Züge ein".into())
     }
+    /// Positionsmeldungen der ETCS-Fahrzeuggeräte: (Zug, Bezugspunkt, passiert).
+    fn etcs_reports(&self) -> Vec<(String, SignalId, bool)> {
+        Vec::new()
+    }
+    /// Fahrerlaubnis an ein Fahrzeuggerät: freigegebene Signale bzw. `None`.
+    fn set_cab_authority(&mut self, train: &str, authority: Option<Vec<SignalId>>) {
+        let _ = (train, authority);
+    }
 }
 
 impl FieldAdapter for Simulator {
@@ -36,6 +44,14 @@ impl FieldAdapter for Simulator {
         Simulator::apply(self, commands);
     }
 
+    fn etcs_reports(&self) -> Vec<(String, SignalId, bool)> {
+        Simulator::etcs_reports(self)
+    }
+
+    fn set_cab_authority(&mut self, train: &str, authority: Option<Vec<SignalId>>) {
+        Simulator::set_cab_authority(self, train, authority);
+    }
+
     fn spawn_train(&mut self, spawn: &Spawn, signal: SignalId) -> Result<(), String> {
         self.add_train(TrainSpec {
             name: spawn.train.clone(),
@@ -43,6 +59,7 @@ impl FieldAdapter for Simulator {
             length: Length::from_m(spawn.length_m).ok_or("Zuglänge zu groß")?,
             speed: Speed::from_kmh(spawn.speed_kmh),
             ignore_signals: false,
+            etcs: spawn.etcs,
         })
         .map_err(|e| e.to_string())
     }

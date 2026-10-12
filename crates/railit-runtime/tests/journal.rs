@@ -48,6 +48,7 @@ fn run() -> (Runtime<Simulator>, Vec<u8>) {
             length: Length::from_mm(120_000),
             speed: Speed::from_kmh(60),
             ignore_signals: false,
+            etcs: false,
         })
         .unwrap();
     let mut id = 0;

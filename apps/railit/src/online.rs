@@ -684,3 +684,52 @@ pub(crate) fn audit_show(c: &Client, last: usize, output: Output) -> Res<ExitCod
     }
     Ok(ExitCode::SUCCESS)
 }
+
+/// ETCS: angemeldete Züge mit Betriebsart und Fahrerlaubnis.
+pub(crate) fn etcs(c: &Client, output: Output) -> Res<ExitCode> {
+    let trains = c.get("/v1/etcs")?;
+    if output == Output::Json {
+        print_json(&trains);
+        return Ok(ExitCode::SUCCESS);
+    }
+    let list = trains.as_array().cloned().unwrap_or_default();
+    if list.is_empty() {
+        println!("Keine ETCS-Züge angemeldet.");
+    }
+    for t in list {
+        let mode = match show(&t["mode"]) {
+            "full_supervision" => "FS (volle Überwachung)",
+            "stand_by" => "SB (ohne Fahrerlaubnis)",
+            "trip" => "TR (Notbremsung)",
+            other => other,
+        };
+        let at = if t["passed"] == true { "hinter" } else { "vor" };
+        println!(
+            "{} · {mode} · {at} {}",
+            show(&t["train"]),
+            show(&t["reference"])
+        );
+        if let Some(a) = t["authority"].as_object() {
+            let km = |v: &Value| v.as_f64().unwrap_or(0.0) / 1000.0;
+            println!(
+                "  Fahrerlaubnis bis {} ({:.0} m, Gefahrpunkt {:.0} m)",
+                show(&a["end"]),
+                km(&a["eoa_mm"]),
+                km(&a["danger_point_mm"])
+            );
+            for s in a["sections"].as_array().cloned().unwrap_or_default() {
+                let speed = s["speed_kmh"]
+                    .as_u64()
+                    .map(|v| format!(", {v} km/h"))
+                    .unwrap_or_default();
+                println!(
+                    "    {:<10} {:<16} {:>6.0} m{speed}",
+                    show(&s["area"]),
+                    s["route"].as_str().unwrap_or("Annäherung"),
+                    km(&s["length_mm"])
+                );
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}

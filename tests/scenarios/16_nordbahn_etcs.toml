@@ -1,0 +1,58 @@
+[scenario]
+name = "Nordbahn: ETCS Level 2 über drei Stellbereiche"
+description = """
+Ein Zug mit ETCS-Fahrzeuggerät fährt nach der Fahrerlaubnis des RBC statt nach den
+Signalbegriffen von Adorf über die Strecke nach Bstadt. Jede Fahrerlaubnis folgt aus den
+Fahrstraßen mit Fahrt; an den Bereichsgrenzen reicht sie über den Annäherungsabschnitt bis
+zum Einfahrsignal des Nachbarn. Ein zweiter, konventioneller Zug fährt hinterher.
+"""
+network = "../../examples/nordbahn.toml"
+
+[[step]]
+note = "Anlauf: Erlaubnisse Richtung Osten"
+until = { permission = { "Adorf>Strecke" = true, "Strecke>Bstadt" = true } }
+timeout_s = 10
+
+[[step]]
+note = "ETCS-Zug meldet sich vor AA an: ohne Fahrstraße keine Fahrerlaubnis"
+add_train = { name = "ICE1", signal = "AA", length_m = 200, speed_kmh = 120, etcs = true }
+wait_s = 2
+expect = { etcs = { ICE1 = "stand_by" }, etcs_event = ["train_registered"], train = { ICE1 = "waiting" } }
+
+[[step]]
+note = "Einfahrt Gleis 1: Fahrerlaubnis bis AN1"
+set_route = "AA-AN1"
+until = { etcs_end = { ICE1 = "AN1" } }
+timeout_s = 15
+expect = { etcs = { ICE1 = "full_supervision" } }
+
+[[step]]
+note = "Ausfahrt über die Grenze: Fahrerlaubnis bis zum Einfahrsignal der Strecke"
+set_route = "AN1->Strecke"
+until = { etcs_end = { ICE1 = "Sbk1" } }
+timeout_s = 15
+
+[[step]]
+set_route = "Sbk1->Bstadt"
+until = { etcs_end = { ICE1 = "BA" } }
+timeout_s = 15
+
+[[step]]
+note = "Einfahrt Bstadt: Fahrerlaubnis bis BN1 über drei Bereiche"
+set_route = "BA-BN1"
+until = { etcs_end = { ICE1 = "BN1" } }
+timeout_s = 15
+
+[[step]]
+note = "Konventioneller Zug fährt hinter dem ETCS-Zug in Adorf ein"
+add_train = { name = "RB2", signal = "AA", length_m = 80, speed_kmh = 60 }
+until = { train = { ICE1 = "waiting" }, tvd = { BT1 = "occupied" } }
+timeout_s = 300
+expect = { no_alarm = ["unauthorized_occupancy", "signal_passed_at_danger", "border_lost"], sim_event = [] }
+
+[[step]]
+note = "RB2 folgt nach Signalbegriffen"
+set_route = "AA-AN1"
+until = { tvd = { AT1 = "occupied" }, route = { "AA-AN1" = "arrived" } }
+timeout_s = 120
+expect = { no_alarm = ["unauthorized_occupancy", "signal_passed_at_danger"], safe_state = false }

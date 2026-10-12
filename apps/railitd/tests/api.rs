@@ -498,3 +498,33 @@ fn timetable_and_dispatching_over_api() {
     assert_eq!(ops["ars"], false);
     assert_eq!(ops["timetable"], "Nordbahn Grundtakt");
 }
+
+/// REQ-ETCS-001/002: ETCS-Zug meldet sich an und erhält seine Fahrerlaubnis über die API.
+#[test]
+fn etcs_train_over_api() {
+    let (plan, public) = prepare("etcs", true);
+    let d = start(&[
+        "--plan",
+        plan.to_str().unwrap(),
+        "--trusted-key",
+        public.to_str().unwrap(),
+    ]);
+    let train =
+        json!({"name": "ICE1", "signal": "A", "length_m": 100, "speed_kmh": 10, "etcs": true});
+    assert_eq!(post(&d, "/v1/sim/trains", Some(train)).0, 200);
+    assert_eq!(post(&d, "/v1/routes/A-N1/set", None).0, 200);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (_, etcs) = get(&d, "/v1/etcs", true);
+        let t = &etcs[0];
+        if t["authority"]["end"] == "N1" {
+            assert_eq!(t["train"], "ICE1");
+            assert_eq!(t["mode"], "full_supervision");
+            assert_eq!(t["authority"]["sections"][0]["route"], "A-N1");
+            assert!(t["authority"]["danger_point_mm"].as_u64() > t["authority"]["eoa_mm"].as_u64());
+            break;
+        }
+        assert!(Instant::now() < deadline, "keine Fahrerlaubnis: {etcs}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}

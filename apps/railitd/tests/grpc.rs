@@ -104,6 +104,7 @@ fn route(name: &str) -> pb::RouteRequest {
 
 /// REQ-SVC-008: gRPC mit denselben Rechten, Antworten und Ereignissen wie REST.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn interlocking_over_grpc() {
     let d = start();
     let channel = Channel::from_shared(d.url.clone())
@@ -210,6 +211,20 @@ async fn interlocking_over_grpc() {
         .into_inner();
     let aux = a.aux.unwrap();
     assert_eq!((aux.r#type.as_str(), aux.operator), ("aux_pending", 1));
+
+    // ETCS-Dienst: ohne angemeldete Züge leer.
+    let etcs = pb::etcs_client::EtcsClient::new(
+        Channel::from_shared(d.url.clone())
+            .unwrap()
+            .connect()
+            .await
+            .unwrap(),
+    )
+    .get_trains(with_token(pb::GetEtcsTrainsRequest {}, OBS))
+    .await
+    .unwrap()
+    .into_inner();
+    assert!(etcs.trains.is_empty());
 
     // Auditprotokoll nur mit Recht.
     let err = diag

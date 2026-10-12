@@ -162,6 +162,16 @@ impl Engine {
                 .events
                 .send(event_json(time_ms, multi.then_some(area.as_str()), value));
         }
+        for e in &out.etcs {
+            if let railit_runtime::railit_etcs::RbcEvent::EmergencyStop { train, reason } = e {
+                tracing::warn!(train, reason, "ETCS-Notbremsung");
+            }
+            let mut value = serde_json::to_value(e).unwrap_or(Value::Null);
+            if let Value::Object(map) = &mut value {
+                map.insert("source".into(), json!("etcs"));
+            }
+            let _ = self.ch.events.send(event_json(time_ms, None, value));
+        }
         for e in &out.ops {
             let mut value = serde_json::to_value(e).unwrap_or(Value::Null);
             if let Value::Object(map) = &mut value {

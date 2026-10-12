@@ -52,6 +52,8 @@ pub struct Spawn {
     pub length_m: u32,
     /// Geschwindigkeit in km/h.
     pub speed_kmh: u16,
+    /// Zug mit ETCS-Fahrzeuggerät.
+    pub etcs: bool,
 }
 
 /// Ergebnis eines Planungsschritts.
@@ -608,6 +610,7 @@ impl Ops {
                     signal: e.signal.clone(),
                     length_m: e.length_m,
                     speed_kmh: e.speed_kmh,
+                    etcs: e.etcs,
                 })
             })
             .collect();

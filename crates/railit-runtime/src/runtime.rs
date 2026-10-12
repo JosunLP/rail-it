@@ -13,6 +13,7 @@
 
 use std::io::Write;
 
+use railit_etcs::{PositionReport, Rbc, RbcEvent, RbcView};
 use railit_journal::{Header, JournalWriter};
 use railit_kernel::{
     AuxOperation, BorderMessage, Command, Event, Input, Interlocking, OwnedState, Request,
@@ -61,10 +62,41 @@ pub struct CycleOutput {
     pub safe_state: Option<(usize, SafeStateReason)>,
     /// Ereignisse der Betriebsführung.
     pub ops: Vec<OpsEvent>,
+    /// Ereignisse des RBC (ETCS).
+    pub etcs: Vec<RbcEvent>,
 }
 
 /// Kennungen ab diesem Wert gehören zu Anforderungen der Betriebsführung.
 pub const OPS_REQUEST_BASE: u64 = 1 << 62;
+
+/// Sicht des RBC auf die Kerne.
+struct RbcAreas<'a>(&'a [Area]);
+
+impl RbcView for RbcAreas<'_> {
+    fn plan(&self, area: usize) -> Option<&PlanView<'_>> {
+        self.0.get(area).map(|a| a.kernel.plan())
+    }
+
+    fn signals(&self, area: usize) -> &[railit_kernel::SignalState] {
+        self.0.get(area).map_or(&[], |a| a.state.signals())
+    }
+
+    fn routes(&self, area: usize) -> &[railit_kernel::RouteState] {
+        self.0.get(area).map_or(&[], |a| a.state.routes())
+    }
+
+    fn peer(&self, area: usize, border: BorderId) -> Option<(usize, BorderId)> {
+        self.0
+            .get(area)
+            .and_then(|a| border.index().and_then(|i| a.peers.get(i)))
+            .copied()
+            .flatten()
+    }
+
+    fn area_name(&self, area: usize) -> String {
+        self.0.get(area).map(|a| a.name.clone()).unwrap_or_default()
+    }
+}
 
 /// Sicht der Betriebsführung auf die Kerne.
 struct AreasView<'a>(&'a [Area]);
@@ -198,6 +230,7 @@ pub struct Runtime<F> {
     ops: Option<Ops>,
     ops_pending: Vec<Addressed>,
     ops_next: u64,
+    rbc: Rbc,
 }
 
 impl<F: FieldAdapter> Runtime<F> {
@@ -323,7 +356,71 @@ impl<F: FieldAdapter> Runtime<F> {
             ops: None,
             ops_pending: Vec::new(),
             ops_next: OPS_REQUEST_BASE,
+            rbc: Rbc::new(),
         }
+    }
+
+    /// RBC (ETCS Level 2).
+    pub fn rbc(&self) -> &Rbc {
+        &self.rbc
+    }
+
+    /// Zustandsbild des RBC.
+    pub fn etcs_snapshot(&self) -> Vec<railit_etcs::TrainSnapshot> {
+        self.rbc.snapshot(&RbcAreas(&self.areas))
+    }
+
+    /// RBC nach dem Zyklus: Positionsmeldungen der Fahrzeuggeräte übernehmen,
+    /// Fahrerlaubnisse berechnen und an die Fahrzeuggeräte übergeben.
+    fn run_etcs(&mut self, cycle_events: &[AreaEvent]) -> Vec<RbcEvent>
+    where
+        F: FieldAdapter,
+    {
+        let reports: Vec<PositionReport> = self
+            .field
+            .etcs_reports()
+            .into_iter()
+            .filter_map(|(train, signal, passed)| {
+                let (area, local) = lookup(&self.signals, signal.index())?;
+                Some(PositionReport {
+                    train,
+                    area,
+                    reference: SignalId::new(local),
+                    passed,
+                })
+            })
+            .collect();
+        if reports.is_empty() && self.rbc.cab_authorities().is_empty() {
+            return Vec::new();
+        }
+        // Per Hilfshandlung aufgelöste Fahrstraßen: Züge darin erhalten eine Notbremsung.
+        let revoked: Vec<(usize, RouteId)> = cycle_events
+            .iter()
+            .filter_map(|e| match e.event {
+                Event::AuxExecuted {
+                    op: AuxOperation::ReleaseRoute(r),
+                    ..
+                } => Some((e.area, r)),
+                _ => None,
+            })
+            .collect();
+        let events = self.rbc.update(&RbcAreas(&self.areas), &reports, &revoked);
+        for (train, authority) in self.rbc.cab_authorities() {
+            let global = authority.map(|list| {
+                list.into_iter()
+                    .filter_map(|(area, local)| {
+                        self.areas
+                            .get(area)?
+                            .map
+                            .signals
+                            .get(local.index()?)
+                            .copied()
+                    })
+                    .collect()
+            });
+            self.field.set_cab_authority(&train, global);
+        }
+        events
     }
 
     /// Schaltet die Betriebsführung ein (Zugnummernmeldung, Fahrplan, Zuglenkung,
@@ -528,6 +625,7 @@ impl<F: FieldAdapter> Runtime<F> {
         }
         self.field.apply(&commands);
         let ops = self.run_ops(now, &events);
+        let etcs = self.run_etcs(&events);
 
         CycleOutput {
             now,
@@ -535,6 +633,7 @@ impl<F: FieldAdapter> Runtime<F> {
             commands,
             safe_state,
             ops,
+            etcs,
         }
     }
 
@@ -738,6 +837,7 @@ impl<F: FieldAdapter> Runtime<F> {
             .collect();
         let mut snap = Snapshot::network(&self.network, self.now, &areas);
         snap.ops = self.ops.as_ref().map(Ops::snapshot);
+        snap.etcs = self.etcs_snapshot();
         snap
     }
 

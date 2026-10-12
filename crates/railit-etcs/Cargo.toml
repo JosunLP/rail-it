@@ -1,0 +1,25 @@
+[package]
+name = "railit-etcs"
+description = "RBC-Funktion von rail-it für ETCS Level 2: Anmeldung, Fahrerlaubnisse über Bereichsgrenzen, Verkürzung und Notbremsung."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+railit-types = { workspace = true, features = ["serde"] }
+railit-plan = { workspace = true, features = ["alloc"] }
+railit-kernel = { workspace = true, features = ["alloc", "serde"] }
+railit-movement = { workspace = true }
+serde = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+railit-import = { workspace = true }
+railit-planning = { workspace = true }
+railit-rules = { workspace = true }
+
+[lints]
+workspace = true

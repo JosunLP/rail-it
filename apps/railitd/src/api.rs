@@ -28,6 +28,7 @@
 //! | DELETE | `/v1/sim/trains/{name}` | Zug entfernen |
 //! | POST | `/v1/sim/faults` | Störung setzen/aufheben |
 //!
+//! | GET | `/v1/etcs` | ETCS: angemeldete Züge mit Betriebsart und Fahrerlaubnis |
 //! | GET | `/v1/whoami` | Angemeldeter Benutzer mit Rollen |
 //! | GET | `/v1/audit` | Auditprotokoll prüfen, letzte Einträge (`?last=50`) |
 //!
@@ -123,6 +124,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/v1/sim/trains", get(trains).post(add_train))
         .route("/v1/sim/trains/{name}", delete(remove_train))
         .route("/v1/sim/faults", post(fault))
+        .route("/v1/etcs", get(etcs))
         .route("/v1/whoami", get(whoami))
         .route("/v1/audit", get(audit))
         .with_state(state.clone())
@@ -508,6 +510,10 @@ async fn fault(
         .fault(&who, body.kind, &body.element, body.active)
         .await?;
     Ok(done())
+}
+
+async fn etcs(State(state): State<AppState>) -> Json<Value> {
+    Json(json!(state.service.snapshot().etcs))
 }
 
 async fn whoami(Extension(who): Extension<Principal>) -> Json<Principal> {

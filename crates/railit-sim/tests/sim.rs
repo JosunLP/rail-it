@@ -45,6 +45,7 @@ fn train(name: &str, signal: SignalId, ignore_signals: bool) -> TrainSpec {
         length: Length::from_m(100).unwrap(),
         speed: Speed::from_kmh(72),
         ignore_signals,
+        etcs: false,
     }
 }
 

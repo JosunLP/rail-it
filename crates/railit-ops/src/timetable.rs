@@ -7,7 +7,7 @@
 //! [[train]]
 //! number = "RE1"
 //! # Optional: Die Simulation setzt den Zug zur Zeit `at` vor dem Signal ein.
-//! enter = { signal = "AA", at = "00:00:10", length_m = 100, speed_kmh = 80 }
+//! enter = { signal = "AA", at = "00:00:10", length_m = 100, speed_kmh = 80 }  # etcs = true
 //! stops = [
 //!     { station = "Adorf", platform = "1", arr = "00:01:00", dep = "00:02:00" },
 //!     { station = "Bstadt", platform = "1", arr = "00:08:00" },
@@ -36,6 +36,8 @@ pub struct Enter {
     pub length_m: u32,
     /// Geschwindigkeit in km/h.
     pub speed_kmh: u16,
+    /// Zug mit ETCS-Fahrzeuggerät (Level 2).
+    pub etcs: bool,
 }
 
 /// Halt an einem Bahnsteiggleis.
@@ -109,6 +111,8 @@ struct EnterFile {
     at: String,
     length_m: u32,
     speed_kmh: u16,
+    #[serde(default)]
+    etcs: bool,
 }
 
 #[derive(Deserialize)]
@@ -169,6 +173,7 @@ impl Timetable {
                         at: parse_time(&e.at)?,
                         length_m: e.length_m,
                         speed_kmh: e.speed_kmh,
+                        etcs: e.etcs,
                     })
                 })
                 .transpose()?;

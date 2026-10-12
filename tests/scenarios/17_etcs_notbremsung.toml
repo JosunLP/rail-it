@@ -1,0 +1,43 @@
+[scenario]
+name = "ETCS: Verkürzung und Notbremsung"
+description = """
+Wird eine Fahrstraße zurückgenommen, bevor der Zug ihr Startsignal erreicht, verkürzt das RBC
+die Fahrerlaubnis und der Zug hält davor. Wird die Fahrstraße unter dem fahrenden Zug per
+Hilfshandlung aufgelöst, hat er keine Fahrerlaubnis mehr: Das RBC löst eine Notbremsung aus.
+"""
+network = "../../examples/beispielstadt.toml"
+
+[[step]]
+note = "ETCS-Zug vor A, Einfahrt und Ausfahrt eingestellt"
+add_train = { name = "ICE1", signal = "A", length_m = 100, speed_kmh = 10, etcs = true }
+set_route = "A-N1"
+until = { etcs_end = { ICE1 = "N1" } }
+timeout_s = 20
+
+[[step]]
+set_route = "N1-GE"
+until = { etcs_end = { ICE1 = "Netzgrenze" } }
+timeout_s = 20
+
+[[step]]
+note = "Rücknahme der Ausfahrt verkürzt die Fahrerlaubnis bis N1"
+cancel_route = "N1-GE"
+until = { etcs_end = { ICE1 = "N1" } }
+timeout_s = 5
+expect = { etcs_event = ["authority_shortened"] }
+
+[[step]]
+note = "Der Zug ist in A-N1 eingefahren"
+until = { route = { "A-N1" = "occupied" } }
+timeout_s = 60
+
+[[step]]
+note = "Fahrstraßenhilfsauflösung unter dem Zug: Notbremsung"
+aux = { kind = "release_route", element = "A-N1", operator = 1 }
+wait_s = 1
+
+[[step]]
+confirm_aux = { operator = 2 }
+until = { etcs = { ICE1 = "trip" } }
+timeout_s = 5
+expect = { etcs_event = ["emergency_stop"], sim_event = ["emergency_brake"], train = { ICE1 = "tripped" } }
