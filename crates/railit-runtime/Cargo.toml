@@ -19,9 +19,13 @@ railit-rules = { workspace = true }
 railit-kernel = { workspace = true, features = ["alloc", "serde"] }
 railit-movement = { workspace = true, features = ["serde"] }
 railit-sim = { workspace = true }
+railit-journal = { workspace = true }
 serde = { workspace = true, features = ["std"] }
 toml = { workspace = true }
 getrandom = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+serde_json = { workspace = true }

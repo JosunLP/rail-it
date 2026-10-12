@@ -962,6 +962,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "railit-journal"
+version = "0.1.0"
+dependencies = [
+ "railit-import",
+ "railit-kernel",
+ "railit-plan",
+ "railit-planning",
+ "railit-rules",
+ "railit-types",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "railit-kernel"
 version = "0.1.0"
 dependencies = [
@@ -1022,6 +1037,7 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
  "railit-import",
+ "railit-journal",
  "railit-kernel",
  "railit-movement",
  "railit-plan",
@@ -1031,6 +1047,7 @@ dependencies = [
  "railit-topology",
  "railit-types",
  "serde",
+ "serde_json",
  "toml",
 ]
 

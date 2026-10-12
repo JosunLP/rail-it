@@ -1,5 +1,8 @@
 //! Zyklische Kopplung von Kern und Feld.
 
+use std::io::Write;
+
+use railit_journal::{Header, JournalWriter};
 use railit_kernel::{
     Command, Event, Input, Interlocking, OwnedState, Request, RequestId, SafeStateReason,
     VecOutputs,
@@ -33,6 +36,8 @@ pub struct Runtime<F> {
     cycle: Duration,
     out: VecOutputs,
     inputs: Vec<Input>,
+    journal: Option<JournalWriter<Box<dyn Write + Send>>>,
+    journal_error: Option<String>,
 }
 
 impl<F: FieldAdapter> Runtime<F> {
@@ -46,7 +51,45 @@ impl<F: FieldAdapter> Runtime<F> {
             cycle,
             out: VecOutputs::default(),
             inputs: Vec::new(),
+            journal: None,
+            journal_error: None,
         }
+    }
+
+    /// Beginnt ein Journal (REQ-JRN-001): Ab dem nächsten Zyklus werden Eingaben,
+    /// Ausgaben-Hash und alle `checkpoint_every` Zyklen der Zustands-Hash geschrieben.
+    ///
+    /// Das Journal muss vor dem ersten Zyklus beginnen, damit es sich abspielen lässt.
+    ///
+    /// # Errors
+    /// Schreibfehler beim Kopf.
+    pub fn start_journal(
+        &mut self,
+        out: Box<dyn Write + Send>,
+        checkpoint_every: u64,
+    ) -> std::io::Result<()> {
+        let header = Header::new(
+            self.kernel.plan(),
+            self.kernel.rules(),
+            self.cycle,
+            checkpoint_every,
+        );
+        let mut journal = JournalWriter::new(out, header)?;
+        journal.flush()?;
+        self.journal = Some(journal);
+        self.journal_error = None;
+        Ok(())
+    }
+
+    /// Fehler, an dem das Journal abgebrochen ist. Der Betrieb läuft weiter; das Journal
+    /// ist ab diesem Zyklus unvollständig.
+    pub fn journal_error(&self) -> Option<&str> {
+        self.journal_error.as_deref()
+    }
+
+    /// Hash der letzten Journalzeile, falls ein Journal läuft.
+    pub fn journal_head(&self) -> Option<String> {
+        self.journal.as_ref().map(JournalWriter::head)
     }
 
     /// Führt einen Zyklus aus: Feld fortschreiben, Meldungen und Anforderungen an den Kern,
@@ -71,6 +114,16 @@ impl<F: FieldAdapter> Runtime<F> {
             &mut self.out,
         );
         self.field.apply(&self.out.commands);
+
+        if let Some(journal) = &mut self.journal {
+            let written = journal
+                .record(self.now, &self.inputs, &self.out, &self.state)
+                .and_then(|()| journal.flush());
+            if let Err(e) = written {
+                self.journal_error = Some(e.to_string());
+                self.journal = None;
+            }
+        }
 
         CycleOutput {
             now: self.now,

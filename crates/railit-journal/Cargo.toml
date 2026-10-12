@@ -1,0 +1,26 @@
+[package]
+name = "railit-journal"
+description = "Betriebsprotokoll von rail-it: manipulationssicheres Journal aller Kerneingaben mit Hashkette, Prüfpunkten und deterministischem Replay."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+railit-types = { workspace = true, features = ["serde"] }
+railit-plan = { workspace = true, features = ["alloc"] }
+railit-rules = { workspace = true }
+railit-kernel = { workspace = true, features = ["alloc", "serde"] }
+serde = { workspace = true, features = ["std"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+railit-planning = { workspace = true }
+railit-import = { workspace = true }
+
+[lints]
+workspace = true
