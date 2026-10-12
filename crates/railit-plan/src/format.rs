@@ -1,4 +1,4 @@
-//! Binärformat des Plan-Images, Version 3.
+//! Binärformat des Plan-Images, Version 4.
 //!
 //! Alle Zahlen sind little-endian. Offsets sind Byte-Offsets ab Anfang des Images.
 //!
@@ -6,7 +6,7 @@
 //! ┌──────────────────────────────────┐ 0
 //! │ Kopf: 24 × u32                   │
 //! ├──────────────────────────────────┤ route_off
-//! │ Fahrstraßen: n × 16 × u32        │
+//! │ Fahrstraßen: n × 18 × u32        │
 //! ├──────────────────────────────────┤ pool_off
 //! │ Pool: u32 (Weichen, TVDs, Flanken,│
 //! │       Bahnübergänge)             │
@@ -19,7 +19,7 @@
 //! ├──────────────────────────────────┤ lx_tvd_off
 //! │ TVD je Bahnübergang: n × u32     │
 //! ├──────────────────────────────────┤ border_off
-//! │ Grenzen: n × 6 × u32             │   Merkmale, Einfahrsignal, Annäherungsabschnitt
+//! │ Grenzen: n × 8 × u32             │   Merkmale, Einfahrsignal, Annäherungsabschnitt
 //! │                                  │   (TVDs, Weichen) als Pool-Listen
 //! ├──────────────────────────────────┤ conflict_off
 //! │ Feindlichkeiten: n × w × u64     │   w = ⌈Anzahl Fahrstraßen / 64⌉
@@ -52,34 +52,38 @@
 //! | 10 | Anzahl Pool-Wörter | | |
 //! | 11 | `conflict_off` | | |
 //!
-//! **Fahrstraße** (16 × u32): Startsignal, Zielart (0 Signal, 1 Netzgrenze, 2 Prellbock,
+//! **Fahrstraße** (18 × u32): Startsignal, Zielart (0 Signal, 1 Netzgrenze, 2 Prellbock,
 //! 3 Bereichsgrenze), Zielsignal bzw. Grenze (oder `u32::MAX`), Geschwindigkeit in km/h (0 = keine Beschränkung), dann je
 //! Pool-Start und Anzahl für: Weichen, TVDs (Fahrreihenfolge), TVDs des Durchrutschwegs,
-//! Weichen des Durchrutschwegs, Flankenschutz-Einträge, Bahnübergänge.
+//! Weichen des Durchrutschwegs, Flankenschutz-Einträge, Bahnübergänge; zuletzt die Länge
+//! vom Startsignal bis zum Ziel und die Länge des Durchrutschwegs, beide in mm (seit v4, für
+//! die Fahrerlaubnis nach ETCS).
 //!
 //! **Weicheneintrag** im Pool: `(Weichen-ID << 1) | Lage` mit Lage 0 = links, 1 = rechts.
 //!
 //! **Flankenschutz-Eintrag** im Pool (3 × u32): Art (0 Weiche in Lage, 1 Signal in Halt),
 //! Weicheneintrag bzw. Signal-ID, geschützter TVD der Fahrstraße.
 //!
-//! **Grenze** (6 × u32): Merkmale (Bit 0: übernimmt beim Anlauf die Erlaubnis),
+//! **Grenze** (8 × u32): Merkmale (Bit 0: übernimmt beim Anlauf die Erlaubnis),
 //! Einfahrsignal, dann je Pool-Start und Anzahl für die Abschnitte und die Weichen des
-//! Annäherungsabschnitts (von der Grenze bis zum Einfahrsignal und dessen Durchrutschweg).
+//! Annäherungsabschnitts (von der Grenze bis zum Einfahrsignal und dessen Durchrutschweg),
+//! zuletzt die Länge von der Grenze bis zum Einfahrsignal und die Länge seines
+//! Durchrutschwegs in mm (seit v4).
 
 /// Kennung am Anfang jedes Plan-Images.
 pub const MAGIC: [u8; 4] = *b"RPLN";
 /// Unterstützte Formatversion.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 /// Länge des Kopfs in Byte.
 pub const HEADER_LEN: usize = 96;
 /// Länge eines Fahrstraßeneintrags in Byte.
-pub const ROUTE_LEN: usize = 64;
+pub const ROUTE_LEN: usize = 72;
 /// Wörter je Signaleintrag.
 pub const SIGNAL_WORDS: usize = 3;
 /// Wörter je Flankenschutz-Eintrag.
 pub const FLANK_WORDS: usize = 3;
 /// Wörter je Grenzeintrag.
-pub const BORDER_WORDS: usize = 6;
+pub const BORDER_WORDS: usize = 8;
 /// Grenzmerkmal: Dieser Bereich übernimmt beim Anlauf die Erlaubnis.
 pub const BORDER_INITIAL: u32 = 1;
 /// Länge der SHA-256-Prüfsumme in Byte.
@@ -124,6 +128,8 @@ pub(crate) mod r {
     pub(crate) const OVERLAP_POINTS: usize = 10;
     pub(crate) const FLANK: usize = 12;
     pub(crate) const LXS: usize = 14;
+    pub(crate) const LENGTH: usize = 16;
+    pub(crate) const OVERLAP_LENGTH: usize = 17;
 }
 
 pub(crate) const END_SIGNAL: u32 = 0;

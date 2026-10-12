@@ -162,7 +162,13 @@ fn verification_detects_tampering() {
     let plan = generate(&net).unwrap();
     verify(&net, &plan).unwrap();
 
-    let tamper: [Tamper; 11] = [
+    let tamper: [Tamper; 13] = [
+        ("Länge verfälscht", |p| {
+            p.routes[0].length = Length::from_mm(p.routes[0].length.as_mm() + 1);
+        }),
+        ("Durchrutschweg zu lang", |p| {
+            p.routes[0].overlap_length = Length::from_mm(p.routes[0].overlap_length.as_mm() + 1);
+        }),
         ("Fahrstraße entfernt", |p| {
             p.routes.remove(7);
             for r in &mut p.routes {
@@ -606,4 +612,49 @@ fn borders_need_an_entry_signal() {
     railit_planning::verify(&strecke.topology, &plan).unwrap();
     plan.borders[0].approach_tvds.pop();
     assert!(railit_planning::verify(&strecke.topology, &plan).is_err());
+}
+
+/// Plan v4: Längen von Fahrweg und Durchrutschweg für die Fahrerlaubnis nach ETCS.
+#[test]
+fn route_and_overlap_lengths() {
+    let net = railit_import::toml_format::parse(NORDBAHN)
+        .unwrap()
+        .topology;
+    let areas = railit_planning::compile_areas(&net, None, &PlanningConfig::default()).unwrap();
+    let length = |area: &str, route: &str| {
+        let a = areas.iter().find(|a| a.name == area).unwrap();
+        let r = a
+            .compiled
+            .plan
+            .routes
+            .iter()
+            .find(|r| r.name == route)
+            .unwrap();
+        (r.length.as_mm() / 1000, r.overlap_length.as_mm() / 1000)
+    };
+    // Einfahrt: Weiche AW1 (ohne Länge) und Gleis A1; Durchrutschweg über AW2 bis Ende Ao1.
+    assert_eq!(length("Adorf", "AA-AN1"), (600, 120));
+    // Ausfahrt bis zur Bereichsgrenze: Ao1 und Ao; kein Durchrutschweg.
+    assert_eq!(length("Adorf", "AN1->Strecke"), (420, 0));
+    assert_eq!(length("Strecke", "Sbk1->Bstadt"), (1500, 0));
+    let a = areas.iter().find(|a| a.name == "Adorf").unwrap();
+    let view = PlanView::parse(&a.compiled.image).unwrap();
+    let r = view.route(view.find_route("AA-AN1").unwrap()).unwrap();
+    assert_eq!(
+        (r.length().as_mm(), r.overlap_length().as_mm()),
+        (600_000, 120_000)
+    );
+    // Grenze „>Strecke“ der Strecke: von Adorf bis Sbk1 über S1, Durchrutschweg über S2.
+    let s = areas.iter().find(|a| a.name == "Strecke").unwrap();
+    let b = s
+        .compiled
+        .plan
+        .borders
+        .iter()
+        .find(|b| b.name == ">Adorf")
+        .unwrap();
+    assert_eq!(
+        (b.approach_length.as_mm(), b.entry_overlap_length.as_mm()),
+        (1_500_000, 1_500_000)
+    );
 }

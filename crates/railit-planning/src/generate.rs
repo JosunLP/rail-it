@@ -43,6 +43,7 @@ struct Draft {
     flank: Vec<Flank>,
     level_crossings: Vec<LxId>,
     speed: Option<Speed>,
+    overlap_length: u64,
 }
 
 /// Teilweg während der Suche.
@@ -294,6 +295,7 @@ fn explore(
             flank: Vec::new(),
             level_crossings: Vec::new(),
             speed: None,
+            overlap_length: 0,
         };
 
         match entry.node {
@@ -424,6 +426,7 @@ fn approach(
     let mut tvds: Vec<TvdId> = Vec::new();
     let mut points = Vec::new();
     let mut entry_signal = None;
+    let mut approach_length: u64 = 0;
     for _ in 0..=net.tracks().len() + net.points().len() {
         let entry = net.linked(port).ok_or("offener Port")?;
         if let Some(tvd) = member_tvd(net, entry.node)
@@ -453,6 +456,7 @@ fn approach(
                 } else {
                     Direction::BToA
                 };
+                approach_length += u64::from(net.track(tr).map_or(0, |x| x.length.as_mm()));
                 if let Some(&s) = ends.get(&(tr, dir)) {
                     entry_signal = Some(s);
                     break;
@@ -462,7 +466,11 @@ fn approach(
         }
     }
     let entry_signal = entry_signal.ok_or("kein Einfahrsignal gefunden")?;
-    let (o_tvds, o_points, _) = overlap(net, entry_signal, length)?;
+    let (o_tvds, o_points, o_tracks) = overlap(net, entry_signal, length)?;
+    let overlap_length = o_tracks.last().map_or(0, |(t, start, _)| {
+        u64::from(*start) + u64::from(net.track(*t).map_or(0, |x| x.length.as_mm()))
+    });
+    let mm = |v: u64| Length::from_mm(u32::try_from(v).unwrap_or(u32::MAX));
     for tvd in o_tvds {
         if tvds.contains(&tvd) {
             return Err("Durchrutschweg des Einfahrsignals führt zurück zur Grenze".into());
@@ -476,6 +484,8 @@ fn approach(
         entry_signal,
         approach_tvds: tvds,
         approach_points: points,
+        approach_length: mm(approach_length),
+        entry_overlap_length: mm(overlap_length),
     })
 }
 
@@ -733,6 +743,9 @@ fn complete(
                         tvd: net.tvd(*t).map(|x| x.name.clone()).unwrap_or_default(),
                     });
                 }
+                d.overlap_length = tracks.last().map_or(0, |(t, start, _)| {
+                    u64::from(*start) + u64::from(net.track(*t).map_or(0, |x| x.length.as_mm()))
+                });
                 d.overlap_tvds = tvds;
                 d.overlap_points = points;
                 overlap_tracks = tracks;
@@ -848,6 +861,36 @@ fn terminal_end(
     Some((end, terminal.name.clone()))
 }
 
+/// Fahrstraßen aus den fertigen Fahrwegen.
+fn route_defs(net: &Topology, drafts: Vec<Draft>, names: Vec<String>) -> Vec<RouteDef> {
+    let mm = |v: u64| Length::from_mm(u32::try_from(v).unwrap_or(u32::MAX));
+    drafts
+        .into_iter()
+        .zip(names)
+        .map(|(d, name)| RouteDef {
+            // Hauptsignale stehen am Gleisende (REQ-PLN-010): Die Länge ist die Summe der
+            // Gleise hinter dem Startgleis.
+            length: mm(d
+                .tracks
+                .iter()
+                .map(|t| u64::from(net.track(*t).map_or(0, |x| x.length.as_mm())))
+                .sum()),
+            overlap_length: mm(d.overlap_length),
+            name,
+            start: d.start,
+            end: d.end,
+            speed: d.speed,
+            points: d.points,
+            tvds: d.tvds,
+            overlap_tvds: d.overlap_tvds,
+            overlap_points: d.overlap_points,
+            flank: d.flank,
+            level_crossings: d.level_crossings,
+            conflicts: Vec::new(),
+        })
+        .collect()
+}
+
 /// Erzeugt den Plan für ein Netz.
 ///
 /// # Errors
@@ -904,23 +947,7 @@ pub fn generate_with(net: &Topology, cfg: &PlanningConfig) -> Result<Plan, Plann
         return Err(PlanningReport { errors });
     }
 
-    let mut routes: Vec<RouteDef> = drafts
-        .into_iter()
-        .zip(names)
-        .map(|(d, name)| RouteDef {
-            name,
-            start: d.start,
-            end: d.end,
-            speed: d.speed,
-            points: d.points,
-            tvds: d.tvds,
-            overlap_tvds: d.overlap_tvds,
-            overlap_points: d.overlap_points,
-            flank: d.flank,
-            level_crossings: d.level_crossings,
-            conflicts: Vec::new(),
-        })
-        .collect();
+    let mut routes = route_defs(net, drafts, names);
     let conflicts = conflicts(net, &routes);
     for (r, c) in routes.iter_mut().zip(conflicts) {
         r.conflicts = c;

@@ -563,6 +563,21 @@ fn check_details(
         fail("Durchrutschweg");
     }
 
+    // Längen (Plan v4): Fahrweg als Summe der befahrenen Gleise hinter dem Startgleis,
+    // Durchrutschweg bis zum Ende seines letzten Gleises.
+    let track_len = |t: &TrackId| u64::from(net.track(*t).map_or(0, |x| x.length.as_mm()));
+    let route_length: u64 = tracks.iter().map(track_len).sum();
+    if u64::from(r.length.as_mm()) != route_length {
+        fail("Länge");
+    }
+    let overlap_length = overlap
+        .as_ref()
+        .and_then(|o| o.tracks.last())
+        .map_or(0, |(t, start, _)| start + track_len(t));
+    if u64::from(r.overlap_length.as_mm()) != overlap_length {
+        fail("Länge des Durchrutschwegs");
+    }
+
     // Flankenschutz: je Weiche (Fahrweg, dann Durchrutschweg), Duplikate nur einmal.
     let mut flank: Vec<(Protection, TvdId)> = Vec::new();
     for (p, pos) in r.points.iter().chain(&r.overlap_points) {
@@ -661,7 +676,15 @@ fn check_routes(net: &Topology, cfg: PlanningConfig, plan: &Plan, problems: &mut
 }
 
 /// Einfahrsignal, Abschnitte und Weichenlagen eines Annäherungsabschnitts.
-type Approach = (SignalId, Vec<TvdId>, BTreeSet<(PointId, PointPosition)>);
+/// Einfahrsignal, Abschnitte, Weichenlagen, Länge bis zum Einfahrsignal, Länge seines
+/// Durchrutschwegs.
+type Approach = (
+    SignalId,
+    Vec<TvdId>,
+    BTreeSet<(PointId, PointPosition)>,
+    u64,
+    u64,
+);
 
 /// Erwarteter Annäherungsabschnitt einer Grenze (eigene Herleitung).
 fn expected_approach(
@@ -673,6 +696,7 @@ fn expected_approach(
     let mut points = BTreeSet::new();
     let mut port = PortRef::new(NodeRef::Terminal(terminal), Port::End);
     let mut steps = 0usize;
+    let mut distance = 0u64;
     let entry = loop {
         steps += 1;
         if steps > net.tracks().len() + net.points().len() + 2 {
@@ -686,6 +710,7 @@ fn expected_approach(
         }
         match (at.node, at.port) {
             (NodeRef::Track(t), entered) => {
+                distance += u64::from(net.track(t).ok_or("Gleis fehlt")?.length.as_mm());
                 if let Some(s) = end_signal(net, t, entered) {
                     break s;
                 }
@@ -703,6 +728,12 @@ fn expected_approach(
         }
     };
     let overlap = expected_overlap(net, entry, length_mm)?;
+    let overlap_length = match overlap.tracks.last() {
+        Some((t, start, _)) => {
+            start + u64::from(net.track(*t).ok_or("Gleis fehlt")?.length.as_mm())
+        }
+        None => 0,
+    };
     for t in overlap.tvds {
         if tvds.contains(&t) {
             return Err("Durchrutschweg führt zur Grenze zurück".into());
@@ -710,7 +741,7 @@ fn expected_approach(
         tvds.push(t);
     }
     points.extend(overlap.points);
-    Ok((entry, tvds, points))
+    Ok((entry, tvds, points, distance, overlap_length))
 }
 
 fn check_borders(net: &Topology, cfg: PlanningConfig, plan: &Plan, problems: &mut Vec<String>) {
@@ -733,12 +764,14 @@ fn check_borders(net: &Topology, cfg: PlanningConfig, plan: &Plan, problems: &mu
             ));
         }
         match expected_approach(net, id, length) {
-            Ok((entry, tvds, points)) => {
+            Ok((entry, tvds, points, distance, overlap_length)) => {
                 let plan_points: BTreeSet<_> = def.approach_points.iter().copied().collect();
                 if def.entry_signal != entry
                     || def.approach_tvds != tvds
                     || plan_points != points
                     || plan_points.len() != def.approach_points.len()
+                    || u64::from(def.approach_length.as_mm()) != distance
+                    || u64::from(def.entry_overlap_length.as_mm()) != overlap_length
                 {
                     problems.push(format!(
                         "Grenze „{}“: Annäherungsabschnitt weicht ab",

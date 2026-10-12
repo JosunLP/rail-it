@@ -27,6 +27,8 @@ fn route(
         flank: vec![],
         level_crossings: vec![],
         conflicts: conflicts.into_iter().map(RouteId::new).collect(),
+        length: railit_types::Length::from_mm(500_000),
+        overlap_length: railit_types::Length::from_mm(0),
     }
 }
 
@@ -128,6 +130,8 @@ fn sample() -> Plan {
             entry_signal: SignalId::new(3),
             approach_tvds: vec![tvd(5), tvd(4)],
             approach_points: vec![(PointId::new(1), PointPosition::Left)],
+            approach_length: railit_types::Length::from_mm(800_000),
+            entry_overlap_length: railit_types::Length::from_mm(120_000),
         }],
     }
 }

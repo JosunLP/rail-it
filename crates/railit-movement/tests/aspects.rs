@@ -351,3 +351,98 @@ proptest! {
         }
     }
 }
+
+// ── ETCS Level 2 (REQ-MOV-004) ──────────────────────────────────────────────────────────
+
+impl Station {
+    fn ma(&self, signal: &str, passed: bool) -> Option<railit_movement::MovementAuthority> {
+        let id = self.plan().find_signal(signal).unwrap();
+        railit_movement::authority(
+            self.kernel.plan(),
+            self.state.signals(),
+            self.state.routes(),
+            id,
+            passed,
+        )
+    }
+
+    fn route_names(&self, ma: &railit_movement::MovementAuthority) -> Vec<String> {
+        ma.sections()
+            .iter()
+            .map(|s| self.plan().route_name(s.route).unwrap().to_string())
+            .collect()
+    }
+}
+
+#[test]
+fn etcs_authority_follows_the_routes_with_proceed() {
+    use railit_movement::MaEnd;
+    use railit_types::{Length, Speed};
+    let mut s = Station::new();
+    assert!(
+        s.ma("A", false).is_none(),
+        "ohne Fahrstraße keine Fahrerlaubnis"
+    );
+
+    s.set("A-N1");
+    let ma = s.ma("A", false).unwrap();
+    let a_n1 = s
+        .plan()
+        .route(s.plan().find_route("A-N1").unwrap())
+        .unwrap();
+    assert_eq!(s.route_names(&ma), ["A-N1"]);
+    assert_eq!(ma.end(), MaEnd::Signal(s.plan().find_signal("N1").unwrap()));
+    assert_eq!(ma.eoa(), a_n1.length());
+    assert!(
+        ma.overlap().as_mm() > 0,
+        "Gefahrpunkt hinter dem Zielsignal"
+    );
+    assert_eq!(
+        ma.danger_point().as_mm(),
+        ma.eoa().as_mm() + ma.overlap().as_mm()
+    );
+    assert_eq!(ma.speed_at(Length::from_mm(0)), None);
+    assert_eq!(
+        ma.speed_at(ma.eoa()),
+        Some(Speed::from_kmh(0)),
+        "hinter dem EoA"
+    );
+
+    // Verlängerung bis zur Netzgrenze.
+    s.set("N1-GE");
+    let ma = s.ma("A", false).unwrap();
+    assert_eq!(s.route_names(&ma), ["A-N1", "N1-GE"]);
+    assert_eq!(ma.end(), MaEnd::Boundary);
+    assert_eq!(ma.overlap().as_mm(), 0);
+
+    // Rücknahme verkürzt sofort.
+    let r = s.plan().find_route("N1-GE").unwrap();
+    s.step(&[Request::CancelRoute(r)]);
+    let ma = s.ma("A", false).unwrap();
+    assert_eq!(s.route_names(&ma), ["A-N1"]);
+}
+
+#[test]
+fn etcs_authority_carries_speed_and_survives_passing() {
+    use railit_types::{Length, Speed};
+    let mut s = Station::new();
+    s.set("A-N2");
+    let ma = s.ma("A", false).unwrap();
+    assert_eq!(ma.speed_at(Length::from_mm(1)), Some(Speed::from_kmh(40)));
+
+    // Der Zug fährt ein: A fällt auf Halt, die Fahrerlaubnis gilt für den Zug weiter.
+    let tw1 = s.plan().find_tvd("TW1").unwrap();
+    s.tvds[tw1.index().unwrap()] = Occupancy::Occupied;
+    s.step(&[]);
+    s.step(&[]);
+    assert_eq!(
+        s.state.routes()[s.plan().find_route("A-N2").unwrap().index().unwrap()].phase(),
+        RoutePhase::Occupied
+    );
+    assert!(
+        s.ma("A", false).is_none(),
+        "für einen neuen Zug keine Fahrt"
+    );
+    let ma = s.ma("A", true).unwrap();
+    assert_eq!(s.route_names(&ma), ["A-N2"]);
+}

@@ -5,8 +5,8 @@ use core::fmt;
 use ed25519_dalek::{Signature, VerifyingKey};
 use railit_types::bitset::{BitSet, WORD_BITS, words_for};
 use railit_types::{
-    BorderId, LxId, PointId, PointPosition, RouteId, SignalId, SignalKind, SignalSystem, Speed,
-    TvdId,
+    BorderId, Length, LxId, PointId, PointPosition, RouteId, SignalId, SignalKind, SignalSystem,
+    Speed, TvdId,
 };
 use sha2::{Digest, Sha256};
 
@@ -83,6 +83,8 @@ struct RawRoute {
     overlap_points: Range,
     flank: Range,
     lxs: Range,
+    length: u32,
+    overlap_length: u32,
 }
 
 /// Geprüfte, unveränderliche Sicht auf ein Plan-Image.
@@ -600,6 +602,16 @@ impl<'a> PlanView<'a> {
         PointEntries(self.pool_words_of(self.border_range(id, 4)))
     }
 
+    /// Länge von der Grenze bis zum Einfahrsignal.
+    pub fn border_approach_length(&self, id: BorderId) -> Option<Length> {
+        self.border_word(id, 6).map(Length::from_mm)
+    }
+
+    /// Länge des Durchrutschwegs hinter dem Einfahrsignal.
+    pub fn border_entry_overlap(&self, id: BorderId) -> Option<Length> {
+        self.border_word(id, 7).map(Length::from_mm)
+    }
+
     fn conflict_word(&self, route: usize, word: usize) -> Option<u64> {
         let row = route.checked_mul(self.conflict_words)?.checked_add(word)?;
         read_u64(
@@ -689,6 +701,8 @@ impl<'a> PlanView<'a> {
             overlap_points: range(r::OVERLAP_POINTS)?,
             flank: range(r::FLANK)?,
             lxs: range(r::LXS)?,
+            length: w(r::LENGTH)?,
+            overlap_length: w(r::OVERLAP_LENGTH)?,
         })
     }
 
@@ -974,6 +988,16 @@ impl<'a> RouteView<'a> {
             .ok()
             .filter(|v| *v != 0)
             .map(Speed::from_kmh)
+    }
+
+    /// Länge vom Startsignal bis zum Ziel (Zielsignal, Netzende oder Bereichsgrenze).
+    pub const fn length(&self) -> Length {
+        Length::from_mm(self.raw.length)
+    }
+
+    /// Länge des Durchrutschwegs hinter dem Zielsignal (null ohne Durchrutschweg).
+    pub const fn overlap_length(&self) -> Length {
+        Length::from_mm(self.raw.overlap_length)
     }
 
     /// Erforderliche Weichenlagen im Fahrweg.

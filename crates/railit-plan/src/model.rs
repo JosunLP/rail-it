@@ -7,8 +7,8 @@ use alloc::vec::Vec;
 use ed25519_dalek::{Signer, SigningKey};
 use railit_types::bitset::{BitSetMut, words_for};
 use railit_types::{
-    BorderId, LxId, PointId, PointPosition, RouteId, SignalId, SignalKind, SignalSystem, Speed,
-    TvdId,
+    BorderId, Length, LxId, PointId, PointPosition, RouteId, SignalId, SignalKind, SignalSystem,
+    Speed, TvdId,
 };
 use sha2::{Digest, Sha256};
 
@@ -76,6 +76,10 @@ pub struct BorderDef {
     pub approach_tvds: Vec<TvdId>,
     /// Weichenlagen im Annäherungsabschnitt.
     pub approach_points: Vec<(PointId, PointPosition)>,
+    /// Länge von der Grenze bis zum Einfahrsignal.
+    pub approach_length: Length,
+    /// Länge des Durchrutschwegs hinter dem Einfahrsignal.
+    pub entry_overlap_length: Length,
 }
 
 /// Fahrstraße im Plan.
@@ -103,6 +107,10 @@ pub struct RouteDef {
     pub level_crossings: Vec<LxId>,
     /// Feindliche Fahrstraßen.
     pub conflicts: Vec<RouteId>,
+    /// Länge vom Startsignal bis zum Ziel.
+    pub length: Length,
+    /// Länge des Durchrutschwegs (null ohne Durchrutschweg).
+    pub overlap_length: Length,
 }
 
 /// Vollständiger Plan im Speicher.
@@ -237,6 +245,8 @@ impl Plan {
                     flank: r.flank().collect(),
                     level_crossings: r.level_crossings().collect(),
                     conflicts: r.conflicts().collect(),
+                    length: r.length(),
+                    overlap_length: r.overlap_length(),
                 })
                 .collect(),
             borders: ids(view.border_count())
@@ -249,6 +259,8 @@ impl Plan {
                         .unwrap_or(SignalId::new(u32::MAX)),
                     approach_tvds: view.border_approach_tvds(id).collect(),
                     approach_points: view.border_approach_points(id).collect(),
+                    approach_length: view.border_approach_length(id).unwrap_or_default(),
+                    entry_overlap_length: view.border_entry_overlap(id).unwrap_or_default(),
                 })
                 .collect(),
         }
@@ -292,7 +304,7 @@ impl Plan {
 
         // Pool: alle Listen aller Fahrstraßen.
         let mut pool = Pool { words: Vec::new() };
-        let mut entries: Vec<[u32; 16]> = Vec::with_capacity(self.routes.len());
+        let mut entries: Vec<[u32; 18]> = Vec::with_capacity(self.routes.len());
         for r in &self.routes {
             let (end_kind, end_signal) = match r.end {
                 RouteEnd::Signal(s) => (END_SIGNAL, s.raw()),
@@ -335,10 +347,12 @@ impl Plan {
                 flank.1,
                 lxs.0,
                 lxs.1,
+                r.length.as_mm(),
+                r.overlap_length.as_mm(),
             ]);
         }
 
-        let mut border_entries: Vec<[u32; 6]> = Vec::with_capacity(self.borders.len());
+        let mut border_entries: Vec<[u32; 8]> = Vec::with_capacity(self.borders.len());
         for b in &self.borders {
             let tvds = pool.list(b.approach_tvds.iter().map(|t| t.raw()), 1)?;
             let points = pool.list(encode_points(&b.approach_points)?, 1)?;
@@ -349,6 +363,8 @@ impl Plan {
                 tvds.1,
                 points.0,
                 points.1,
+                b.approach_length.as_mm(),
+                b.entry_overlap_length.as_mm(),
             ]);
         }
 

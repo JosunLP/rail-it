@@ -1,4 +1,5 @@
-//! Fahrerlaubnisse von rail-it: Signalbegriffe der Systeme Ks und H/V.
+//! Fahrerlaubnisse von rail-it: Signalbegriffe der Systeme Ks und H/V sowie
+//! Movement Authorities für ETCS Level 2 (siehe [`authority`]).
 //!
 //! Der Sicherheitskern entscheidet nur **ob** ein Signal Fahrt zeigen darf (Halt/Fahrt) und
 //! ob das Ersatzsignal leuchtet. Welcher **Begriff** dabei erscheint, hängt vom Signalsystem,
@@ -39,6 +40,10 @@
 )]
 
 use core::fmt;
+
+mod etcs;
+
+pub use etcs::{MA_SECTIONS, MaEnd, MaSection, MovementAuthority, authority};
 
 use railit_kernel::{Aspect, RoutePhase, RouteState, SignalState};
 use railit_plan::{PlanView, RouteEnd, RouteView};
