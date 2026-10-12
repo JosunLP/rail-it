@@ -282,6 +282,7 @@ impl Harness {
         events.extend(self.step(&[Request::AuxConfirm {
             aux,
             operator: OperatorId(2),
+            op,
         }]));
         events
     }

@@ -23,7 +23,7 @@ pub use directory::Directory;
 pub use field::{DynField, FieldAdapter, SimulatedField};
 pub use names::{
     AreaSnapshot, AuxKind, AuxSnapshot, BorderSnapshot, LxSnapshot, NamedAux, NamedEvent,
-    PointSnapshot, RouteSnapshot, SignalSnapshot, Snapshot, TvdSnapshot,
+    PointSnapshot, RouteSnapshot, SignalSnapshot, Snapshot, TvdSnapshot, aux_check,
 };
 pub use names::{ChannelSnapshot, SafetySnapshot};
 pub use railit_adapters;

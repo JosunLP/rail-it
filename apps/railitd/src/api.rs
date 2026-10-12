@@ -323,17 +323,33 @@ struct AreaQuery {
     area: Option<String>,
 }
 
+/// Bestätigung: Hilfshandlung, wie der zweite Bediener sie nennt, und Prüfcode der Anzeige.
+#[derive(Deserialize)]
+struct ConfirmBody {
+    #[serde(flatten)]
+    op: NamedAux,
+    check: String,
+}
+
 async fn aux_confirm(
     State(state): State<AppState>,
     Extension(who): Extension<Principal>,
     headers: HeaderMap,
     Path(id): Path<u32>,
     Query(query): Query<AreaQuery>,
+    Json(body): Json<ConfirmBody>,
 ) -> ApiResult {
     Ok(answer(
         state
             .service
-            .aux_confirm(&who, query.area.as_deref(), id, operator(&headers))
+            .aux_confirm(
+                &who,
+                query.area.as_deref(),
+                id,
+                operator(&headers),
+                &body.op,
+                &body.check,
+            )
             .await?,
     ))
 }

@@ -1,5 +1,5 @@
 [scenario]
-name = "Hilfshandlung verfällt ohne Bestätigung"
+name = "Hilfshandlung: Verfall, abweichende Bestätigung"
 network = "../../examples/beispielstadt.toml"
 
 [scenario.rules]
@@ -25,3 +25,24 @@ expect = { rejected = "aux_unknown", route = { "A-N2" = "proceed" }, aux_counter
 note = "Nicht anwendbar: Abschnitt ist nicht gestört"
 aux = { kind = "reset_tvd", element = "T1", operator = 7 }
 expect = { rejected = "aux_not_applicable" }
+
+[[step]]
+note = "Sichere Bestätigungskette: Der zweite Bediener nennt eine andere Fahrstraße"
+aux = { kind = "release_route", element = "A-N2", operator = 7 }
+wait_s = 1
+
+[[step]]
+note = "Abweichung: nichts aufgelöst, die Hilfshandlung verfällt"
+confirm_aux = { operator = 8, kind = "release_route", element = "A-N1" }
+wait_s = 1
+expect = { rejected = "aux_mismatch", route = { "A-N2" = "proceed" }, aux_counter = 0 }
+
+[[step]]
+note = "Neu angefordert und richtig bestätigt"
+aux = { kind = "release_route", element = "A-N2", operator = 7 }
+wait_s = 1
+
+[[step]]
+confirm_aux = { operator = 8, kind = "release_route", element = "A-N2" }
+wait_s = 1
+expect = { accepted = true, route = { "A-N2" = "idle" }, aux_counter = 1 }

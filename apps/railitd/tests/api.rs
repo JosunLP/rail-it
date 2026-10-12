@@ -240,20 +240,48 @@ fn aux_operation_and_journal() {
     let (status, answer) = post(&d, "/v1/aux", Some(op.clone()));
     assert_eq!(status, 400, "ohne Bedienerkennung: {answer}");
 
-    let (status, answer) = post_as(&d, "/v1/aux", Some(op), 1);
+    let (status, answer) = post_as(&d, "/v1/aux", Some(op.clone()), 1);
     assert_eq!(status, 200, "{answer}");
     assert_eq!(answer["aux"]["type"], "aux_pending");
     let id = answer["aux"]["aux"].as_u64().unwrap();
     let (_, pending) = get(&d, "/v1/aux", true);
     assert_eq!(pending["pending"][0]["op"]["element"], "A-N1");
 
+    // REQ-UI-003, REQ-IXL-022: Bestätigung mit wiederholter Hilfshandlung und Prüfcode.
+    let check = pending["pending"][0]["check"].as_str().unwrap().to_string();
+    assert_eq!(check.len(), 6);
     let confirm = format!("/v1/aux/{id}/confirm");
-    let (status, answer) = post_as(&d, &confirm, None, 1);
+    let body = |element: &str, check: &str| json!({"kind": "release_route", "element": element, "check": check});
+    let (status, answer) = post_as(&d, &confirm, Some(body("A-N1", &check)), 1);
     assert_eq!(
         (status, answer["reason"].as_str()),
         (409, Some("same_operator"))
     );
-    let (status, answer) = post_as(&d, &confirm, None, 2);
+    let (status, answer) = post_as(&d, &confirm, Some(body("A-N1", "000000")), 2);
+    assert_eq!(
+        (status, answer["reason"].as_str()),
+        (409, Some("check_mismatch")),
+        "falsche Anzeige wird abgewiesen"
+    );
+    let (status, answer) = post_as(&d, &confirm, Some(body("A-N2", &check)), 2);
+    assert_eq!(
+        (status, answer["reason"].as_str()),
+        (409, Some("aux_mismatch")),
+        "der Kern führt keine abweichende Hilfshandlung aus"
+    );
+    assert_eq!(
+        get(&d, "/v1/aux", true).1["pending"],
+        json!([]),
+        "verfallen"
+    );
+
+    let (status, answer) = post_as(&d, "/v1/aux", Some(op), 1);
+    assert_eq!(status, 200, "{answer}");
+    let id = answer["aux"]["aux"].as_u64().unwrap();
+    let (_, pending) = get(&d, "/v1/aux", true);
+    let check = pending["pending"][0]["check"].as_str().unwrap().to_string();
+    let confirm = format!("/v1/aux/{id}/confirm");
+    let (status, answer) = post_as(&d, &confirm, Some(body("A-N1", &check)), 2);
     assert_eq!(status, 200, "{answer}");
     assert_eq!(answer["aux"]["type"], "aux_executed");
     assert_eq!(answer["aux"]["counter"], 1);

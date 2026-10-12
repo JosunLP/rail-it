@@ -278,9 +278,18 @@ impl Interlocking for Grpc {
         let who = who(&request)?;
         let r = request.get_ref();
         let area = (!r.area.is_empty()).then_some(r.area.as_str());
+        let restated = NamedAux {
+            kind: parse("Hilfshandlung", &r.kind)?,
+            element: r.element.clone(),
+            position: if r.position.is_empty() {
+                None
+            } else {
+                Some(parse("Lage", &r.position)?)
+            },
+        };
         let a = self
             .service
-            .aux_confirm(&who, area, r.aux, r.operator)
+            .aux_confirm(&who, area, r.aux, r.operator, &restated, &r.check)
             .await?;
         Ok(Response::new(answer(a)))
     }

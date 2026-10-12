@@ -183,12 +183,16 @@ pub enum Request {
     RequestPermission(BorderId),
     /// Anforderung der Erlaubnis zurückziehen.
     WithdrawPermissionRequest(BorderId),
-    /// Hilfshandlung bestätigen (zweiter Bediener).
+    /// Hilfshandlung bestätigen (zweiter Bediener). Der zweite Bediener nennt die
+    /// Hilfshandlung noch einmal vollständig; der Kern führt sie nur aus, wenn sie genau der
+    /// offenen Hilfshandlung entspricht (sichere Bestätigungskette, REQ-IXL-022).
     AuxConfirm {
         /// Kennung aus [`Event::AuxPending`].
         aux: AuxId,
         /// Bestätigender Bediener.
         operator: OperatorId,
+        /// Hilfshandlung, wie der bestätigende Bediener sie verstanden hat.
+        op: AuxOperation,
     },
 }
 
@@ -343,6 +347,9 @@ pub enum Rejection {
     AuxExpired,
     /// Anforderung und Bestätigung stammen vom selben Bediener.
     SameOperator,
+    /// Die bestätigte Hilfshandlung weicht von der angeforderten ab; die angeforderte
+    /// verfällt.
+    AuxMismatch,
     /// Die Voraussetzungen der Hilfshandlung sind nicht erfüllt.
     AuxNotApplicable,
     /// Für die Grenze fehlt die Erlaubnis; sie muss erst angefordert werden.

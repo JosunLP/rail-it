@@ -28,7 +28,9 @@
 //! `tvd_disturbed`, `tvd_occupied`, `signal_defective`, `lx_disturbed`,
 //! `aux = { kind, element, position, operator }` (Hilfshandlung anfordern; `kind` aus
 //! `release_route`, `reset_tvd`, `substitute`, `force_point`),
-//! `confirm_aux = { operator }` (zuletzt angeforderte Hilfshandlung bestätigen).
+//! `confirm_aux = { operator }` (zuletzt angeforderte Hilfshandlung bestätigen; mit `kind`,
+//! `element`, `position` nennt der zweite Bediener sie selbst – weicht sie ab, lehnt der Kern
+//! mit `aux_mismatch` ab und die Hilfshandlung verfällt).
 //!
 //! Betriebsführung: `[scenario] timetable = "…"` (Fahrplan, relativ zur Szenariodatei),
 //! `ars = true` (Zuglenkung) oder `ops = true` (nur Zugnummernmeldung und Selbstblock)
@@ -295,10 +297,13 @@ struct AuxEntry {
     operator: u32,
 }
 
+// `deny_unknown_fields` verträgt sich nicht mit `flatten`.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ConfirmEntry {
     operator: u32,
+    /// Hilfshandlung, wie der zweite Bediener sie nennt; ohne Angabe die angeforderte.
+    #[serde(flatten)]
+    op: Option<NamedAux>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -630,7 +635,7 @@ struct Ctx<F> {
     safety_events: Vec<AreaSafetyEvent>,
     requests: Vec<u64>,
     /// Zuletzt angeforderte Hilfshandlung mit Bereich (für `confirm_aux`).
-    last_aux: Option<(usize, u32)>,
+    last_aux: Option<(usize, AuxId, railit_kernel::AuxOperation)>,
 }
 
 const fn sim_event_kind(e: &SimEvent) -> &'static str {
@@ -670,11 +675,10 @@ impl<F: SimulatedField> Ctx<F> {
         let out = self.rt.cycle_addressed(&self.pending);
         self.pending.clear();
         for e in &out.events {
-            let named = self.rt.name_event(e);
-            if let NamedEvent::AuxPending { aux, .. } = named {
-                self.last_aux = Some((e.area, aux));
+            if let railit_kernel::Event::AuxPending { aux, op, .. } = e.event {
+                self.last_aux = Some((e.area, aux, op));
             }
-            self.events.push(named);
+            self.events.push(self.rt.name_event(e));
         }
         self.sim_events
             .extend(self.rt.field_mut().simulator_mut().take_events());
@@ -816,13 +820,23 @@ impl<F: SimulatedField> Ctx<F> {
         }
         if let Some(c) = &step.confirm_aux {
             match self.last_aux {
-                Some((area, aux)) => self.request(
-                    area,
-                    Request::AuxConfirm {
-                        aux: AuxId(aux),
-                        operator: OperatorId(c.operator),
-                    },
-                ),
+                Some((area, aux, pending)) => {
+                    let op = match &c.op {
+                        None => Ok(pending),
+                        Some(named) => self.rt.resolve_aux(named).map(|(_, op)| op),
+                    };
+                    match op {
+                        Ok(op) => self.request(
+                            area,
+                            Request::AuxConfirm {
+                                aux,
+                                operator: OperatorId(c.operator),
+                                op,
+                            },
+                        ),
+                        Err(e) => failures.push(format!("Hilfshandlung: {e}")),
+                    }
+                }
                 None => failures.push("keine Hilfshandlung angefordert".into()),
             }
         }

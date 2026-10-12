@@ -76,6 +76,7 @@ fn run() -> (Runtime<Simulator>, Vec<u8>) {
         Request::AuxConfirm {
             aux: railit_kernel::AuxId(0),
             operator: OperatorId(2),
+            op,
         },
     );
     for _ in 0..20 {

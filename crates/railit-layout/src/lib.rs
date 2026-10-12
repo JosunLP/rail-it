@@ -449,9 +449,10 @@ pub fn layout(topo: &Topology) -> Layout {
         let leg = |port: Port| {
             let own = port_pos(node, port);
             match topo.linked(PortRef::new(node, port)) {
-                Some(o) if matches!(o.node, NodeRef::Track(_)) => {
-                    [own[0], placed.get(&o.node).map_or(own[1], |q| lane_y(q.lane))]
-                }
+                Some(o) if matches!(o.node, NodeRef::Track(_)) => [
+                    own[0],
+                    placed.get(&o.node).map_or(own[1], |q| lane_y(q.lane)),
+                ],
                 _ => own,
             }
         };

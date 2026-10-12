@@ -30,7 +30,7 @@ enum Action {
     Move(usize, PointPosition),
     Lx(LxReport),
     Aux(AuxOperation, u32),
-    Confirm(u32, u32),
+    Confirm(u32, u32, AuxOperation),
     Wait(u64),
 }
 
@@ -67,8 +67,8 @@ fn action() -> impl Strategy<Value = Action> {
     ];
     prop_oneof![
         1 => lx.prop_map(Action::Lx),
-        1 => (aux, 1u32..3).prop_map(|(op, who)| Action::Aux(op, who)),
-        1 => (0u32..8, 1u32..3).prop_map(|(id, who)| Action::Confirm(id, who)),
+        1 => (aux.clone(), 1u32..3).prop_map(|(op, who)| Action::Aux(op, who)),
+        1 => (0u32..8, 1u32..3, aux).prop_map(|(id, who, op)| Action::Confirm(id, who, op)),
         3 => (0usize..6, occupancy).prop_map(|(i, o)| Action::Tvd(i, o)),
         1 => (0usize..2, point).prop_map(|(i, r)| Action::Point(i, r)),
         1 => (0usize..6, signal).prop_map(|(i, r)| Action::Signal(i, r)),
@@ -215,7 +215,7 @@ proptest! {
                 Action::Move(i, p) => requests.push(Request::MovePoint(PointId::from_index(i).unwrap(), p)),
                 Action::Lx(r) => h.lxs[0] = r,
                 Action::Aux(op, who) => requests.push(Request::AuxRequest { op, operator: OperatorId(who) }),
-                Action::Confirm(id, who) => requests.push(Request::AuxConfirm { aux: AuxId(id), operator: OperatorId(who) }),
+                Action::Confirm(id, who, op) => requests.push(Request::AuxConfirm { aux: AuxId(id), operator: OperatorId(who), op }),
                 Action::Wait(ms) => dt = ms,
             }
             let (field_points, field_tvds) = (h.points.clone(), h.tvds.clone());

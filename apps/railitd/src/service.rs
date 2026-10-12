@@ -57,6 +57,19 @@ impl ServiceError {
 
 type Res<T> = Result<T, ServiceError>;
 
+/// Ablehnung durch den Dienst (vor dem Kern) im Format einer Antwort des Kerns.
+fn rejected(area: &str, reason: &str) -> Answer {
+    Answer {
+        area: area.to_string(),
+        event: NamedEvent::Rejected {
+            request: 0,
+            reason: reason.to_string(),
+            element: None,
+        },
+        aux: None,
+    }
+}
+
 fn not_found(what: &str, name: &str) -> ServiceError {
     ServiceError::NotFound(format!("{what} „{name}“ nicht gefunden"))
 }
@@ -368,12 +381,19 @@ impl Service {
             .await
     }
 
+    /// Bestätigung einer Hilfshandlung (zweiter Bediener) über die sichere Anzeige- und
+    /// Bestätigungskette (REQ-UI-003, REQ-IXL-022): `check` muss der Prüfcode der offenen
+    /// Hilfshandlung sein, wie der Bedienplatz ihn aus seiner Anzeige berechnet hat; `restated`
+    /// ist die Hilfshandlung, wie der zweite Bediener sie nennt – der Kern führt sie nur aus,
+    /// wenn sie der offenen entspricht.
     pub(crate) async fn aux_confirm(
         &self,
         who: &Principal,
         area: Option<&str>,
         aux: u32,
         header_operator: Option<u32>,
+        restated: &NamedAux,
+        check: &str,
     ) -> Res<Answer> {
         let operator = self.operator(who, header_operator)?;
         let area = match area {
@@ -388,11 +408,55 @@ impl Service {
                 ));
             }
         };
+        let area_name = self.area_name(area).unwrap_or_default();
+        let target = format!("{aux} {restated:?} {check}");
+        self.authorize(
+            who,
+            Permission::Aux,
+            Some(&area_name),
+            "aux_confirm",
+            &target,
+        )?;
+        let snapshot = self.snapshot();
+        let Some(pending) = snapshot
+            .pending_aux
+            .iter()
+            .find(|p| p.area == area_name && p.aux == aux)
+        else {
+            self.audit(
+                who,
+                "aux_confirm",
+                Some(&target),
+                Some(&area_name),
+                "rejected: aux_unknown".into(),
+            );
+            return Ok(rejected(&area_name, "aux_unknown"));
+        };
+        if !pending.check.eq_ignore_ascii_case(check.trim()) {
+            // Die Anzeige des Bedienplatzes stimmt nicht mit der offenen Hilfshandlung überein.
+            self.audit(
+                who,
+                "aux_confirm",
+                Some(&target),
+                Some(&area_name),
+                "rejected: check_mismatch".into(),
+            );
+            return Ok(rejected(&area_name, "check_mismatch"));
+        }
+        let (op_area, op) = self
+            .directory
+            .resolve_aux(restated)
+            .map_err(ServiceError::BadRequest)?;
+        if op_area != area {
+            return Err(ServiceError::BadRequest(
+                "die Hilfshandlung gehört zu einem anderen Stellbereich".into(),
+            ));
+        }
         let request = Request::AuxConfirm {
             aux: AuxId(aux),
             operator,
+            op,
         };
-        let target = aux.to_string();
         self.operate(who, Permission::Aux, "aux_confirm", &target, area, request)
             .await
     }

@@ -67,6 +67,13 @@ message ConfirmAuxRequest {
   // Stellbereich; nötig bei mehreren Bereichen.
   string area = 2;
   optional uint32 operator = 3;
+  // Hilfshandlung, wie der zweite Bediener sie nennt (sichere Bestätigungskette).
+  string kind = 4;
+  string element = 5;
+  // "left" oder "right" bei force_point.
+  string position = 6;
+  // Prüfcode der offenen Hilfshandlung, berechnet aus der Anzeige des Bedienplatzes.
+  string check = 7;
 }
 
 // Antwort eines Stellwerkskerns.

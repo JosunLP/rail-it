@@ -280,6 +280,7 @@ fn aux_needs_a_second_operator_in_time() {
     let events = h.step(&[Request::AuxConfirm {
         aux,
         operator: OperatorId(1),
+        op,
     }]);
     assert_eq!(rejected(&events), Some(Rejection::SameOperator));
     assert_eq!(h.phase("A-N1"), RoutePhase::Proceed);
@@ -288,6 +289,7 @@ fn aux_needs_a_second_operator_in_time() {
     let events = h.step(&[Request::AuxConfirm {
         aux,
         operator: OperatorId(2),
+        op,
     }]);
     assert!(accepted(&events));
     assert!(events.contains(&Event::AuxExecuted {
@@ -302,6 +304,7 @@ fn aux_needs_a_second_operator_in_time() {
     let events = h.step(&[Request::AuxConfirm {
         aux,
         operator: OperatorId(2),
+        op,
     }]);
     assert_eq!(rejected(&events), Some(Rejection::AuxUnknown));
 
@@ -459,4 +462,44 @@ fn cancel_with_substitute_uses_time_lock() {
     assert!(accepted(&h.cancel_route("A-N1")));
     assert_eq!(h.phase("A-N1"), RoutePhase::Cancelling);
     assert!(h.substitutes.is_empty());
+}
+
+/// REQ-IXL-022: Der zweite Bediener nennt eine andere Hilfshandlung – nichts wird ausgeführt,
+/// die angeforderte verfällt.
+#[test]
+fn confirmation_must_restate_the_operation() {
+    let mut h = Harness::new();
+    h.set_route("A-N1");
+    h.run(30);
+    assert_eq!(h.phase("A-N1"), RoutePhase::Proceed);
+    let op = AuxOperation::ReleaseRoute(h.route("A-N1"));
+    let events = h.step(&[Request::AuxRequest {
+        op,
+        operator: OperatorId(1),
+    }]);
+    let aux = events
+        .iter()
+        .find_map(|e| match e {
+            Event::AuxPending { aux, .. } => Some(*aux),
+            _ => None,
+        })
+        .unwrap();
+    let other = AuxOperation::ReleaseRoute(h.route("A-N2"));
+    let events = h.step(&[Request::AuxConfirm {
+        aux,
+        operator: OperatorId(2),
+        op: other,
+    }]);
+    assert_eq!(rejected(&events), Some(Rejection::AuxMismatch));
+    assert!(events.contains(&Event::AuxExpired(aux)));
+    assert_eq!(h.phase("A-N1"), RoutePhase::Proceed, "nichts ausgeführt");
+    assert_eq!(h.state.meta().aux_counter(), 0);
+    assert_eq!(h.state.pending_aux().count(), 0);
+    // Auch die richtige Bestätigung kommt danach zu spät.
+    let events = h.step(&[Request::AuxConfirm {
+        aux,
+        operator: OperatorId(2),
+        op,
+    }]);
+    assert_eq!(rejected(&events), Some(Rejection::AuxUnknown));
 }

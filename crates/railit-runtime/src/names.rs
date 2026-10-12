@@ -48,6 +48,59 @@ pub enum AuxKind {
     TakePermission,
 }
 
+impl AuxKind {
+    /// Name wie in API und Szenarien.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReleaseRoute => "release_route",
+            Self::ResetTvd => "reset_tvd",
+            Self::Substitute => "substitute",
+            Self::ForcePoint => "force_point",
+            Self::TakePermission => "take_permission",
+        }
+    }
+}
+
+/// Prüfcode einer offenen Hilfshandlung für die sichere Anzeige- und Bestätigungskette
+/// (REQ-UI-003).
+///
+/// Der Bedienplatz berechnet den Code aus dem, was er anzeigt, der Dienst aus der offenen
+/// Hilfshandlung des Kerns; nur bei Gleichheit wird die Bestätigung weitergegeben. Kanonischer
+/// Text (UTF-8, Zeilen mit `\n` getrennt):
+///
+/// ```text
+/// railit-aux-v1
+/// <Stellbereich>
+/// <Kennung>
+/// <Art>            z. B. release_route
+/// <Element>        z. B. A-N1
+/// <Lage>           left, right oder leer
+/// ```
+///
+/// Der Code sind die ersten drei Bytes des SHA-256 als sechs Großbuchstaben-Hexziffern.
+pub fn aux_check(area: &str, aux: u32, op: &NamedAux) -> String {
+    use sha2::{Digest, Sha256};
+    let position = match op.position {
+        Some(PointPosition::Left) => "left",
+        Some(PointPosition::Right) => "right",
+        None => "",
+    };
+    let text = format!(
+        "railit-aux-v1\n{area}\n{aux}\n{}\n{}\n{position}",
+        op.kind.as_str(),
+        op.element
+    );
+    let digest = Sha256::digest(text.as_bytes());
+    digest
+        .iter()
+        .take(3)
+        .fold(String::with_capacity(6), |mut s, b| {
+            use std::fmt::Write as _;
+            let _ = write!(s, "{b:02X}");
+            s
+        })
+}
+
 /// Hilfshandlung mit fachlichen Namen.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NamedAux {
@@ -206,6 +259,7 @@ impl NamedEvent {
                     Rejection::AuxUnknown => ("aux_unknown", None),
                     Rejection::AuxExpired => ("aux_expired", None),
                     Rejection::SameOperator => ("same_operator", None),
+                    Rejection::AuxMismatch => ("aux_mismatch", None),
                     Rejection::AuxNotApplicable => ("aux_not_applicable", None),
                     Rejection::NoPermission(b) => ("no_permission", Some(border_name(b))),
                 };
@@ -330,6 +384,8 @@ pub struct AuxSnapshot {
     pub operator: u32,
     /// Zeitpunkt der Anforderung in Millisekunden.
     pub since_ms: u64,
+    /// Prüfcode für die Bestätigung, siehe [`aux_check`].
+    pub check: String,
 }
 
 /// Zustand eines Gleisfreimeldeabschnitts.
@@ -647,13 +703,51 @@ impl Snapshot {
                     holds: l.holds(),
                 }),
         );
-        self.pending_aux
-            .extend(state.pending_aux().map(|a| AuxSnapshot {
+        self.pending_aux.extend(state.pending_aux().map(|a| {
+            let op = NamedAux::in_area(plan, prefix, a.op());
+            AuxSnapshot {
                 area: area_name.clone(),
                 aux: a.id().0,
-                op: NamedAux::in_area(plan, prefix, a.op()),
+                check: aux_check(&area_name, a.id().0, &op),
+                op,
                 operator: a.operator().0,
                 since_ms: a.since().as_millis(),
-            }));
+            }
+        }));
+    }
+}
+
+#[cfg(test)]
+mod check_tests {
+    use super::*;
+
+    /// Prüfvektoren; dieselben prüft der Bedienplatz (`apps/railitd/ui/test/check.test.ts`).
+    #[test]
+    fn check_code_vectors() {
+        let named = |kind, element: &str, position| NamedAux {
+            kind,
+            element: element.into(),
+            position,
+        };
+        assert_eq!(
+            aux_check(
+                "Beispielstadt",
+                0,
+                &named(AuxKind::ReleaseRoute, "A-N1", None)
+            ),
+            "63CC78"
+        );
+        assert_eq!(
+            aux_check(
+                "Adorf",
+                7,
+                &named(AuxKind::ForcePoint, "W1", Some(PointPosition::Left))
+            ),
+            "98171F"
+        );
+        assert_eq!(
+            aux_check("Bstadt", 12, &named(AuxKind::ResetTvd, "Ü1", None)),
+            "DF8640"
+        );
     }
 }

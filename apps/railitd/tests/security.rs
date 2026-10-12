@@ -454,12 +454,15 @@ fn mutual_tls_identifies_users_by_certificate() {
     assert_eq!(status, 200, "{body}");
     let id = body["aux"]["aux"].as_u64().unwrap();
     let confirm = url(&format!("/v1/aux/{id}/confirm"));
-    let (status, body) = call(&fdl1, "POST", &confirm, None, None).unwrap();
+    let (_, pending) = call(&fdl2, "GET", &url("/v1/aux"), None, None).unwrap();
+    let mut restated = json!({"kind": "release_route", "element": "A-N1"});
+    restated["check"] = pending["pending"][0]["check"].clone();
+    let (status, body) = call(&fdl1, "POST", &confirm, None, Some(restated.clone())).unwrap();
     assert_eq!(
         (status, body["reason"].as_str()),
         (409, Some("same_operator"))
     );
-    let (status, body) = call(&fdl2, "POST", &confirm, None, None).unwrap();
+    let (status, body) = call(&fdl2, "POST", &confirm, None, Some(restated)).unwrap();
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["aux"]["type"], "aux_executed");
 

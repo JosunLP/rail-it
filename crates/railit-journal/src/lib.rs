@@ -36,7 +36,7 @@ use sha2::{Digest, Sha256};
 /// Kennung des Formats im Kopf.
 pub const FORMAT: &str = "railit-journal";
 /// Version des Formats.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 type Hash32 = [u8; 32];
 

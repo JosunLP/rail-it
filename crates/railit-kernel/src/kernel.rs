@@ -351,8 +351,8 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
             Request::CancelRoute(r) => self.cancel_route(st, now, r, out)?,
             Request::MovePoint(p, pos) => self.move_point(st, now, p, pos, out)?,
             Request::AuxRequest { op, operator } => self.aux_request(st, now, op, operator, out)?,
-            Request::AuxConfirm { aux, operator } => {
-                self.aux_confirm(st, now, aux, operator, out)?
+            Request::AuxConfirm { aux, operator, op } => {
+                self.aux_confirm(st, now, aux, operator, op, out)?
             }
             Request::RequestPermission(b) => self.request_permission(st, b, true)?,
             Request::WithdrawPermissionRequest(b) => self.request_permission(st, b, false)?,
@@ -675,6 +675,7 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
         now: Tick,
         aux: AuxId,
         operator: OperatorId,
+        op: AuxOperation,
         out: &mut O,
     ) -> Res<Result<(), Rejection>> {
         let Some(slot) = st
@@ -696,6 +697,12 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
             return Ok(Err(Rejection::SameOperator));
         }
         *slot = None;
+        if pending.op != op {
+            // Die Bediener meinen verschiedene Hilfshandlungen: nichts ausführen, die
+            // angeforderte verfällt und muss neu angefordert werden.
+            out.event(Event::AuxExpired(aux));
+            return Ok(Err(Rejection::AuxMismatch));
+        }
         if let Err(reason) = self.aux_applicable(st, now, pending.op)? {
             return Ok(Err(reason));
         }

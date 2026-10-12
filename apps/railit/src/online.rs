@@ -221,6 +221,10 @@ fn reason_text(reason: &str, element: Option<&str>) -> String {
         "aux_unknown" => "Hilfshandlung unbekannt oder bereits erledigt".into(),
         "aux_expired" => "Bestätigungsfrist abgelaufen".into(),
         "same_operator" => "Bestätigung muss ein anderer Bediener geben".into(),
+        "aux_mismatch" => {
+            "bestätigte Hilfshandlung weicht von der angeforderten ab; sie ist verfallen".into()
+        }
+        "check_mismatch" => "Prüfcode stimmt nicht mit der offenen Hilfshandlung überein".into(),
         "aux_not_applicable" => "Voraussetzungen der Hilfshandlung nicht erfüllt".into(),
         other => other.into(),
     }
@@ -531,7 +535,7 @@ pub(crate) fn aux(
         let aux = &answer["aux"];
         match show(&aux["type"]) {
             "aux_pending" => println!(
-                "Hilfshandlung #{} angefordert. Ein zweiter Bediener bestätigt mit:\n  railit aux confirm {} --operator <NUMMER>",
+                "Hilfshandlung #{} angefordert. Ein zweiter Bediener bestätigt mit:\n  railit aux confirm {} <ART> <ELEMENT> --operator <NUMMER>",
                 aux["aux"], aux["aux"]
             ),
             "aux_executed" => println!(
@@ -549,6 +553,65 @@ pub(crate) fn aux(
     } else {
         ExitCode::from(EXIT_INVALID)
     })
+}
+
+/// Bestätigung einer Hilfshandlung über die sichere Anzeige- und Bestätigungskette: Die
+/// offene Hilfshandlung wird angezeigt, ihr Prüfcode aus der Anzeige berechnet und mit dem
+/// des Dienstes verglichen; die Bestätigung nennt die Hilfshandlung, wie der zweite Bediener
+/// sie angegeben hat.
+pub(crate) fn aux_confirm(
+    c: &Client,
+    id: u32,
+    area: Option<&str>,
+    restated: Value,
+    operator: Option<u32>,
+    output: Output,
+) -> Res<ExitCode> {
+    let list = c.get("/v1/aux")?;
+    let pending = list["pending"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|p| p["aux"] == id && area.is_none_or(|a| p["area"] == a));
+    let Some(pending) = pending else {
+        println!("Hilfshandlung #{id} ist nicht offen.");
+        return Ok(ExitCode::from(EXIT_INVALID));
+    };
+    // Anzeige: genau diese Felder bilden den Prüfcode.
+    let shown_area = show(&pending["area"]).to_string();
+    let shown: Result<railit_runtime::NamedAux, _> = serde_json::from_value(pending["op"].clone());
+    let Ok(shown) = shown else {
+        println!("Anzeige gestört: Hilfshandlung #{id} nicht lesbar.");
+        return Ok(ExitCode::from(EXIT_INVALID));
+    };
+    let code = railit_runtime::aux_check(&shown_area, id, &shown);
+    if output == Output::Text {
+        println!(
+            "Offen: #{id} {} {}{} in {shown_area}, angefordert von Bediener {} – Prüfcode {code}",
+            shown.kind.as_str(),
+            shown.element,
+            shown
+                .position
+                .map(|p| format!(" ({p:?})"))
+                .unwrap_or_default(),
+            pending["operator"],
+        );
+    }
+    if pending["check"] != code {
+        println!("Anzeige gestört: Prüfcode weicht vom Dienst ab; keine Bestätigung gesendet.");
+        return Ok(ExitCode::from(EXIT_INVALID));
+    }
+    let mut body = restated;
+    body["check"] = json!(code);
+    let query = format!("?area={}", segment(&shown_area));
+    aux(
+        c,
+        &format!("/v1/aux/{id}/confirm{query}"),
+        Some(body),
+        operator,
+        output,
+    )
 }
 
 /// Angemeldeter Benutzer.

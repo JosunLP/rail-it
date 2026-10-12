@@ -61,7 +61,12 @@ pub fn to_svg(layout: &Layout) -> String {
             }
         }
         if let (Some(a), Some(b)) = (t.line.first(), t.line.last()) {
-            text(&mut out, [i32::midpoint(a[0], b[0]), b[1] + 18], "name", &t.name);
+            text(
+                &mut out,
+                [i32::midpoint(a[0], b[0]), b[1] + 18],
+                "name",
+                &t.name,
+            );
         }
     }
     for p in &layout.points {

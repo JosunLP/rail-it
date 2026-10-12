@@ -438,10 +438,20 @@ enum AuxCommand {
         #[arg(long)]
         operator: Option<u32>,
     },
-    /// Hilfshandlung bestätigen (zweiter, anderer Bediener).
+    /// Hilfshandlung bestätigen (zweiter, anderer Bediener). Der zweite Bediener nennt die
+    /// Hilfshandlung noch einmal; der Kern führt sie nur aus, wenn sie der angeforderten
+    /// entspricht.
     Confirm {
         /// Kennung aus der Anforderung.
         id: u32,
+        /// Art, wie der zweite Bediener sie nennt.
+        #[arg(value_enum)]
+        kind: AuxKind,
+        /// Element, wie der zweite Bediener es nennt.
+        element: String,
+        /// Ziellage (nur force-point).
+        #[arg(long, value_enum)]
+        position: Option<Position>,
         /// Stellbereich (bei mehreren Bereichen).
         #[arg(long)]
         area: Option<String>,
@@ -668,17 +678,19 @@ fn run_online(
             }
             online::aux(c, "/v1/aux", Some(body), operator, output)
         }
-        Command::Aux(AuxCommand::Confirm { id, area, operator }) => {
-            let query = area
-                .map(|a| format!("?area={}", path(&a)))
-                .unwrap_or_default();
-            online::aux(
-                c,
-                &format!("/v1/aux/{id}/confirm{query}"),
-                None,
-                operator,
-                output,
-            )
+        Command::Aux(AuxCommand::Confirm {
+            id,
+            kind,
+            element,
+            position,
+            area,
+            operator,
+        }) => {
+            let mut restated = json!({ "kind": kind.as_str(), "element": element });
+            if let Some(p) = position {
+                restated["position"] = json!(p.as_str());
+            }
+            online::aux_confirm(c, id, area.as_deref(), restated, operator, output)
         }
         Command::Watch => online::watch(c, output),
         Command::Areas => online::areas(c, output),
