@@ -12,6 +12,8 @@ Anforderung → Code → Test (Konzept, Abschnitt 16).
 | [fahrerlaubnis.md](fahrerlaubnis.md) | `REQ-MOV`: Signalbegriffe Ks und H/V |
 | [journal.md](journal.md) | `REQ-JRN`: Betriebsjournal und Replay |
 | [dienst.md](dienst.md) | `REQ-SVC`: Dienst, API und Bedienung |
+| [betrieb.md](betrieb.md) | `REQ-OPS`: Betriebsführung (Zugnummern, Fahrplan, Zuglenkung, Disposition) |
+| [sicherheit.md](sicherheit.md) | `REQ-SEC`: Benutzer, Rollen, TLS, Auditprotokoll |
 
 **Regeln**
 

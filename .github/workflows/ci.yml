@@ -32,6 +32,21 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  properties:
+    name: Eigenschaftstests des Kerns
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain installieren
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - name: Invarianten und Erlaubniswechsel (je 5000 Fälle)
+        run: >
+          cargo test --release --locked -p railit-kernel --all-features
+          --test invariants --test borders
+        env:
+          PROPTEST_CASES: "5000"
+
   no-std:
     name: no_std-Build (Cortex-M)
     runs-on: ubuntu-latest

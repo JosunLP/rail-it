@@ -1,6 +1,6 @@
 # rail-it – Konzept einer Engine für Netz- und Stellwerkmanagement
 
-> Status: **v0.4** (Phasen 0 bis 2 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
+> Status: **v0.5** (Phasen 0 bis 3 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
 >
 > v0.2 arbeitet die Grundsatzentscheidungen aus Abschnitt 2 ein: vollständiger Netz- und
 > Bahnbetrieb, deutsches ESTW **und** europäisches System (ETCS/EULYNX), Server **und**
@@ -399,6 +399,36 @@ stateDiagram-v2
 - **Bahnübergänge:** Einschalten, Sicherung überwachen, Freigabe der Fahrerlaubnis nur bei
   gesichertem BÜ.
 
+**Stand Phase 3 – Erlaubniswechsel (Streckenblock):** Ein Netz besteht aus Stellbereichen
+mit je eigenem Kern. Wo zwei Bereiche aneinandergrenzen, gibt es eine **Erlaubnis**: Nur die
+Seite, die sie hält, darf Züge über die Grenze schicken. Die andere Seite hält ihren
+**Annäherungsabschnitt** (von der Grenze bis zum Einfahrsignal samt dessen Durchrutschweg)
+verschlossen; nur Fahrstraßen ab dem Einfahrsignal dürfen ihn nutzen, Züge des Nachbarn
+dürfen ihn besetzen. Beide Kerne senden sich in jedem Zyklus eine Grenzmeldung (hält
+Erlaubnis, laufende Nummer, Angebot, Annäherungsabschnitt frei und ausschließlich
+verschlossen, Anforderung).
+
+- **Abgabe** nur auf Anforderung, ohne Fahrstraße über die Grenze, bei freien und gesicherten
+  Annäherungsabschnitten auf beiden Seiten; der eigene Abschnitt wird im selben Zyklus
+  verschlossen (REQ-IXL-018).
+- **Übernahme** nur aus einem Angebot mit größerer Nummer und nicht vor Ablauf der
+  Einschwingzeit nach einem (Neu-)Start; das Angebot endet mit der Quittung. Beim Anlauf
+  übernimmt der dafür bestimmte Kern, nachdem der Nachbar die Einschwingzeit lang gemeldet hat,
+  sie nicht zu halten; dasselbe gilt für die Hilfshandlung „Erlaubnis zurückholen“
+  (REQ-IXL-017).
+- **Ausfahrt** über die Grenze nur mit Erlaubnis; Fahrt nur bei aktueller Meldung des
+  Nachbarn, dass sein Annäherungsabschnitt frei, gesichert und **ausschließlich** verschlossen
+  ist (REQ-IXL-020).
+- **Eingleisige Strecke** zwischen zwei Bahnhöfen als eigener Bereich mit zwei Grenzen, deren
+  Annäherungsabschnitte sich überdecken: Der Streckenbereich gibt eine Erlaubnis nur ab,
+  solange kein anderer Annäherungsabschnitt den eigenen verschließt (REQ-IXL-021). Ein
+  Property-Test mit drei echten Kernen fand ohne diese Regel eine Gegenfahrt.
+
+Property-Tests mit zwei bzw. drei echten Kernen, beliebigen Bedienungen, Laufzeiten bis zu
+einer Sekunde und Neustarts belegen, dass nie beide Seiten einer Grenze die Erlaubnis halten
+und nie zwei Bahnhöfe Züge in die Strecke schicken. Die Übertragung ist in der Simulation
+ideal; die sichere Übertragung über RaSTA/EULYNX SCI-ILS folgt in Phase 4.
+
 ### 10.5 Invarianten
 
 Nach jedem `step` prüft der Kern seine Invarianten. Eine Verletzung führt nicht zur Panik,
@@ -532,11 +562,16 @@ Sicherheit: mTLS, Rollen (Fahrdienstleiter, Disponent, Instandhaltung, Projektie
 Administration, Beobachter), vollständiges Audit und ein Zonenmodell nach IEC 62443 /
 CLC/TS 50701.
 
-**Stand Phase 1:** `railitd` bietet die API `v1` zunächst als **REST/JSON** mit einem
-Ereignisstrom über Server-Sent Events und einem Bearer-Token (siehe
-[api.md](api.md)). Damit sind Bedienung, Zustandsbild, Ereignisse und Simulation ohne
-Code-Generierung von jedem Werkzeug aus nutzbar. Der Protobuf/gRPC-Vertrag folgt in
-Phase 3. Die REST-Pfade bleiben dann als JSON-Abbildung desselben Vertrags erhalten.
+**Stand Phase 3:** `railitd` bietet die API `v1` als **REST/JSON** mit Ereignisstrom (SSE)
+und als **gRPC** (`proto/railit/v1/railit.proto`: `Interlocking`, `Operations`, `Simulation`,
+`Events`, `Diagnostics`) auf demselben Port (siehe [api.md](api.md)). Beide Schnittstellen
+gehen über eine gemeinsame Dienstschicht: gleiche Rechte, gleiches Auditprotokoll, gleiche
+Antworten. Anmeldung je Benutzer mit Token oder Client-Zertifikat (mTLS), Rollen
+`beobachter`, `fahrdienstleiter`, `disponent`, `instandhaltung`, `projektierer`,
+`administration` mit Zuständigkeit je Stellbereich, Auditprotokoll mit Hashkette. Offen:
+`InfrastructureService`, `PlanningService` (Plan hochladen und mit zwei Personen aktivieren),
+`EtcsService`, `AdminService`, OpenAPI, Prüfung der Abwärtskompatibilität des Vertrags in der
+CI.
 
 ### 14.2 CLI `railit`
 
@@ -665,15 +700,17 @@ Daraus folgen diese Regeln:
 | **0 – Fundament** | Workspace, CI, Lizenz, `types`, `topology`, rail-it-TOML, `railit net validate/info`, erste Gefährdungsliste und Anforderungen | Netz laden, prüfen und beschreiben | ✔ |
 | **1 – Minimaler Kern** | Plan-Image (signiert), Fahrstraßengenerator mit unabhängiger Gegenprüfung, Kern mit Weichen, Signalen und TVD inkl. Teilauflösung und Zeitverschluss, Simulator, Szenarien, `railitd` mit REST-API, CLI | Bahnhof „Beispielstadt“ (`examples/beispielstadt.toml`) fährt sicher in der Simulation, bedienbar über die CLI | ✔ |
 | **2 – ESTW vollständig** | Durchrutschwege, Flankenschutz, Hilfshandlungen mit Zählwerk, Signalbegriffe Ks und H/V (`railit-movement`), BÜ, Erkennung unerlaubter Besetzungen, Journal und Replay | Fachlich vollständiges Einzelstellwerk nach `de-estw` | ✔ |
-| **3 – Netz & Betrieb** | Mehrere Stellbereiche, Streckenblock, Zugnummern, Fahrplan, Zuglenkung, Disposition, gRPC-Vertrag, Rollen, mTLS, Audit | Betrieb eines Netzes mit mehreren Bahnhöfen in der Simulation | offen |
+| **3 – Netz & Betrieb** | Mehrere Stellbereiche, Streckenblock, Zugnummern, Fahrplan, Zuglenkung, Disposition, gRPC-Vertrag, Rollen, mTLS, Audit | Betrieb eines Netzes mit mehreren Bahnhöfen in der Simulation („Nordbahn“, `examples/nordbahn.toml` mit Fahrplan `examples/nordbahn-fahrplan.toml`) | ✔ |
 | **4 – Europa** | ETCS Level 2 (MA-Erzeugung, RBC-Funktion), EULYNX SCI-* über RaSTA, Import von railML 3 und PlanPro | Mischbetrieb ESTW/ETCS, Anbindung an Prüfstände | offen |
 | **5 – Sicherheit & Embedded** | Redundante Kanäle, Voter, Cortex-R-Runtime, Kani-Nachweise, Fuzzing, Safety Case | Zulassungsreifer Kandidat für das Labor | offen |
 | **6 – UI** | Spurplan-UI als API-Client mit sicherer Anzeige- und Bestätigungskette | Bedienplatz | offen |
 
-**Umgesetzte Crates (Stand Phase 2):** `railit-types`, `railit-topology`, `railit-plan`,
-`railit-planning`, `railit-rules`, `railit-kernel`, `railit-movement`, `railit-journal`,
-`railit-sim`, `railit-runtime` (einschließlich Szenario-Runner und Schlüsselverwaltung),
-`railit-import` sowie die Anwendungen `railit` und `railitd`. Das Regelwerk `de-estw` ist
+**Umgesetzte Crates (Stand Phase 3):** `railit-types`, `railit-topology`, `railit-plan`,
+`railit-planning`, `railit-rules`, `railit-kernel`, `railit-movement`, `railit-journal`
+(mit Auditprotokoll), `railit-sim`, `railit-ops` (Zugnummernmeldung, Fahrplan, Zuglenkung,
+Disposition), `railit-runtime` (mehrere Stellbereiche, Szenario-Runner,
+Schlüsselverwaltung), `railit-import` sowie die Anwendungen `railit` und `railitd` (REST,
+gRPC, TLS/mTLS, Rollen). Das Regelwerk `de-estw` ist
 noch das Lehrregelwerk `GenericRules` mit den Zeiten aus Phase 2 (Auflösezeit des
 Durchrutschwegs, Bestätigungsfrist, Leuchtdauer Zs1). Die übrigen Crates aus Abschnitt 5 entstehen in den
 jeweiligen Phasen.

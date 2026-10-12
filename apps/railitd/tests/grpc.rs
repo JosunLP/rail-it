@@ -102,7 +102,7 @@ fn route(name: &str) -> pb::RouteRequest {
     pb::RouteRequest { route: name.into() }
 }
 
-/// REQ-API-003: gRPC mit denselben Rechten, Antworten und Ereignissen wie REST.
+/// REQ-SVC-008: gRPC mit denselben Rechten, Antworten und Ereignissen wie REST.
 #[tokio::test]
 async fn interlocking_over_grpc() {
     let d = start();

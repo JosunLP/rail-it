@@ -1,8 +1,42 @@
 # API von `railitd` (v1)
 
-`railitd` stellt eine REST/JSON-API und einen Ereignisstrom bereit. Standardadresse:
-`http://127.0.0.1:7878`. Ist ein Token gesetzt (`--token` oder `RAILIT_TOKEN`), verlangen
-alle Pfade außer `/v1/health` den Kopf `Authorization: Bearer <token>`.
+`railitd` stellt eine REST/JSON-API, einen Ereignisstrom und – auf demselben Port – die
+gRPC-Schnittstelle `railit.v1` bereit (siehe [gRPC](#grpc)). Standardadresse:
+`http://127.0.0.1:7878`, mit TLS `https://…`.
+
+## Anmeldung und Rechte
+
+| Betriebsart | Start | Anmeldung |
+|-------------|-------|-----------|
+| Benutzerverwaltung | `--users users.toml --audit audit.log` | `Authorization: Bearer <token>` oder Client-Zertifikat (mTLS, `--tls-client-ca`); Rollen und Stellbereiche aus der Datei |
+| Gemeinsames Token | `--token …` bzw. `RAILIT_TOKEN` | `Authorization: Bearer <token>`, alle Rechte |
+| Offen | – | keine; nur auf der Loopback-Adresse zulässig |
+
+Alle Pfade außer `/v1/health` verlangen die Anmeldung. Die Benutzerdatei:
+
+```toml
+[[user]]
+name = "fdl-adorf"
+roles = ["fahrdienstleiter"]
+operator = 101             # Bedienernummer für Hilfshandlungen (eindeutig)
+areas = ["Adorf"]          # optional: zuständige Stellbereiche
+token_sha256 = "…"         # railit auth token fdl-adorf
+cert_cn = "fdl-adorf"      # oder: Common Name des Client-Zertifikats
+```
+
+| Rolle | Rechte |
+|-------|--------|
+| `beobachter` | lesen (Zustand, Plan, Ereignisse, Betriebsführung) |
+| `fahrdienstleiter` | lesen, Fahrstraßen, Weichen, Erlaubnisse, Hilfshandlungen |
+| `disponent` | lesen, Betriebsführung (`/v1/ops/…`) |
+| `instandhaltung` | lesen, Simulation (`/v1/sim/…`), Auditprotokoll |
+| `projektierer` | lesen, Auditprotokoll |
+| `administration` | alles |
+
+Fehlendes Recht ergibt `403`. Jede Bedienung – auch eine abgewiesene – steht im
+Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`). TLS:
+`--tls-cert server.pem --tls-key server.key`, gegenseitige Anmeldung mit
+`--tls-client-ca ca.pem`.
 
 | Methode | Pfad | Zweck | Antwort |
 |---------|------|-------|---------|
@@ -12,16 +46,33 @@ alle Pfade außer `/v1/health` den Kopf `Authorization: Bearer <token>`.
 | POST | `/v1/routes/{name}/set` | Fahrstraße einstellen | 200 `accepted` / 409 `rejected` |
 | POST | `/v1/routes/{name}/cancel` | Fahrstraße zurücknehmen | 200 / 409 |
 | POST | `/v1/points/{name}/move` | Weiche umstellen, Body `{"position":"left"\|"right"}` | 200 / 409 |
+| GET | `/v1/areas` | Stellbereiche mit Grenzen und Erlaubnissen | JSON-Liste |
+| POST | `/v1/borders/{Bereich>Nachbar}/request` | Erlaubnis anfordern | 200 / 409 |
+| POST | `/v1/borders/{Bereich>Nachbar}/withdraw` | Anforderung zurückziehen | 200 / 409 |
 | GET | `/v1/aux` | Offene Hilfshandlungen und Zählwerk | `{"pending": […], "counter"}` |
-| POST | `/v1/aux` | Hilfshandlung anfordern, Body `{"kind","element","position"?}`, Kopf `X-Railit-Operator` | 200 / 409 / 400 |
-| POST | `/v1/aux/{id}/confirm` | Hilfshandlung bestätigen, Kopf `X-Railit-Operator` (anderer Bediener) | 200 / 409 / 400 |
+| POST | `/v1/aux` | Hilfshandlung anfordern, Body `{"kind","element","position"?}`; ohne Benutzerverwaltung Kopf `X-Railit-Operator` | 200 / 409 / 400 |
+| POST | `/v1/aux/{id}/confirm` | Hilfshandlung bestätigen (anderer Bediener), `?area=` bei mehreren Bereichen | 200 / 409 / 400 |
+| GET | `/v1/ops` | Betriebsführung: Fahrplan, Zuglenkung, Züge mit Zugnummer, Halt, Verspätung | JSON |
+| POST | `/v1/ops/ars` | Zuglenkung ein/aus, Body `{"on":true}` | 200 |
+| POST | `/v1/ops/trains/{zug}/describe` | Zugnummer eintragen, Body `{"signal"}` | 200 / 400 |
+| DELETE | `/v1/ops/trains/{zug}` | Zugnummer löschen | 200 / 400 |
+| POST | `/v1/ops/trains/{zug}/hold` bzw. `/release` | Zug zurückhalten bzw. freigeben | 200 / 400 |
+| POST | `/v1/ops/trains/{zug}/platform` | Gleiswechsel, Body `{"station","platform"}` | 200 / 400 |
+| POST | `/v1/ops/trains/{zug}/delay` | Wartezeit verfügen, Body `{"s":60}` | 200 / 400 |
+| GET | `/v1/whoami` | Angemeldeter Benutzer mit Rollen | JSON |
+| GET | `/v1/audit?last=50` | Auditprotokoll prüfen, letzte Einträge | `{"records","head","last"}` |
 | GET | `/v1/events` | Ereignisstrom (Server-Sent Events, je Ereignis ein JSON-Objekt) | `text/event-stream` |
 | GET | `/v1/sim/trains` | Züge der Simulation | JSON-Liste |
 | POST | `/v1/sim/trains` | Zug einsetzen, Body `{"name","signal","length_m","speed_kmh","ignore_signals"?}` | 200 / 400 |
 | DELETE | `/v1/sim/trains/{name}` | Zug entfernen | 200 / 400 |
 | POST | `/v1/sim/faults` | Störung setzen/aufheben, Body `{"kind","element","active"?}` | 200 / 404 |
 
-Unbekannte Elemente ergeben `404`, ungültige Eingaben `400`, eine fehlende Anmeldung `401`.
+Namen mit `>` (Grenzen, Fahrstraßen über Grenzen wie `AN1->Strecke`) werden im Pfad kodiert
+(`AN1-%3EStrecke`). Bei mehreren Stellbereichen tragen Antworten und Ereignisse das Feld
+`area`.
+
+Unbekannte Elemente ergeben `404`, ungültige Eingaben `400`, eine fehlende Anmeldung `401`,
+fehlende Rechte `403`.
 Fehler haben die Form `{"error": "…"}`.
 
 ## Antworten des Kerns
@@ -37,7 +88,7 @@ synchron:
 Ablehnungsgründe: `conflict`, `tvd_not_clear`, `point_locked`, `point_not_operable`,
 `route_active`, `route_not_active`, `train_in_route`, `safe_state`, `unknown_element`,
 `signal_held`, `aux_busy`, `aux_unknown`, `aux_expired`, `same_operator`,
-`aux_not_applicable`.
+`aux_not_applicable`, `no_permission` (Ausfahrt über eine Grenze ohne Erlaubnis).
 
 ## Hilfshandlungen
 
@@ -51,6 +102,7 @@ und erhöht das Zählwerk. Der Kopf `X-Railit-Operator: <Nummer>` identifiziert 
 | `reset_tvd` | Abschnitt | gestört gemeldet und unverschlossen |
 | `substitute` | Fahrstraße | festgelegt oder haltgefallen, Weichen in Lage, Schutzsignale Halt, BÜ geschlossen |
 | `force_point` | Weiche, dazu `"position"` | unverschlossen, Abschnitt gestört |
+| `take_permission` | Grenze `Bereich>Nachbar` | Erlaubnis zurückholen: weder dieser Kern noch der Nachbar hält sie |
 
 ```sh
 curl -s -X POST -H "Authorization: Bearer $RAILIT_TOKEN" -H "X-Railit-Operator: 1" \
@@ -84,13 +136,22 @@ Jedes Ereignis trägt `time_ms` (Simulationszeit) und `type`:
 |--------|--------|-----------|
 | `accepted` / `rejected` | `request`, `reason`, `element` | Antwort auf eine Anforderung |
 | `route_phase` | `route`, `phase` | Phasenwechsel: `idle`, `setting`, `locked`, `proceed`, `occupied`, `arrived` (Ziel erreicht, Durchrutschweg noch festgelegt), `cancelling`, `halted` |
-| `alarm` | `alarm`, `element` | `setting_timeout`, `signal_dropped`, `train_entered_cancelled_route`, `signal_defective`, `signal_mismatch`, `unknown_element`, `unauthorized_occupancy`, `signal_passed_at_danger` |
+| `alarm` | `alarm`, `element` | `setting_timeout`, `signal_dropped`, `train_entered_cancelled_route`, `signal_defective`, `signal_mismatch`, `unknown_element`, `unauthorized_occupancy`, `signal_passed_at_danger`, `border_lost` (keine aktuelle Meldung des Nachbarn), `permission_conflict` |
+| `permission` | `border`, `holding` | Erlaubnis an einer Grenze übernommen bzw. abgegeben |
 | `aux_pending` / `aux_executed` / `aux_expired` | `aux`, `op`, `operator` bzw. `counter` | Hilfshandlung angefordert, ausgeführt, verfallen |
+| `train_described`, `train_moved`, `train_left`, `train_erased`, `arrived`, `departed`, `route_requested`, `permission_requested`, `spawned`, `spawn_failed` | `train`, … (`"source":"ops"`) | Betriebsführung: Zugnummern, Halte mit `delay_s`, Anforderungen der Zuglenkung |
 | `sim` | `event`, `train`, … | Simulation: `train_stopped`, `train_started`, `train_left`, `train_arrived`, `train_derailed`, `point_trailed`, `signal_passed_at_danger`, `substitute_passed`, `level_crossing_not_closed` |
 
 ## Störungsarten der Simulation
 
 `point_disturbed`, `tvd_disturbed`, `tvd_occupied`, `signal_defective`, `lx_disturbed`.
+
+## Netze mit Stellbereichen
+
+Hat das Netz Stellbereiche, ist `--plan` ein Verzeichnis mit `<Bereich>.rplan`
+(`railit plan compile netz.toml --out plaene/`) und `--journal` ein Verzeichnis mit
+`<Bereich>.journal`. Mit `--timetable fahrplan.toml` setzt die Betriebsführung Züge nach Plan
+ein, mit `--ars` lenkt sie sie.
 
 ## Journal
 
@@ -106,6 +167,24 @@ curl -s -X POST -H "Authorization: Bearer $RAILIT_TOKEN" \
      http://127.0.0.1:7878/v1/routes/A-N1/set
 curl -sN -H "Authorization: Bearer $RAILIT_TOKEN" http://127.0.0.1:7878/v1/events
 ```
+
+## gRPC
+
+Vertrag: [`proto/railit/v1/railit.proto`](../proto/railit/v1/railit.proto). Dienste:
+
+| Dienst | Methoden |
+|--------|----------|
+| `railit.v1.Interlocking` | `GetState`, `SetRoute`, `CancelRoute`, `MovePoint`, `RequestPermission`, `WithdrawPermission`, `RequestAux`, `ConfirmAux` |
+| `railit.v1.Operations` | `GetOperations`, `SetArs`, `Describe`, `Erase`, `Hold`, `Release`, `SetPlatform`, `Delay` |
+| `railit.v1.Simulation` | `ListTrains`, `AddTrain`, `RemoveTrain`, `SetFault` |
+| `railit.v1.Events` | `Subscribe` (Server-Streaming, optional nach `type` gefiltert) |
+| `railit.v1.Diagnostics` | `WhoAmI`, `GetPlan`, `GetAudit` |
+
+gRPC läuft über HTTP/2 auf dem Port der REST-API (ohne TLS als h2c, mit TLS per ALPN).
+Anmeldung als Metadaten `authorization: Bearer <token>` oder per Client-Zertifikat. Eine
+Ablehnung durch den Kern ist eine Antwort (`Answer.accepted = false`, `reason`), kein Fehler;
+Fehlercodes: `NOT_FOUND`, `INVALID_ARGUMENT`, `PERMISSION_DENIED`, `UNAUTHENTICATED`,
+`UNAVAILABLE`, `DEADLINE_EXCEEDED`.
 
 Die Kommandozeile `railit` deckt alle Pfade ab (`railit state`, `railit route set A-N1`,
 `railit aux request release-route A-N1 --operator 1`, `railit watch`, …).

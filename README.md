@@ -19,10 +19,12 @@ und – für den Sicherheitskern – auf Embedded-Hardware.
 
 ## Stand
 
-Phase 0 (Fundament), Phase 1 (minimaler Kern) und Phase 2 (ESTW vollständig:
-Durchrutschwege, Flankenschutz, Bahnübergänge, Hilfshandlungen mit Zwei-Personen-Regel,
-Ersatzsignal, Erkennung unerlaubter Besetzung, Signalbegriffe Ks und H/V, Journal und Replay)
-sind umgesetzt.
+Phase 0 (Fundament), Phase 1 (minimaler Kern), Phase 2 (ESTW vollständig: Durchrutschwege,
+Flankenschutz, Bahnübergänge, Hilfshandlungen mit Zwei-Personen-Regel, Ersatzsignal,
+Erkennung unerlaubter Besetzung, Signalbegriffe Ks und H/V, Journal und Replay) und Phase 3
+(Netz und Betrieb: mehrere Stellbereiche mit je eigenem Kern, Streckenblock mit
+Erlaubniswechsel, Zugnummernmeldung, Fahrplan, Zuglenkung, Disposition, gRPC-Vertrag,
+Benutzer mit Rollen, TLS/mTLS, Auditprotokoll) sind umgesetzt.
 
 | Crate | Inhalt | |
 |-------|--------|---|
@@ -33,11 +35,12 @@ sind umgesetzt.
 | `railit-rules` | Regelwerk-Schnittstelle, Lehrregelwerk | `no_std` |
 | `railit-kernel` | Sicherheitskern: Fahrwegsicherung, Hilfshandlungen, Invarianten, sicherer Zustand | `no_std`, ohne Allokator |
 | `railit-movement` | Signalbegriffe Ks und H/V aus dem Kernzustand | `no_std`, ohne Allokator |
-| `railit-journal` | Betriebsjournal mit Hashkette, Prüfpunkten und Replay | |
+| `railit-journal` | Betriebsjournal mit Hashkette, Prüfpunkten und Replay; Auditprotokoll | |
 | `railit-sim` | Simulator: Weichen, Signale, Gleisfreimeldung, Bahnübergänge, Züge, Störungen | |
-| `railit-runtime` | Zyklus Kern ↔ Feld, Zustandsbild, Szenarien, Schlüssel | |
+| `railit-ops` | Zugnummernmeldung, Fahrplan, Zuglenkung, Selbstblock, Disposition | |
+| `railit-runtime` | Zyklus Kerne ↔ Feld für mehrere Stellbereiche, Zustandsbild, Szenarien, Schlüssel | |
 | `railit-import` | rail-it-TOML | |
-| `railitd` | Dienst mit REST/JSON-API und Ereignisstrom | |
+| `railitd` | Dienst mit REST/JSON-API, gRPC (`proto/railit/v1`), Ereignisstrom, Rollen, TLS/mTLS, Audit | |
 | `railit` | Kommandozeile (offline und online) | |
 
 ## Schnellstart
@@ -74,6 +77,28 @@ railit journal verify betrieb.journal
 railit journal replay betrieb.journal --plan beispielstadt.rplan
 ```
 
+### Netz mit mehreren Bahnhöfen: Nordbahn
+
+Drei Stellbereiche (Bahnhof Adorf, eingleisige Strecke mit Selbstblock, Bahnhof Bstadt), je
+mit eigenem Kern; ein Fahrplan lässt zwei Züge mit Zuglenkung verkehren.
+
+```sh
+railit plan compile examples/nordbahn.toml --out nordbahn/ --key railit.key
+
+railitd --network examples/nordbahn.toml --plan nordbahn/ --trusted-key railit.pub \
+        --timetable examples/nordbahn-fahrplan.toml --ars --speed 10 &
+
+railit areas            # Stellbereiche, Grenzen, Erlaubnisse
+railit ops list         # Züge mit Zugnummer, nächstem Halt, Verspätung
+railit ops hold RE1     # Disposition: zurückhalten, Gleiswechsel, Wartezeit
+railit border request 'Strecke>Adorf'   # Anführungszeichen: > ist ein Shell-Zeichen
+railit scenario run tests/scenarios/1[3-5]_*.toml
+```
+
+Für den Betrieb mit Benutzern: `railitd … --users users.toml --audit audit.log
+--tls-cert server.pem --tls-key server.key [--tls-client-ca ca.pem]`; die CLI meldet sich mit
+`--token` bzw. `--ca`, `--cert`, `--key` an (siehe [API](docs/api.md)).
+
 Exit-Codes der CLI: `0` Erfolg, `1` ungültig oder abgelehnt, `2` Bedien-, Lese- oder
 Verbindungsfehler. Mit `--output json` liefern alle Befehle JSON.
 
@@ -87,7 +112,8 @@ cargo build --target thumbv7em-none-eabihf \
       -p railit-types -p railit-topology -p railit-plan -p railit-rules -p railit-kernel \
       -p railit-movement
 cargo deny check
-PROPTEST_CASES=10000 cargo test --release -p railit-kernel --all-features --test invariants
+PROPTEST_CASES=10000 cargo test --release -p railit-kernel --all-features \
+      --test invariants --test borders
 ```
 
 Die Toolchain ist in `rust-toolchain.toml` festgelegt. Die sicherheitsrelevanten Crates

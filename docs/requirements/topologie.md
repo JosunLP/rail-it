@@ -2,7 +2,8 @@
 
 Umgesetzt in `crates/railit-topology`, nachgewiesen in
 `crates/railit-topology/tests/validation.rs`. Jede Prüfung meldet ihre ID über
-`TopologyError::requirement()`.
+`TopologyError::requirement()`. Stellbereiche, Betriebsstellen und Teilnetze sind in
+`crates/railit-import/tests/areas.rs` nachgewiesen.
 
 | ID | Anforderung | Gefährdung | Nachweis |
 |----|-------------|------------|----------|
@@ -16,3 +17,6 @@ Umgesetzt in `crates/railit-topology`, nachgewiesen in
 | REQ-TOP-008 | Ein Netz ist nur nach vollständiger, erfolgreicher Validierung verfügbar und danach unveränderlich. | H-004 | Typsystem: `Topology` hat keinen öffentlichen Konstruktor und keine verändernden Methoden. |
 | REQ-TOP-009 | Die Validierung meldet alle gefundenen Fehler, nicht nur den ersten. | – (Qualität) | `all_errors_are_collected_with_context` (railit-import) |
 | REQ-TOP-010 | Ein Netz aus mehreren nicht verbundenen Teilen erzeugt eine Warnung. | H-004 | `open_and_double_connected_ports_are_rejected` |
+| REQ-TOP-011 | Sind Stellbereiche festgelegt, gehört jeder Gleisfreimeldeabschnitt genau einem Stellbereich an; kein Stellbereich ist leer. | H-004, H-012 | `nordbahn_has_three_areas_and_two_links`, `every_tvd_needs_exactly_one_area` |
+| REQ-TOP-012 | Die Haltsignale eines Bahnsteigs sind Signale, an denen Fahrstraßen enden (Haupt- oder Mehrabschnittssignale). | H-004 | `platforms_need_route_signals` |
+| REQ-TOP-013 | Jeder Stellbereich lässt sich als eigenes, vollständig validiertes Teilnetz ausschneiden. Verbindungen zu Nachbarbereichen werden zu Grenzen (`>Nachbar`); welcher Bereich beim Anlauf die Erlaubnis übernimmt, ist eindeutig festgelegt. Die Abbildung der IDs auf das Gesamtnetz bleibt erhalten. | H-004, H-012 | `area_cut_replaces_neighbours_by_borders`, `border_terminals_can_be_written_by_hand` |
