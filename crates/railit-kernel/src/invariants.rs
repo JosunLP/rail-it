@@ -379,7 +379,9 @@ fn proceed_only_when_safe(
             if let RouteEnd::Border(b) = view.end() {
                 let state = border(st, b)?;
                 ok &= state.holding
-                    && state.peer.is_some_and(|p| p.approach_clear && !p.holding)
+                    && state
+                        .peer
+                        .is_some_and(|p| p.approach_clear && p.exclusive && !p.holding)
                     && fresh(state.peer_at, now, timeout);
             }
             justified |= ok;

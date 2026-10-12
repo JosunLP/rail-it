@@ -52,11 +52,10 @@ timeout_s = 400
 expect = { no_alarm = ["unauthorized_occupancy", "signal_passed_at_danger", "border_lost"], tvd = { ST1 = "clear", ST2 = "clear" } }
 
 [[step]]
-note = "Richtungswechsel: Bstadt fordert die Erlaubnis an, die Strecke gibt sie ab"
+note = "Richtungswechsel: Bstadt fordert an; die Strecke gibt nicht ab, solange Adorf hält (sonst könnten beide Bahnhöfe Züge in die eingleisige Strecke schicken)"
 request_permission = "Bstadt>Strecke"
-until = { permission = { "Bstadt>Strecke" = true } }
-timeout_s = 10
-expect = { permission = { "Strecke>Bstadt" = false } }
+wait_s = 10
+expect = { permission = { "Strecke>Bstadt" = true, "Bstadt>Strecke" = false } }
 
 [[step]]
 note = "Die Strecke fordert die Erlaubnis von Adorf an"
@@ -64,6 +63,12 @@ request_permission = "Strecke>Adorf"
 until = { permission = { "Strecke>Adorf" = true } }
 timeout_s = 10
 expect = { permission = { "Adorf>Strecke" = false } }
+
+[[step]]
+note = "Jetzt gibt die Strecke an Bstadt ab"
+until = { permission = { "Bstadt>Strecke" = true } }
+timeout_s = 10
+expect = { permission = { "Strecke>Bstadt" = false } }
 
 [[step]]
 note = "Jetzt ist die Ausfahrt aus Adorf gesperrt"

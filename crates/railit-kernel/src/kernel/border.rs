@@ -24,8 +24,16 @@
 //!   unterwegs ist, könnte sonst angenommen werden, während der Nachbar ein Angebot aus der
 //!   Zeit vor dem Neustart übernimmt.
 //!
+//! - **Überdeckte Annäherungsabschnitte:** Hat ein Bereich mehrere Grenzen, deren
+//!   Annäherungsabschnitte sich überdecken (eingleisige Strecke zwischen zwei Bahnhöfen), gibt
+//!   er eine Erlaubnis nur ab, solange kein anderer Annäherungsabschnitt den eigenen
+//!   verschließt. Ist ein Abschnitt doppelt verschlossen (etwa nach dem Anlauf), meldet er ihn
+//!   keinem Nachbarn als ausschließlich verschlossen; eine Ausfahrt in ihn zeigt keinen
+//!   Fahrtbegriff (REQ-IXL-021).
+//!
 //! Damit halten nie beide Seiten zugleich die Erlaubnis (REQ-IXL-017), sofern die Laufzeit
-//! einer Meldung kleiner als die Einschwingzeit ist.
+//! einer Meldung kleiner als die Einschwingzeit ist, und nie schicken zwei Nachbarn Züge in
+//! denselben Abschnitt.
 
 use railit_plan::RouteEnd;
 use railit_rules::RuleSet;
@@ -231,6 +239,11 @@ impl<R: RuleSet> Interlocking<'_, R> {
         let timeout = self.rules.report_timeout();
         for t in self.plan.border_approach_tvds(id) {
             let ts = tvd(st, t)?;
+            // Verschlösse die Abgabe den Abschnitt ein zweites Mal, dürften zwei Nachbarn
+            // Züge hineinschicken (REQ-IXL-021). Die eigene Sperre ist hier offen.
+            if ts.border_locks != 0 {
+                return Ok(false);
+            }
             let continuation = ts
                 .owner
                 .is_none_or(|o| self.plan.route(o).is_some_and(|r| r.start() == entry));
@@ -334,6 +347,20 @@ impl<R: RuleSet> Interlocking<'_, R> {
         Ok(true)
     }
 
+    /// Ist der Annäherungsabschnitt verschlossen und von keiner anderen Grenze mit
+    /// verschlossen (REQ-IXL-021)?
+    pub(super) fn approach_exclusive(&self, st: &KernelState<'_>, id: BorderId) -> Res<bool> {
+        if !border(st, id)?.lock {
+            return Ok(false);
+        }
+        for t in self.plan.border_approach_tvds(id) {
+            if tvd(st, t)?.border_locks != 1 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// Sendet jedem Nachbarn den Stand dieser Seite.
     pub(super) fn send_border_messages<O: Outputs>(
         &self,
@@ -351,6 +378,7 @@ impl<R: RuleSet> Interlocking<'_, R> {
                     offer: state.offering,
                     approach_clear: self.approach_clear(st, id, now)?,
                     request: state.want && !state.holding,
+                    exclusive: self.approach_exclusive(st, id)?,
                 },
             });
         }
@@ -380,8 +408,8 @@ impl<R: RuleSet> Interlocking<'_, R> {
     }
 
     /// Bedingungen der Grenze für eine Fahrstraße, die an ihr endet: Erlaubnis gehalten und –
-    /// für den Fahrtbegriff – der Annäherungsabschnitt des Nachbarn frei gemeldet
-    /// (REQ-IXL-020).
+    /// für den Fahrtbegriff – der Annäherungsabschnitt des Nachbarn frei und ausschließlich
+    /// verschlossen gemeldet (REQ-IXL-020, REQ-IXL-021).
     pub(super) fn exit_permitted(
         &self,
         st: &KernelState<'_>,
@@ -398,6 +426,6 @@ impl<R: RuleSet> Interlocking<'_, R> {
         }
         Ok(self
             .peer(&state, now)
-            .is_some_and(|p| p.approach_clear && !p.holding))
+            .is_some_and(|p| p.approach_clear && p.exclusive && !p.holding))
     }
 }

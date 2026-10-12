@@ -45,6 +45,7 @@ fn peer(
         offer,
         approach_clear,
         request,
+        exclusive: approach_clear,
     }
 }
 
@@ -438,4 +439,166 @@ fn pair_hands_over_permission() {
         Action::Run(10),
     ];
     run_pair(&actions).unwrap();
+}
+
+/// Bedienhandlung in der Kette Adorf – Strecke – Bstadt.
+#[derive(Clone, Debug)]
+enum ChainAction {
+    /// Erlaubnis an Grenze (Bereich, Grenze) anfordern.
+    Request(usize, usize),
+    /// Ausfahrt einstellen (Index in [`CHAIN_EXITS`]).
+    Exit(usize),
+    Cancel(usize),
+    Restart(usize),
+    Delay(u64),
+    Run(u8),
+}
+
+/// Ausfahrten über eine Grenze: (Bereich, Fahrstraße, Grenze).
+const CHAIN_EXITS: [(usize, &str, usize); 4] = [
+    (0, "AN1->Strecke", 0),
+    (1, "Sbk2->Adorf", 0),
+    (1, "Sbk1->Bstadt", 1),
+    (2, "BP2->Strecke", 0),
+];
+
+/// Verbindungen: (Bereich, Grenze) ↔ (Bereich, Grenze).
+const CHAIN_LINKS: [((usize, usize), (usize, usize)); 2] = [((0, 0), (1, 0)), ((1, 1), (2, 0))];
+
+fn chain_action() -> impl Strategy<Value = ChainAction> {
+    prop_oneof![
+        3 => prop_oneof![Just((0, 0)), Just((1, 0)), Just((1, 1)), Just((2, 0))]
+            .prop_map(|(a, b)| ChainAction::Request(a, b)),
+        2 => (0usize..4).prop_map(ChainAction::Exit),
+        1 => (0usize..4).prop_map(ChainAction::Cancel),
+        1 => (0usize..3).prop_map(ChainAction::Restart),
+        1 => (1u64..=10).prop_map(ChainAction::Delay),
+        4 => (1u8..40).prop_map(ChainAction::Run),
+    ]
+}
+
+fn border_state(h: &Harness, b: usize) -> BorderState {
+    h.state.borders()[b]
+}
+
+/// REQ-IXL-017, REQ-IXL-021: In der Kette Adorf – Strecke – Bstadt zeigen nie Ausfahrten
+/// beider Bahnhöfe zugleich Fahrt in die eingleisige Strecke, und an keiner Grenze halten
+/// beide Seiten die Erlaubnis – auch nach Neustarts und bei Laufzeiten bis zu einer Sekunde.
+fn run_chain(actions: &[ChainAction]) -> Result<(), TestCaseError> {
+    let mut sides = [area("Adorf"), area("Strecke"), area("Bstadt")];
+    assert_eq!(
+        sides[1].plan().border_name(BorderId::new(1)),
+        Some(">Bstadt")
+    );
+    // Zustellzyklus und Meldung je (Bereich, Grenze).
+    let mut queues: Vec<Vec<(u64, BorderMessage)>> = vec![Vec::new(); 4];
+    let slot = |a: usize, b: usize| match (a, b) {
+        (0, 0) => 0,
+        (1, 0) => 1,
+        (1, _) => 2,
+        _ => 3,
+    };
+    let mut delay = 1u64;
+    let mut cycle = 0u64;
+    for a in actions {
+        let mut requests: [Vec<Request>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let mut cycles = 1;
+        match a {
+            ChainAction::Request(i, b) => {
+                requests[*i].push(Request::RequestPermission(
+                    BorderId::from_index(*b).unwrap(),
+                ));
+            }
+            ChainAction::Exit(k) | ChainAction::Cancel(k) => {
+                let (i, name, _) = CHAIN_EXITS[*k];
+                let r = sides[i].route(name);
+                requests[i].push(if matches!(a, ChainAction::Exit(_)) {
+                    Request::SetRoute(r)
+                } else {
+                    Request::CancelRoute(r)
+                });
+            }
+            ChainAction::Restart(i) => {
+                let plan = *sides[*i].plan();
+                sides[*i].state = OwnedState::new(&plan);
+            }
+            ChainAction::Delay(d) => delay = *d,
+            ChainAction::Run(n) => cycles = u64::from(*n),
+        }
+        for _ in 0..cycles {
+            cycle += 1;
+            for (i, side) in sides.iter_mut().enumerate() {
+                for b in 0..side.border_in.len() {
+                    let queue = &mut queues[slot(i, b)];
+                    let due: Vec<_> = queue.iter().filter(|(at, _)| *at <= cycle).collect();
+                    side.border_in[b] = due.last().map(|(_, m)| *m);
+                    queue.retain(|(at, _)| *at > cycle);
+                    side.border_out[b] = None;
+                }
+                let req = std::mem::take(&mut requests[i]);
+                side.step(&req);
+                prop_assert_eq!(side.last, Ok(()), "sicherer Zustand");
+            }
+            for ((a, ab), (b, bb)) in CHAIN_LINKS {
+                if let Some(m) = sides[a].border_out[ab] {
+                    queues[slot(b, bb)].push((cycle + delay, m));
+                }
+                if let Some(m) = sides[b].border_out[bb] {
+                    queues[slot(a, ab)].push((cycle + delay, m));
+                }
+                prop_assert!(
+                    !(border_state(&sides[a], ab).holding()
+                        && border_state(&sides[b], bb).holding()),
+                    "beide halten die Erlaubnis"
+                );
+            }
+            let proceed = |k: usize| {
+                let (i, name, _) = CHAIN_EXITS[k];
+                let start = name.split("->").next().unwrap();
+                sides[i].aspect(start) == Aspect::Proceed
+            };
+            for (k, (i, _, b)) in CHAIN_EXITS.iter().copied().enumerate() {
+                if proceed(k) {
+                    prop_assert!(border_state(&sides[i], b).holding(), "Fahrt ohne Erlaubnis");
+                }
+            }
+            prop_assert!(
+                !(proceed(0) && proceed(3)),
+                "beide Bahnhöfe schicken Züge in die Strecke"
+            );
+            prop_assert!(!(proceed(0) && proceed(1)), "Gegenfahrt Adorf – Strecke");
+            prop_assert!(!(proceed(2) && proceed(3)), "Gegenfahrt Strecke – Bstadt");
+        }
+    }
+    Ok(())
+}
+
+proptest! {
+    #[test]
+    fn never_two_stations_feed_the_single_track(
+        actions in prop::collection::vec(chain_action(), 1..60)
+    ) {
+        run_chain(&actions)?;
+    }
+}
+
+/// REQ-IXL-021: Die Strecke gibt die Erlaubnis Richtung Bstadt erst ab, wenn sie die
+/// Erlaubnis Richtung Adorf hält. Vorher meldet sie ihren Abschnitt Adorf nicht als
+/// ausschließlich verschlossen, sobald beide Seiten verschlossen sind.
+#[test]
+fn single_track_direction_changes_in_order() {
+    use ChainAction::{Exit, Request, Run};
+    // Anlauf: Adorf und die Strecke (Richtung Bstadt) halten. Bstadt fordert an: keine
+    // Abgabe, solange Adorf hält; erst nach dem Wechsel Adorf → Strecke. Danach Ausfahrt
+    // aus Bstadt.
+    let actions = [
+        Run(70),
+        Request(2, 0),
+        Run(20),
+        Request(1, 0),
+        Run(20),
+        Exit(3),
+        Run(20),
+    ];
+    run_chain(&actions).unwrap();
 }

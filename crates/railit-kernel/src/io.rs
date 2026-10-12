@@ -98,6 +98,11 @@ pub struct BorderMessage {
     pub approach_clear: bool,
     /// Der Absender möchte die Erlaubnis haben.
     pub request: bool,
+    /// Der verschlossene Annäherungsabschnitt des Absenders ist **nur** für den Empfänger
+    /// verschlossen: Kein anderer Annäherungsabschnitt des Absenders überdeckt ihn. Hält
+    /// ein Bereich mit mehreren Grenzen (etwa eine eingleisige Strecke) keine seiner
+    /// Erlaubnisse, dürfen nicht beide Nachbarn Züge hineinschicken.
+    pub exclusive: bool,
 }
 
 /// Bedienerkennung für zählpflichtige Hilfshandlungen.

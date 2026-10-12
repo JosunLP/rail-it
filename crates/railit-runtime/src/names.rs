@@ -382,6 +382,8 @@ pub struct BorderSnapshot {
     pub peer_holding: Option<bool>,
     /// Letzte Meldung des Nachbarn: ist sein Annäherungsabschnitt frei?
     pub peer_approach_clear: Option<bool>,
+    /// Letzte Meldung des Nachbarn: ist sein Annäherungsabschnitt nur für uns verschlossen?
+    pub peer_exclusive: Option<bool>,
     /// Zeitpunkt der letzten Meldung des Nachbarn in Millisekunden.
     pub peer_at_ms: Option<u64>,
 }
@@ -504,6 +506,7 @@ impl Snapshot {
                         approach_locked: b.approach_locked(),
                         peer_holding: peer.map(|(m, _)| m.holding),
                         peer_approach_clear: peer.map(|(m, _)| m.approach_clear),
+                        peer_exclusive: peer.map(|(m, _)| m.exclusive),
                         peer_at_ms: peer.map(|(_, t)| t.as_millis()),
                     }
                 })
