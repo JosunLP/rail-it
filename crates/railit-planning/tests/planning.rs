@@ -659,7 +659,7 @@ fn route_and_overlap_lengths() {
     );
 }
 
-/// railML 3: Ein über railML ausgetauschtes Netz ergibt bitgleiche Plan-Images.
+/// REQ-TOP-014: Ein über railML 3 ausgetauschtes Netz ergibt bitgleiche Plan-Images.
 #[test]
 fn railml_roundtrip_yields_identical_plans() {
     for source in [EXAMPLE, NORDBAHN] {

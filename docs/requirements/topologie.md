@@ -3,7 +3,8 @@
 Umgesetzt in `crates/railit-topology`, nachgewiesen in
 `crates/railit-topology/tests/validation.rs`. Jede Prüfung meldet ihre ID über
 `TopologyError::requirement()`. Stellbereiche, Betriebsstellen und Teilnetze sind in
-`crates/railit-import/tests/areas.rs` nachgewiesen.
+`crates/railit-import/tests/areas.rs` nachgewiesen, der Import von railML 3 in
+`crates/railit-import/tests/railml.rs`.
 
 | ID | Anforderung | Gefährdung | Nachweis |
 |----|-------------|------------|----------|
@@ -20,3 +21,4 @@ Umgesetzt in `crates/railit-topology`, nachgewiesen in
 | REQ-TOP-011 | Sind Stellbereiche festgelegt, gehört jeder Gleisfreimeldeabschnitt genau einem Stellbereich an; kein Stellbereich ist leer. | H-004, H-012 | `nordbahn_has_three_areas_and_two_links`, `every_tvd_needs_exactly_one_area` |
 | REQ-TOP-012 | Die Haltsignale eines Bahnsteigs sind Signale, an denen Fahrstraßen enden (Haupt- oder Mehrabschnittssignale). | H-004 | `platforms_need_route_signals` |
 | REQ-TOP-013 | Jeder Stellbereich lässt sich als eigenes, vollständig validiertes Teilnetz ausschneiden. Verbindungen zu Nachbarbereichen werden zu Grenzen (`>Nachbar`); welcher Bereich beim Anlauf die Erlaubnis übernimmt, ist eindeutig festgelegt. Die Abbildung der IDs auf das Gesamtnetz bleibt erhalten. | H-004, H-012 | `area_cut_replaces_neighbours_by_borders`, `border_terminals_can_be_written_by_hand` |
+| REQ-TOP-014 | Ein Netz aus railML 3 durchläuft dieselbe Validierung wie ein Netz aus rail-it-TOML. Fehlende oder widersprüchliche Angaben (Länge, Wirkrichtung, Verbindungen) sind Fehler mit Angabe des railML-Elements und werden nie ergänzt oder geraten. Elemente, die rail-it nicht übernimmt, werden als Warnung gemeldet. Export und erneuter Import ergeben dasselbe Netz und bitgleiche Plan-Images. | H-004 | `handmade_railml_is_imported`, `errors_are_collected_with_location`, `beispielstadt_survives_the_roundtrip`, `nordbahn_with_areas_and_stations_survives_the_roundtrip`, `railml_roundtrip_yields_identical_plans`, `railml_export_validate_compile` |

@@ -9,7 +9,9 @@ Anforderung → Code → Test (Konzept, Abschnitt 16).
 | [topologie.md](topologie.md) | `REQ-TOP`: Netzmodell und seine Validierung |
 | [plan.md](plan.md) | `REQ-PLN`: Projektierung und Plan-Image |
 | [kern.md](kern.md) | `REQ-IXL`: Sicherheitskern (Fahrwegsicherung) |
-| [fahrerlaubnis.md](fahrerlaubnis.md) | `REQ-MOV`: Signalbegriffe Ks und H/V |
+| [fahrerlaubnis.md](fahrerlaubnis.md) | `REQ-MOV`: Signalbegriffe Ks und H/V, ETCS-Fahrerlaubnis |
+| [etcs.md](etcs.md) | `REQ-ETCS`: RBC-Funktion für ETCS Level 2 |
+| [kommunikation.md](kommunikation.md) | `REQ-COM`: sichere Übertragung (RaSTA, EULYNX SCI) |
 | [journal.md](journal.md) | `REQ-JRN`: Betriebsjournal und Replay |
 | [dienst.md](dienst.md) | `REQ-SVC`: Dienst, API und Bedienung |
 | [betrieb.md](betrieb.md) | `REQ-OPS`: Betriebsführung (Zugnummern, Fahrplan, Zuglenkung, Disposition) |

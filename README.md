@@ -24,7 +24,9 @@ Flankenschutz, Bahnübergänge, Hilfshandlungen mit Zwei-Personen-Regel, Ersatzs
 Erkennung unerlaubter Besetzung, Signalbegriffe Ks und H/V, Journal und Replay) und Phase 3
 (Netz und Betrieb: mehrere Stellbereiche mit je eigenem Kern, Streckenblock mit
 Erlaubniswechsel, Zugnummernmeldung, Fahrplan, Zuglenkung, Disposition, gRPC-Vertrag,
-Benutzer mit Rollen, TLS/mTLS, Auditprotokoll) sind umgesetzt.
+Benutzer mit Rollen, TLS/mTLS, Auditprotokoll) und Phase 4 (Europa: ETCS Level 2 mit
+RBC-Funktion und Mischbetrieb, Feldanbindung über EULYNX SCI und RaSTA, Import und Export von
+railML 3) sind umgesetzt.
 
 | Crate | Inhalt | |
 |-------|--------|---|
@@ -34,12 +36,15 @@ Benutzer mit Rollen, TLS/mTLS, Auditprotokoll) sind umgesetzt.
 | `railit-planning` | Fahrstraßen, Durchrutschwege, Flankenschutz, Feindlichkeiten; unabhängige Gegenprüfung | |
 | `railit-rules` | Regelwerk-Schnittstelle, Lehrregelwerk | `no_std` |
 | `railit-kernel` | Sicherheitskern: Fahrwegsicherung, Hilfshandlungen, Invarianten, sicherer Zustand | `no_std`, ohne Allokator |
-| `railit-movement` | Signalbegriffe Ks und H/V aus dem Kernzustand | `no_std`, ohne Allokator |
+| `railit-movement` | Signalbegriffe Ks und H/V und ETCS-Fahrerlaubnis aus dem Kernzustand | `no_std`, ohne Allokator |
+| `railit-etcs` | RBC-Funktion für ETCS Level 2: Anmeldung, Fahrerlaubnis über Bereichsgrenzen, Notbremsung | |
+| `railit-rasta` | RaSTA-Sicherheits- und Wiederholschicht nach EN 50159 | `no_std`, ohne Allokator |
+| `railit-adapters` | Feldanbindung über EULYNX SCI-P/-LS/-TDS/-LX und RaSTA zu simulierten Objektsteuerungen | |
 | `railit-journal` | Betriebsjournal mit Hashkette, Prüfpunkten und Replay; Auditprotokoll | |
-| `railit-sim` | Simulator: Weichen, Signale, Gleisfreimeldung, Bahnübergänge, Züge, Störungen | |
+| `railit-sim` | Simulator: Weichen, Signale, Gleisfreimeldung, Bahnübergänge, Züge (auch mit ETCS), Störungen | |
 | `railit-ops` | Zugnummernmeldung, Fahrplan, Zuglenkung, Selbstblock, Disposition | |
 | `railit-runtime` | Zyklus Kerne ↔ Feld für mehrere Stellbereiche, Zustandsbild, Szenarien, Schlüssel | |
-| `railit-import` | rail-it-TOML | |
+| `railit-import` | rail-it-TOML, railML 3 (Import und Export) | |
 | `railitd` | Dienst mit REST/JSON-API, gRPC (`proto/railit/v1`), Ereignisstrom, Rollen, TLS/mTLS, Audit | |
 | `railit` | Kommandozeile (offline und online) | |
 
@@ -95,6 +100,23 @@ railit border request 'Strecke>Adorf'   # Anführungszeichen: > ist ein Shell-Ze
 railit scenario run tests/scenarios/1[3-5]_*.toml
 ```
 
+### ETCS, EULYNX und railML
+
+```sh
+# ETCS Level 2: Zug mit Fahrzeuggerät fährt nach der Fahrerlaubnis des RBC
+railit scenario run tests/scenarios/16_nordbahn_etcs.toml tests/scenarios/17_etcs_notbremsung.toml
+railit etcs             # angemeldete Züge, Betriebsart, Fahrerlaubnis (online)
+
+# Feldanbindung über EULYNX SCI und RaSTA statt direkt am Simulator
+railitd --network examples/beispielstadt.toml --plan beispielstadt.rplan \
+        --trusted-key railit.pub --field eulynx &
+
+# Netz als railML 3 ausgeben und wieder einlesen
+railit net export examples/nordbahn.toml --out nordbahn.railml
+railit net validate nordbahn.railml
+railit plan compile nordbahn.railml --out nordbahn/ --key railit.key
+```
+
 Für den Betrieb mit Benutzern: `railitd … --users users.toml --audit audit.log
 --tls-cert server.pem --tls-key server.key [--tls-client-ca ca.pem]`; die CLI meldet sich mit
 `--token` bzw. `--ca`, `--cert`, `--key` an (siehe [API](docs/api.md)).
@@ -110,10 +132,11 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo build --target thumbv7em-none-eabihf \
       -p railit-types -p railit-topology -p railit-plan -p railit-rules -p railit-kernel \
-      -p railit-movement
+      -p railit-movement -p railit-rasta
 cargo deny check
 PROPTEST_CASES=10000 cargo test --release -p railit-kernel --all-features \
       --test invariants --test borders
+PROPTEST_CASES=10000 cargo test --release -p railit-rasta --test rasta
 ```
 
 Die Toolchain ist in `rust-toolchain.toml` festgelegt. Die sicherheitsrelevanten Crates

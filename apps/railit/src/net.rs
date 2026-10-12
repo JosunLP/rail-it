@@ -70,7 +70,7 @@ pub(crate) fn validate(file: &Path, output: Output) -> ExitCode {
         }
     }
     match (output, &result) {
-        (Output::Json, _) => print_json(&validation_json(&result)),
+        (Output::Json, _) => print_json(&validation_json(&result, &import_warnings)),
         (Output::Text, Ok(v)) => {
             let net = &v.topology;
             println!(
@@ -100,7 +100,7 @@ pub(crate) fn info(file: &Path, output: Output) -> ExitCode {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
             match output {
-                Output::Json => print_json(&validation_json(&Err(e))),
+                Output::Json => print_json(&validation_json(&Err(e), &[])),
                 Output::Text => print!("{e}"),
             }
             return ExitCode::from(EXIT_INVALID);
@@ -115,27 +115,33 @@ pub(crate) fn info(file: &Path, output: Output) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn validation_json(result: &Result<Validated, ImportError>) -> Value {
+/// Prüfergebnis als JSON; `import_warnings` sind Warnungen des Imports (railML), die vor den
+/// Warnungen der Validierung stehen.
+fn validation_json(result: &Result<Validated, ImportError>, import_warnings: &[String]) -> Value {
+    let warnings = |rest: Vec<String>| [import_warnings.to_vec(), rest].concat();
     match result {
         Ok(v) => json!({
             "valid": true,
             "network": v.topology.name(),
             "errors": [],
-            "warnings": v.warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "warnings": warnings(v.warnings.iter().map(ToString::to_string).collect()),
         }),
         Err(ImportError::Syntax(msg)) => json!({
             "valid": false,
             "errors": [{ "context": "", "message": msg, "requirement": null }],
-            "warnings": [],
+            "warnings": warnings(Vec::new()),
         }),
-        Err(ImportError::Invalid { errors, warnings }) => json!({
+        Err(ImportError::Invalid {
+            errors,
+            warnings: warnings_of_invalid,
+        }) => json!({
             "valid": false,
             "errors": errors.iter().map(|e| json!({
                 "context": e.context,
                 "message": e.message,
                 "requirement": e.requirement,
             })).collect::<Vec<_>>(),
-            "warnings": warnings,
+            "warnings": warnings(warnings_of_invalid.clone()),
         }),
     }
 }

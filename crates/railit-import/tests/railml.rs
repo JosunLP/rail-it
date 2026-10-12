@@ -110,16 +110,19 @@ fn roundtrip(toml: &str) {
     assert_eq!(railml::export(&back.topology).unwrap(), xml);
 }
 
+/// REQ-TOP-014: Export und erneuter Import ergeben dasselbe Netz.
 #[test]
 fn beispielstadt_survives_the_roundtrip() {
     roundtrip(BEISPIELSTADT);
 }
 
+/// REQ-TOP-014: auch mit Stellbereichen und Betriebsstellen.
 #[test]
 fn nordbahn_with_areas_and_stations_survives_the_roundtrip() {
     roundtrip(NORDBAHN);
 }
 
+/// REQ-TOP-014: Handgeschriebenes railML; nicht übernommene Elemente werden gemeldet.
 #[test]
 fn handmade_railml_is_imported() {
     let (v, warnings) = railml::parse_with_warnings(HANDMADE).unwrap_or_else(|e| panic!("{e}"));
@@ -178,6 +181,7 @@ fn handmade_railml_is_imported() {
     assert_eq!(net.level_crossings().len(), 1);
 }
 
+/// REQ-TOP-014: Fehlende Angaben sind Fehler mit Angabe des railML-Elements.
 #[test]
 fn errors_are_collected_with_location() {
     let broken = HANDMADE.replace("length=\"450\"", "").replace(

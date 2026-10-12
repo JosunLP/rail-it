@@ -1,10 +1,11 @@
 # Anforderungen an die Fahrerlaubnis (`REQ-MOV`)
 
 Umgesetzt in `crates/railit-movement`. Nachweise in `crates/railit-movement/tests/aspects.rs`
-und in Szenario 08.
+und in den Szenarien 08, 16 und 17.
 
 | ID | Anforderung | Gefährdung | Nachweis |
 |----|-------------|------------|----------|
 | REQ-MOV-001 | Signalbilder richten sich nach dem Signalsystem: Ks (Hp0, Ks1, Ks1 blinkend, Ks2, Zs3, Zs3v) und H/V (Hp0, Hp1, Hp2, Vr0, Vr1, Vr2, Zs3). Eine Geschwindigkeitsbeschränkung der Fahrstraße wird am Startsignal angezeigt (Zs3 bzw. Hp2) und am vorherigen Signal angekündigt (Zs3v bzw. Vr2). | H-002, H-009 | `ks_diverging_entry_shows_zs3_and_is_announced`, `hv_diverging_is_hp2_and_vr2`, `hv_combined_and_distant` |
 | REQ-MOV-002 | Ein Hauptsignal zeigt einen Fahrtbegriff genau dann, wenn der Kern Fahrt befohlen hat. Ein Vorsignal oder Vorsignalschirm kündigt Fahrt nur an, wenn das nächste Hauptsignal Fahrt zeigt; an Netzgrenze und Prellbock wird Halt erwartet. | H-009 | Property-Test `pictures_are_consistent`, `signal_drop_turns_announcement_back` |
 | REQ-MOV-003 | Das Ersatzsignal erscheint im Signalbild nur, wenn der Kern es eingeschaltet hat (REQ-IXL-015). Die Signalbilder sind Anzeige; sie können keine Fahrt erlauben, die der Kern nicht erlaubt. | H-009 | Architektur: `railit-movement` liest den Kernzustand nur; `display_of_dark_and_substitute` |
+| REQ-MOV-004 | Für ETCS Level 2 folgt die Fahrerlaubnis (Movement Authority) als reine Funktion aus Plan und Kernzustand: ab einem Signal bzw. einer ETCS-Halt-Tafel entlang der Kette aufeinanderfolgender Fahrstraßen, deren Startsignal Fahrt befohlen hat, bis zum Ende der Fahrerlaubnis (`EoA`) am Zielsignal, an Netzgrenze, Prellbock oder Bereichsgrenze. Der Gefahrpunkt liegt am Ende des Durchrutschwegs; das statische Geschwindigkeitsprofil folgt aus den Fahrstraßen. Ersatzsignal und Fahrten ohne Fahrstraße ergeben keine Fahrerlaubnis; jede Rücknahme der Fahrt verkürzt sie sofort. | H-001, H-002, H-009 | `etcs_authority_follows_the_routes_with_proceed`, `etcs_authority_carries_speed_and_survives_passing` |

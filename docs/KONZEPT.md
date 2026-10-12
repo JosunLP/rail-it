@@ -1,6 +1,6 @@
 # rail-it – Konzept einer Engine für Netz- und Stellwerkmanagement
 
-> Status: **v0.5** (Phasen 0 bis 3 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
+> Status: **v0.6** (Phasen 0 bis 4 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
 >
 > v0.2 arbeitet die Grundsatzentscheidungen aus Abschnitt 2 ein: vollständiger Netz- und
 > Bahnbetrieb, deutsches ESTW **und** europäisches System (ETCS/EULYNX), Server **und**
@@ -323,7 +323,16 @@ pub trait SignallingChannel {
 Signalbilder als reine Funktion aus Plan und Kernzustand (`Pictures`): Hauptsignale zeigen
 einen Fahrtbegriff genau dann, wenn der Kern Fahrt befohlen hat, Vorsignale kündigen das
 nächste Hauptsignal an, Geschwindigkeitsbeschränkungen erscheinen als Zs3/Zs3v bzw. Hp2/Vr2
-(REQ-MOV-001 bis 003). Die Abstraktion `MovementPermission` mit ETCS-Kanal folgt in Phase 4.
+(REQ-MOV-001 bis 003).
+
+**Stand Phase 4:** Der Kanal `etcs::l2` berechnet die Fahrerlaubnis (Movement Authority) ebenso
+als reine Funktion aus Plan und Kernzustand: `EoA` am Ende der Kette von Fahrstraßen mit Fahrt,
+Gefahrpunkt am Ende des Durchrutschwegs, statisches Geschwindigkeitsprofil aus den
+Fahrstraßen (REQ-MOV-004). Das Plan-Image v4 enthält dafür die Längen der Abschnitte. Die
+RBC-Funktion `railit-etcs` meldet Züge an und ab, setzt die Fahrerlaubnis über Bereichsgrenzen
+fort und löst eine Notbremsung aus, wenn ein fahrender Zug seine Fahrerlaubnis verliert
+(REQ-ETCS-001 bis 003). Lichtsignale und ETCS laufen auf demselben Kernzustand; Szenario 16
+zeigt Mischbetrieb über drei Stellbereiche.
 
 Ein Abschnitt kann **mehrere Kanäle zugleich** haben, etwa ETCS Level 2 mit Lichtsignalen als
 Rückfallebene. Das ist im Mischbetrieb der Normalfall. Für ETCS mit Moving Block bzw. Hybrid
@@ -427,7 +436,9 @@ verschlossen, Anforderung).
 Property-Tests mit zwei bzw. drei echten Kernen, beliebigen Bedienungen, Laufzeiten bis zu
 einer Sekunde und Neustarts belegen, dass nie beide Seiten einer Grenze die Erlaubnis halten
 und nie zwei Bahnhöfe Züge in die Strecke schicken. Die Übertragung ist in der Simulation
-ideal; die sichere Übertragung über RaSTA/EULYNX SCI-ILS folgt in Phase 4.
+ideal. Seit Phase 4 steht mit `railit-rasta` die sichere Übertragung nach EN 50159 bereit
+(REQ-COM-001 bis 005); die Feldanbindung nutzt sie bereits (Abschnitt 12), die Anbindung
+getrennter Stellwerksrechner über SCI-ILS steht noch aus.
 
 ### 10.5 Invarianten
 
@@ -504,14 +515,24 @@ pub trait FieldAdapter: Send {
 }
 ```
 
+**Stand Phase 4:** `railit-rasta` ist eine reine Zustandsmaschine ohne I/O und Uhr (`no_std`,
+feste Puffer). `railit-adapters` bindet den Simulator über vier simulierte Objektsteuerungen
+an (SCI-P, SCI-LS, SCI-TDS, SCI-LX), jede über eine eigene RaSTA-Verbindung mit störbarer
+Strecke (Verlust, Verfälschung, Verzögerung, Unterbrechung). Der Kern erhält nur Meldungen
+über stehende Verbindungen; fällt eine aus, gelten ihre Elemente nach der Meldezeit als
+gestört (REQ-COM-006). `railitd --field eulynx` und Szenario-Option `field = "eulynx"`
+schalten diese Anbindung ein. SCI-ILS und SCI-RBC stehen noch aus; das RBC ist bis dahin
+in-process angebunden. Der Sicherheitscode (MD4 mit vereinbarten Anfangswerten) entspricht der
+RaSTA-Norm, ist aber vor einer Zulassung gegen deren Anforderungen zu prüfen (H-014).
+
 ---
 
 ## 13. Plattformen: Server und Embedded
 
 Damit der Kern auf beiden Plattformen läuft, gelten diese Regeln:
 
-- `railit-types`, `railit-plan`, `railit-rules`, `railit-kernel`, `railit-movement` und
-  `railit-safety` sind `#![no_std]` **ohne `alloc`**.
+- `railit-types`, `railit-plan`, `railit-rules`, `railit-kernel`, `railit-movement`,
+  `railit-rasta` und `railit-safety` sind `#![no_std]` **ohne `alloc`**.
 - Das Plan-Image wird ohne Kopie gelesen, auf Embedded direkt aus dem Flash. Beim Laden werden
   Struktur, Grenzen, Hash und Signatur geprüft.
 - Den Zustandsspeicher stellt der Aufrufer. Auf Embedded sind das statische Puffer, deren
@@ -701,16 +722,17 @@ Daraus folgen diese Regeln:
 | **1 – Minimaler Kern** | Plan-Image (signiert), Fahrstraßengenerator mit unabhängiger Gegenprüfung, Kern mit Weichen, Signalen und TVD inkl. Teilauflösung und Zeitverschluss, Simulator, Szenarien, `railitd` mit REST-API, CLI | Bahnhof „Beispielstadt“ (`examples/beispielstadt.toml`) fährt sicher in der Simulation, bedienbar über die CLI | ✔ |
 | **2 – ESTW vollständig** | Durchrutschwege, Flankenschutz, Hilfshandlungen mit Zählwerk, Signalbegriffe Ks und H/V (`railit-movement`), BÜ, Erkennung unerlaubter Besetzungen, Journal und Replay | Fachlich vollständiges Einzelstellwerk nach `de-estw` | ✔ |
 | **3 – Netz & Betrieb** | Mehrere Stellbereiche, Streckenblock, Zugnummern, Fahrplan, Zuglenkung, Disposition, gRPC-Vertrag, Rollen, mTLS, Audit | Betrieb eines Netzes mit mehreren Bahnhöfen in der Simulation („Nordbahn“, `examples/nordbahn.toml` mit Fahrplan `examples/nordbahn-fahrplan.toml`) | ✔ |
-| **4 – Europa** | ETCS Level 2 (MA-Erzeugung, RBC-Funktion), EULYNX SCI-* über RaSTA, Import von railML 3 und PlanPro | Mischbetrieb ESTW/ETCS, Anbindung an Prüfstände | offen |
+| **4 – Europa** | ETCS Level 2 (MA-Erzeugung, RBC-Funktion), EULYNX SCI-P/-LS/-TDS/-LX über RaSTA zu simulierten Objektsteuerungen, Import und Export von railML 3 | Mischbetrieb ESTW/ETCS in der Simulation (Szenarien 16 bis 19); Feldanbindung bereit für Prüfstände | ✔ (PlanPro-Import und SCI-ILS offen) |
 | **5 – Sicherheit & Embedded** | Redundante Kanäle, Voter, Cortex-R-Runtime, Kani-Nachweise, Fuzzing, Safety Case | Zulassungsreifer Kandidat für das Labor | offen |
 | **6 – UI** | Spurplan-UI als API-Client mit sicherer Anzeige- und Bestätigungskette | Bedienplatz | offen |
 
-**Umgesetzte Crates (Stand Phase 3):** `railit-types`, `railit-topology`, `railit-plan`,
-`railit-planning`, `railit-rules`, `railit-kernel`, `railit-movement`, `railit-journal`
+**Umgesetzte Crates (Stand Phase 4):** `railit-types`, `railit-topology`, `railit-plan`,
+`railit-planning`, `railit-rules`, `railit-kernel`, `railit-movement` (Ks, H/V, ETCS-Fahrerlaubnis),
+`railit-etcs` (RBC-Funktion), `railit-rasta`, `railit-adapters` (EULYNX SCI), `railit-journal`
 (mit Auditprotokoll), `railit-sim`, `railit-ops` (Zugnummernmeldung, Fahrplan, Zuglenkung,
 Disposition), `railit-runtime` (mehrere Stellbereiche, Szenario-Runner,
-Schlüsselverwaltung), `railit-import` sowie die Anwendungen `railit` und `railitd` (REST,
-gRPC, TLS/mTLS, Rollen). Das Regelwerk `de-estw` ist
+Schlüsselverwaltung), `railit-import` (rail-it-TOML, railML 3) sowie die Anwendungen `railit` und `railitd` (REST,
+gRPC, TLS/mTLS, Rollen, Feldanbindung über EULYNX). Das Regelwerk `de-estw` ist
 noch das Lehrregelwerk `GenericRules` mit den Zeiten aus Phase 2 (Auflösezeit des
 Durchrutschwegs, Bestätigungsfrist, Leuchtdauer Zs1). Die übrigen Crates aus Abschnitt 5 entstehen in den
 jeweiligen Phasen.

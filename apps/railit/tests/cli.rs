@@ -386,3 +386,57 @@ fn tls_options_are_checked() {
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("nicht.pem"));
 }
+
+/// REQ-TOP-014: Export als railML 3, Prüfung mit Importwarnungen, Projektierung aus railML.
+#[test]
+fn railml_export_validate_compile() {
+    let dir = tmp_dir("railml");
+    let s = |p: &PathBuf| p.to_str().unwrap().to_string();
+    let xml = dir.join("beispielstadt.railml");
+    let out = railit(&["net", "export", &example(), "--out", &s(&xml)]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(std::fs::read_to_string(&xml).unwrap().contains("<railML"));
+
+    let out = railit(&["--output", "json", "net", "validate", &s(&xml)]);
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["valid"], true);
+
+    let handmade = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/railit-import/tests/data/abzweig.railml"
+    );
+    let out = railit(&["--output", "json", "net", "validate", handmade]);
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        v["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("sig_lf7")),
+        "{v}"
+    );
+
+    let prefix = dir.join("railit");
+    assert_eq!(
+        railit(&["plan", "keygen", &s(&prefix)]).status.code(),
+        Some(0)
+    );
+    let plan = dir.join("abzweig.rplan");
+    let out = railit(&[
+        "plan",
+        "compile",
+        handmade,
+        "--out",
+        &s(&plan),
+        "--key",
+        &s(&dir.join("railit.key")),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

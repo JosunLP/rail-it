@@ -29,7 +29,7 @@ cert_cn = "fdl-adorf"      # oder: Common Name des Client-Zertifikats
 | `beobachter` | lesen (Zustand, Plan, Ereignisse, Betriebsführung) |
 | `fahrdienstleiter` | lesen, Fahrstraßen, Weichen, Erlaubnisse, Hilfshandlungen |
 | `disponent` | lesen, Betriebsführung (`/v1/ops/…`) |
-| `instandhaltung` | lesen, Simulation (`/v1/sim/…`), Auditprotokoll |
+| `instandhaltung` | lesen, Simulation (`/v1/sim/…`, Störungen der Feldanbindung), Auditprotokoll |
 | `projektierer` | lesen, Auditprotokoll |
 | `administration` | alles |
 
@@ -63,9 +63,12 @@ Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`). TLS:
 | GET | `/v1/audit?last=50` | Auditprotokoll prüfen, letzte Einträge | `{"records","head","last"}` |
 | GET | `/v1/events` | Ereignisstrom (Server-Sent Events, je Ereignis ein JSON-Objekt) | `text/event-stream` |
 | GET | `/v1/sim/trains` | Züge der Simulation | JSON-Liste |
-| POST | `/v1/sim/trains` | Zug einsetzen, Body `{"name","signal","length_m","speed_kmh","ignore_signals"?}` | 200 / 400 |
+| POST | `/v1/sim/trains` | Zug einsetzen, Body `{"name","signal","length_m","speed_kmh","ignore_signals"?,"etcs"?}`; mit `"etcs":true` fährt der Zug nach der Fahrerlaubnis des RBC statt nach Signalbegriffen | 200 / 400 |
 | DELETE | `/v1/sim/trains/{name}` | Zug entfernen | 200 / 400 |
 | POST | `/v1/sim/faults` | Störung setzen/aufheben, Body `{"kind","element","active"?}` | 200 / 404 |
+| GET | `/v1/etcs` | ETCS-Züge: `train`, `mode` (`stand_by`, `full_supervision`, `trip`), `authority` (siehe unten), `end`, `eoa_mm`, `danger_point_mm` | JSON-Liste |
+| GET | `/v1/field/links` | Verbindungen zu den Objektsteuerungen (nur mit `--field eulynx`) | JSON-Liste |
+| POST | `/v1/field/links/{Objektsteuerung}` | Übertragungsstrecke stören, Body `{"down"?,"loss_percent"?,"corrupt_percent"?,"delay_ms"?}`; `{}` hebt alle Störungen auf | 200 / 400 |
 
 Namen mit `>` (Grenzen, Fahrstraßen über Grenzen wie `AN1->Strecke`) werden im Pfad kodiert
 (`AN1-%3EStrecke`). Bei mehreren Stellbereichen tragen Antworten und Ereignisse das Feld
@@ -140,6 +143,7 @@ Jedes Ereignis trägt `time_ms` (Simulationszeit) und `type`:
 | `permission` | `border`, `holding` | Erlaubnis an einer Grenze übernommen bzw. abgegeben |
 | `aux_pending` / `aux_executed` / `aux_expired` | `aux`, `op`, `operator` bzw. `counter` | Hilfshandlung angefordert, ausgeführt, verfallen |
 | `train_described`, `train_moved`, `train_left`, `train_erased`, `arrived`, `departed`, `route_requested`, `permission_requested`, `spawned`, `spawn_failed` | `train`, … (`"source":"ops"`) | Betriebsführung: Zugnummern, Halte mit `delay_s`, Anforderungen der Zuglenkung |
+| `train_registered`, `train_deregistered`, `authority_granted`, `authority_shortened`, `emergency_stop` | `train`, `end`, `eoa_mm` bzw. `reason` (`"source":"etcs"`) | RBC: Anmeldung, Fahrerlaubnis, Verkürzung, Notbremsung |
 | `sim` | `event`, `train`, … | Simulation: `train_stopped`, `train_started`, `train_left`, `train_arrived`, `train_derailed`, `point_trailed`, `signal_passed_at_danger`, `substitute_passed`, `level_crossing_not_closed` |
 
 ## Störungsarten der Simulation
@@ -148,10 +152,28 @@ Jedes Ereignis trägt `time_ms` (Simulationszeit) und `type`:
 
 ## Netze mit Stellbereichen
 
+`--network` nimmt rail-it-TOML oder railML 3 (Endung `.xml` bzw. `.railml`).
 Hat das Netz Stellbereiche, ist `--plan` ein Verzeichnis mit `<Bereich>.rplan`
 (`railit plan compile netz.toml --out plaene/`) und `--journal` ein Verzeichnis mit
 `<Bereich>.journal`. Mit `--timetable fahrplan.toml` setzt die Betriebsführung Züge nach Plan
 ein, mit `--ars` lenkt sie sie.
+
+## ETCS Level 2
+
+Das RBC leitet jede Fahrerlaubnis aus den Fahrstraßen mit Fahrt ab (REQ-ETCS-002). Ein
+Abschnitt in `authority.sections` hat `area`, `route` (`null` für den Annäherungsabschnitt
+hinter einer Bereichsgrenze), `length_mm` und `speed_kmh` (falls beschränkt). `end` ist das
+Zielsignal, `"Netzgrenze"`, `"Prellbock"` oder eine Grenze; `eoa_mm` und `danger_point_mm`
+sind Abstände ab dem Bezugspunkt. `railit etcs` zeigt dasselbe auf der Kommandozeile.
+
+## Feldanbindung über EULYNX und RaSTA
+
+Mit `railitd --field eulynx` laufen alle Stellbefehle und Meldungen als EULYNX-SCI-Telegramme
+über je eine RaSTA-Verbindung zu den simulierten Objektsteuerungen `OC-Weichen` (SCI-P),
+`OC-Signale` (SCI-LS), `OC-Gleisfrei` (SCI-TDS) und `OC-BUe` (SCI-LX). `/v1/field/links`
+zeigt je Verbindung `controller`, `interface`, `elements`, `up`, `discarded` (verworfene
+PDUs), `bad_telegrams` und die eingestellten `faults`. Fällt eine Verbindung aus, behandelt
+der Kern ihre Elemente nach der Meldezeit als gestört (REQ-COM-006).
 
 ## Journal
 
@@ -178,6 +200,7 @@ Vertrag: [`proto/railit/v1/railit.proto`](../proto/railit/v1/railit.proto). Dien
 | `railit.v1.Operations` | `GetOperations`, `SetArs`, `Describe`, `Erase`, `Hold`, `Release`, `SetPlatform`, `Delay` |
 | `railit.v1.Simulation` | `ListTrains`, `AddTrain`, `RemoveTrain`, `SetFault` |
 | `railit.v1.Events` | `Subscribe` (Server-Streaming, optional nach `type` gefiltert) |
+| `railit.v1.Etcs` | `GetTrains` |
 | `railit.v1.Diagnostics` | `WhoAmI`, `GetPlan`, `GetAudit` |
 
 gRPC läuft über HTTP/2 auf dem Port der REST-API (ohne TLS als h2c, mit TLS per ALPN).
