@@ -1,0 +1,99 @@
+[scenario]
+name = "Nordbahn: Fahrt über zwei Bereichsgrenzen und Richtungswechsel"
+description = """
+Drei Stellbereiche (Adorf, Strecke, Bstadt) mit je eigenem Kern. Beim Anlauf übernehmen
+Adorf und die Strecke die Erlaubnis Richtung Osten. Ein Zug fährt von Adorf über die
+eingleisige Strecke nach Bstadt; jeder Kern stellt seine Fahrstraßen, die Grenzen sichert
+der Erlaubniswechsel. Danach wechselt die Richtung: Bstadt und die Strecke fordern die
+Erlaubnis an, ein Zug fährt zurück nach Adorf.
+"""
+network = "../../examples/nordbahn.toml"
+
+[[step]]
+note = "Anlauf: Erlaubnis nach Ablauf der Einschwingzeit"
+until = { permission = { "Adorf>Strecke" = true, "Strecke>Bstadt" = true } }
+timeout_s = 10
+expect = { permission = { "Strecke>Adorf" = false, "Bstadt>Strecke" = false } }
+
+[[step]]
+note = "Ausfahrt Richtung Bstadt ohne Erlaubnis der Strecke nicht möglich"
+set_route = "Sbk2->Adorf"
+expect = { rejected = "no_permission" }
+
+[[step]]
+note = "Zug RE1 vor Adorf, Einfahrt nach Gleis 1"
+add_train = { name = "RE1", signal = "AA", length_m = 100, speed_kmh = 80 }
+set_route = "AA-AN1"
+until = { route = { "AA-AN1" = "proceed" } }
+timeout_s = 15
+
+[[step]]
+note = "Ausfahrt über die Grenze zur Strecke"
+set_route = "AN1->Strecke"
+until = { route = { "AN1->Strecke" = "proceed" } }
+timeout_s = 15
+expect = { signal = { AN1 = "proceed" } }
+
+[[step]]
+note = "Selbstblock bis Bstadt und Einfahrt nach Gleis 1"
+set_route = "Sbk1->Bstadt"
+until = { route = { "Sbk1->Bstadt" = "proceed" } }
+timeout_s = 15
+
+[[step]]
+set_route = "BA-BN1"
+until = { route = { "BA-BN1" = "proceed" } }
+timeout_s = 15
+
+[[step]]
+note = "RE1 fährt durch alle drei Bereiche und hält in Bstadt"
+until = { train = { RE1 = "waiting" }, tvd = { BT1 = "occupied" } }
+timeout_s = 400
+expect = { no_alarm = ["unauthorized_occupancy", "signal_passed_at_danger", "border_lost"], tvd = { ST1 = "clear", ST2 = "clear" } }
+
+[[step]]
+note = "Richtungswechsel: Bstadt fordert die Erlaubnis an, die Strecke gibt sie ab"
+request_permission = "Bstadt>Strecke"
+until = { permission = { "Bstadt>Strecke" = true } }
+timeout_s = 10
+expect = { permission = { "Strecke>Bstadt" = false } }
+
+[[step]]
+note = "Die Strecke fordert die Erlaubnis von Adorf an"
+request_permission = "Strecke>Adorf"
+until = { permission = { "Strecke>Adorf" = true } }
+timeout_s = 10
+expect = { permission = { "Adorf>Strecke" = false } }
+
+[[step]]
+note = "Jetzt ist die Ausfahrt aus Adorf gesperrt"
+set_route = "AN2->Strecke"
+expect = { rejected = "no_permission" }
+
+[[step]]
+note = "Durchrutschweg hinter BN1 ist nach der Auflösezeit frei"
+until = { route = { "BA-BN1" = "idle" } }
+timeout_s = 40
+
+[[step]]
+note = "RE2 von Bstadt Gleis 2 nach Adorf"
+add_train = { name = "RE2", signal = "BP2", length_m = 100, speed_kmh = 80 }
+set_route = "BP2->Strecke"
+until = { route = { "BP2->Strecke" = "proceed" } }
+timeout_s = 20
+
+[[step]]
+set_route = "Sbk2->Adorf"
+until = { route = { "Sbk2->Adorf" = "proceed" } }
+timeout_s = 15
+
+[[step]]
+set_route = "AF-AP2"
+until = { route = { "AF-AP2" = "proceed" } }
+timeout_s = 15
+
+[[step]]
+note = "RE2 erreicht Adorf"
+until = { train = { RE2 = "waiting" }, tvd = { AT2 = "occupied" } }
+timeout_s = 400
+expect = { no_alarm = ["unauthorized_occupancy", "signal_passed_at_danger"], safe_state = false }

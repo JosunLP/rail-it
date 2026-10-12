@@ -14,15 +14,16 @@
 
 mod api;
 mod engine;
+mod service;
 
 use std::io::Write;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::Parser;
-use railit_plan::PlanView;
+use railit_plan::{PlanView, VerifyingKey};
 use railit_rules::GenericRules;
 use railit_runtime::keys::{read_verifying_key, to_hex};
 use railit_runtime::{Runtime, check_correspondence, load_plan};
@@ -40,7 +41,8 @@ struct Args {
     /// Netzbeschreibung (rail-it-TOML) für Simulator und Abgleich mit dem Plan.
     #[arg(long)]
     network: PathBuf,
-    /// Plan-Image (`railit plan compile`).
+    /// Plan-Image (`railit plan compile`); bei Netzen mit Stellbereichen ein Verzeichnis
+    /// mit `<Bereich>.rplan` je Stellbereich.
     #[arg(long)]
     plan: PathBuf,
     /// Öffentlicher Schlüssel; der Plan muss damit signiert sein.
@@ -63,7 +65,8 @@ struct Args {
     #[arg(long, default_value_t = 1)]
     speed: u32,
     /// Betriebsjournal: Eingaben jedes Zyklus mit Hashkette (neue Datei; eine vorhandene
-    /// wird nicht überschrieben). Prüfen und abspielen mit `railit journal`.
+    /// wird nicht überschrieben). Bei mehreren Stellbereichen ein Verzeichnis mit
+    /// `<Bereich>.journal` je Bereich. Prüfen und abspielen mit `railit journal`.
     #[arg(long)]
     journal: Option<PathBuf>,
     /// Abstand der Zustands-Prüfpunkte im Journal (Zyklen).
@@ -79,8 +82,27 @@ fn fail(msg: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
-/// Lädt Netz und Plan und prüft beide.
-fn load(args: &Args) -> Result<(PlanView<'static>, Topology), String> {
+/// Lädt ein Plan-Image und prüft die Signatur.
+fn read_plan(path: &Path, key: Option<&VerifyingKey>) -> Result<PlanView<'static>, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let plan =
+        load_plan(bytes, key).map_err(|e| format!("Plan {} abgewiesen: {e}", path.display()))?;
+    tracing::info!(
+        plan = plan.network_name(),
+        routes = plan.route_count(),
+        borders = plan.border_count(),
+        signed = plan.is_signed(),
+        digest = %to_hex(&plan.digest()),
+        "Plan geladen"
+    );
+    Ok(plan)
+}
+
+/// Lädt Netz und Plan(e), prüft beide und baut die Runtime.
+///
+/// Hat das Netz Stellbereiche, ist `--plan` ein Verzeichnis mit `<Bereich>.rplan` je
+/// Stellbereich (`railit plan compile --out <Verzeichnis>`).
+fn load(args: &Args) -> Result<(Topology, Runtime<Simulator>), String> {
     let source = std::fs::read_to_string(&args.network)
         .map_err(|e| format!("{}: {e}", args.network.display()))?;
     let net = railit_import::toml_format::parse(&source)
@@ -92,33 +114,77 @@ fn load(args: &Args) -> Result<(PlanView<'static>, Topology), String> {
         .as_deref()
         .map(read_verifying_key)
         .transpose()?;
-    let bytes = std::fs::read(&args.plan).map_err(|e| format!("{}: {e}", args.plan.display()))?;
-    let plan = load_plan(bytes, key.as_ref()).map_err(|e| format!("Plan abgewiesen: {e}"))?;
-    check_correspondence(&plan, &net).map_err(|e| format!("Plan passt nicht zum Netz: {e}"))?;
-
     if key.is_none() {
         tracing::warn!(
-            "unsignierter Plan zugelassen (--allow-unsigned) – nur für Simulation und Test"
+            "unsignierte Pläne zugelassen (--allow-unsigned) – nur für Simulation und Test"
         );
     }
-    tracing::info!(
-        network = plan.network_name(),
-        routes = plan.route_count(),
-        signed = plan.is_signed(),
-        digest = %to_hex(&plan.digest()),
-        "Plan geladen"
-    );
-    Ok((plan, net))
+    let cycle = railit_types::Duration::from_millis(args.cycle_ms.max(1));
+    let sim = Simulator::new(net.clone(), SimConfig::default());
+    let rt = if net.areas().len() == 0 {
+        let plan = read_plan(&args.plan, key.as_ref())?;
+        check_correspondence(&plan, &net).map_err(|e| format!("Plan passt nicht zum Netz: {e}"))?;
+        Runtime::new(plan, GenericRules::default(), sim, cycle)
+    } else {
+        if !args.plan.is_dir() {
+            return Err(format!(
+                "Netz „{}“ hat Stellbereiche: --plan muss ein Verzeichnis mit <Bereich>.rplan sein",
+                net.name()
+            ));
+        }
+        let mut areas = Vec::with_capacity(net.areas().len());
+        for (id, area) in net.areas() {
+            let plan = read_plan(
+                &args.plan.join(format!("{}.rplan", area.name)),
+                key.as_ref(),
+            )?;
+            let cut = net
+                .area_cut(id)
+                .map_err(|e| format!("Stellbereich „{}“:\n{e}", area.name))?;
+            areas.push((plan, cut));
+        }
+        Runtime::for_network(&net, areas, GenericRules::default(), sim, cycle)
+            .map_err(|e| format!("Pläne passen nicht zum Netz: {e}"))?
+    };
+    Ok((net, rt))
+}
+
+/// Startet die Journale: eine Datei bei einem Stellbereich, sonst ein Verzeichnis mit
+/// `<Bereich>.journal` je Stellbereich.
+fn start_journals(rt: &mut Runtime<Simulator>, path: &Path, every: u64) -> Result<(), String> {
+    let files: Vec<(usize, PathBuf)> = if rt.area_count() == 1 {
+        vec![(0, path.to_path_buf())]
+    } else {
+        std::fs::create_dir_all(path).map_err(|e| format!("Journal {}: {e}", path.display()))?;
+        (0..rt.area_count())
+            .map(|i| {
+                let name = rt.area_name(i).unwrap_or("?");
+                (i, path.join(format!("{name}.journal")))
+            })
+            .collect()
+    };
+    for (area, file) in files {
+        let out = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&file)
+            .map_err(|e| format!("Journal {}: {e}", file.display()))?;
+        rt.start_journal(area, Box::new(std::io::BufWriter::new(out)), every)
+            .map_err(|e| format!("Journal {}: {e}", file.display()))?;
+        tracing::info!(path = %file.display(), "Journal läuft");
+    }
+    Ok(())
 }
 
 /// Startet Engine und API und läuft bis Strg+C.
-async fn serve(args: Args, plan: PlanView<'static>, rt: Runtime<Simulator>) -> Result<(), String> {
+async fn serve(args: Args, net: Topology, rt: Runtime<Simulator>) -> Result<(), String> {
     let period = std::time::Duration::from_micros(
         (args.cycle_ms.max(1) * 1000 / u64::from(args.speed.max(1))).max(1000),
     );
     let (tx, rx) = mpsc::channel(256);
     let (snapshot_tx, snapshot_rx) = watch::channel(Arc::new(rt.snapshot()));
     let (events_tx, _) = broadcast::channel(4096);
+    let directory = rt.directory().clone();
     let channels = engine::Channels {
         rx,
         snapshot: snapshot_tx,
@@ -127,10 +193,7 @@ async fn serve(args: Args, plan: PlanView<'static>, rt: Runtime<Simulator>) -> R
     let engine = tokio::spawn(engine::run(rt, channels, period));
 
     let state = api::AppState {
-        plan,
-        tx,
-        snapshot: snapshot_rx,
-        events: events_tx,
+        service: service::Service::new(directory, Arc::new(net), tx, snapshot_rx, events_tx),
         token: args.token.map(Arc::from),
     };
     let listener = tokio::net::TcpListener::bind(args.listen)
@@ -165,29 +228,14 @@ fn main() -> ExitCode {
         )
         .init();
 
-    let (plan, net) = match load(&args) {
+    let (net, mut rt) = match load(&args) {
         Ok(v) => v,
         Err(e) => return fail(&e),
     };
-    let cycle = railit_types::Duration::from_millis(args.cycle_ms.max(1));
-    let sim = Simulator::new(net, SimConfig::default());
-    let mut rt = Runtime::new(plan, GenericRules::default(), sim, cycle);
-    if let Some(path) = &args.journal {
-        let file = match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-        {
-            Ok(f) => f,
-            Err(e) => return fail(&format!("Journal {}: {e}", path.display())),
-        };
-        if let Err(e) = rt.start_journal(
-            Box::new(std::io::BufWriter::new(file)),
-            args.checkpoint_every,
-        ) {
-            return fail(&format!("Journal {}: {e}", path.display()));
-        }
-        tracing::info!(path = %path.display(), "Journal läuft");
+    if let Some(path) = &args.journal
+        && let Err(e) = start_journals(&mut rt, path, args.checkpoint_every)
+    {
+        return fail(&e);
     }
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -197,7 +245,7 @@ fn main() -> ExitCode {
         Ok(r) => r,
         Err(e) => return fail(&format!("Tokio: {e}")),
     };
-    match runtime.block_on(serve(args, plan, rt)) {
+    match runtime.block_on(serve(args, net, rt)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => fail(&e),
     }

@@ -12,6 +12,7 @@ const EXAMPLE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/beispielstadt.toml"
 );
+const NORDBAHN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/nordbahn.toml");
 const TOKEN: &str = "geheim";
 
 /// Beendet den Dienst auch bei fehlgeschlagenen Tests.
@@ -50,15 +51,23 @@ fn prepare(tag: &str, signed: bool) -> (PathBuf, PathBuf) {
 }
 
 fn daemon(args: &[&str]) -> Command {
+    daemon_for(EXAMPLE, args)
+}
+
+fn daemon_for(network: &str, args: &[&str]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_railitd"));
-    cmd.args(["--network", EXAMPLE])
+    cmd.args(["--network", network])
         .args(args)
         .env_remove("RAILIT_TOKEN");
     cmd
 }
 
 fn start(args: &[&str]) -> Daemon {
-    let mut child = daemon(args)
+    start_for(EXAMPLE, args)
+}
+
+fn start_for(network: &str, args: &[&str]) -> Daemon {
+    let mut child = daemon_for(network, args)
         .args(["--listen", "127.0.0.1:0", "--speed", "20", "--token", TOKEN])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -291,4 +300,122 @@ fn unsigned_or_foreign_plans_are_refused() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
+}
+
+/// Kompiliert die Nordbahn je Stellbereich in ein Verzeichnis.
+fn prepare_areas(tag: &str) -> (PathBuf, PathBuf) {
+    let net = railit_import::toml_format::parse(&std::fs::read_to_string(NORDBAHN).unwrap())
+        .unwrap()
+        .topology;
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let dir = tmp(tag);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = railit_planning::PlanningConfig::default();
+    for area in railit_planning::compile_areas(&net, Some(&key), &cfg).unwrap() {
+        std::fs::write(
+            dir.join(format!("{}.rplan", area.name)),
+            area.compiled.image,
+        )
+        .unwrap();
+    }
+    let public = tmp(&format!("{tag}.pub"));
+    std::fs::write(
+        &public,
+        railit_runtime::keys::to_hex(key.verifying_key().as_bytes()),
+    )
+    .unwrap();
+    (dir, public)
+}
+
+fn permission(d: &Daemon, area: &str, border: &str) -> bool {
+    let (_, areas) = get(d, "/v1/areas", true);
+    areas
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == area)
+        .unwrap()["borders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["name"] == border)
+        .unwrap()["holding"]
+        .as_bool()
+        .unwrap()
+}
+
+/// REQ-IXL-017..020: Netz mit drei Stellbereichen, Erlaubniswechsel über die API.
+#[test]
+fn network_with_areas_over_api() {
+    let (plans, public) = prepare_areas("nordbahn");
+    let journals = tmp("nordbahn-journal");
+    let _ = std::fs::remove_dir_all(&journals);
+    let d = start_for(
+        NORDBAHN,
+        &[
+            "--plan",
+            plans.to_str().unwrap(),
+            "--trusted-key",
+            public.to_str().unwrap(),
+            "--journal",
+            journals.to_str().unwrap(),
+        ],
+    );
+
+    let (_, health) = get(&d, "/v1/health", false);
+    assert_eq!(health["network"], "Nordbahn");
+    assert_eq!(health["areas"], json!(["Adorf", "Strecke", "Bstadt"]));
+
+    let (_, info) = get(&d, "/v1/plan", true);
+    let exit = info["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "AN1->Strecke")
+        .unwrap();
+    assert_eq!(exit["area"], "Adorf");
+
+    // Anlauf: Adorf erhält die Erlaubnis Richtung Strecke.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !permission(&d, "Adorf", "Adorf>Strecke") {
+        assert!(Instant::now() < deadline, "Erlaubnis kommt nicht");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let (status, answer) = post(&d, "/v1/routes/AN1-%3EStrecke/set", None);
+    assert_eq!(
+        (status, answer["area"].as_str()),
+        (200, Some("Adorf")),
+        "{answer}"
+    );
+    assert_eq!(post(&d, "/v1/routes/AN1-%3EStrecke/cancel", None).0, 200);
+
+    // Die Strecke fordert die Erlaubnis an; danach ist die Ausfahrt gesperrt.
+    let (status, answer) = post(&d, "/v1/borders/Strecke%3EAdorf/request", None);
+    assert_eq!(
+        (status, answer["area"].as_str()),
+        (200, Some("Strecke")),
+        "{answer}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !permission(&d, "Strecke", "Strecke>Adorf") {
+        assert!(Instant::now() < deadline, "Erlaubniswechsel bleibt aus");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!permission(&d, "Adorf", "Adorf>Strecke"));
+    let (status, answer) = post(&d, "/v1/routes/AN2-%3EStrecke/set", None);
+    assert_eq!(
+        (status, answer["reason"].as_str()),
+        (409, Some("no_permission"))
+    );
+    assert_eq!(
+        post(&d, "/v1/borders/Irgendwo%3ENirgends/request", None).0,
+        404
+    );
+    drop(d);
+
+    for area in ["Adorf", "Strecke", "Bstadt"] {
+        let bytes = std::fs::read(journals.join(format!("{area}.journal"))).unwrap();
+        assert!(railit_journal::verify(bytes.as_slice()).unwrap().cycles > 0);
+    }
 }

@@ -63,6 +63,12 @@ pub struct NamedAux {
 impl NamedAux {
     /// Übersetzt eine Hilfshandlung des Kerns.
     pub fn new(plan: &PlanView<'_>, op: AuxOperation) -> Self {
+        Self::in_area(plan, "", op)
+    }
+
+    /// Wie [`Self::new`]; Grenzen werden mit dem Bereichsnamen `area` adressiert
+    /// (z. B. `"Adorf>Strecke"`).
+    pub fn in_area(plan: &PlanView<'_>, area: &str, op: AuxOperation) -> Self {
         let (kind, element, position) = match op {
             AuxOperation::ReleaseRoute(r) => (AuxKind::ReleaseRoute, route_name(plan, r), None),
             AuxOperation::ResetTvd(t) => (AuxKind::ResetTvd, tvd_name(plan, t), None),
@@ -70,7 +76,11 @@ impl NamedAux {
             AuxOperation::ForcePoint(p, pos) => {
                 (AuxKind::ForcePoint, point_name(plan, p), Some(pos))
             }
-            AuxOperation::TakePermission(b) => (AuxKind::TakePermission, border_name(plan, b), None),
+            AuxOperation::TakePermission(b) => (
+                AuxKind::TakePermission,
+                format!("{area}{}", border_name(plan, b)),
+                None,
+            ),
         };
         Self {
             kind,
@@ -172,8 +182,10 @@ pub enum NamedEvent {
 }
 
 impl NamedEvent {
-    /// Übersetzt ein Kernereignis.
-    pub fn new(plan: &PlanView<'_>, event: &Event) -> Self {
+    /// Übersetzt ein Kernereignis. Grenzen werden mit dem Bereichsnamen `area` adressiert
+    /// (leer bei Netzen ohne Stellbereiche).
+    pub fn new(plan: &PlanView<'_>, area: &str, event: &Event) -> Self {
+        let border_name = |b: BorderId| format!("{area}{}", border_name(plan, b));
         match *event {
             Event::Accepted(id) => Self::Accepted { request: id.0 },
             Event::Rejected(id, reason) => {
@@ -195,7 +207,7 @@ impl NamedEvent {
                     Rejection::AuxExpired => ("aux_expired", None),
                     Rejection::SameOperator => ("same_operator", None),
                     Rejection::AuxNotApplicable => ("aux_not_applicable", None),
-                    Rejection::NoPermission(b) => ("no_permission", Some(border_name(plan, b))),
+                    Rejection::NoPermission(b) => ("no_permission", Some(border_name(b))),
                 };
                 Self::Rejected {
                     request: id.0,
@@ -223,10 +235,8 @@ impl NamedEvent {
                     Alarm::SignalPassedAtDanger(r) => {
                         ("signal_passed_at_danger", Some(route_name(plan, r)))
                     }
-                    Alarm::BorderLost(b) => ("border_lost", Some(border_name(plan, b))),
-                    Alarm::PermissionConflict(b) => {
-                        ("permission_conflict", Some(border_name(plan, b)))
-                    }
+                    Alarm::BorderLost(b) => ("border_lost", Some(border_name(b))),
+                    Alarm::PermissionConflict(b) => ("permission_conflict", Some(border_name(b))),
                 };
                 Self::Alarm {
                     alarm: alarm.into(),
@@ -235,17 +245,17 @@ impl NamedEvent {
             }
             Event::AuxPending { aux, op, operator } => Self::AuxPending {
                 aux: aux.0,
-                op: NamedAux::new(plan, op),
+                op: NamedAux::in_area(plan, area, op),
                 operator: operator.0,
             },
             Event::AuxExecuted { aux, op, counter } => Self::AuxExecuted {
                 aux: aux.0,
-                op: NamedAux::new(plan, op),
+                op: NamedAux::in_area(plan, area, op),
                 counter,
             },
             Event::AuxExpired(aux) => Self::AuxExpired { aux: aux.0 },
             Event::Permission { border, holding } => Self::Permission {
-                border: border_name(plan, border),
+                border: border_name(border),
                 holding,
             },
         }
@@ -255,6 +265,8 @@ impl NamedEvent {
 /// Zustand einer Weiche.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PointSnapshot {
+    /// Stellbereich.
+    pub area: String,
     /// Name.
     pub name: String,
     /// Letzte Meldung.
@@ -272,6 +284,8 @@ pub struct PointSnapshot {
 /// Zustand eines Signals.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SignalSnapshot {
+    /// Stellbereich.
+    pub area: String,
     /// Name.
     pub name: String,
     /// Befohlener Begriff.
@@ -291,6 +305,8 @@ pub struct SignalSnapshot {
 /// Zustand eines Bahnübergangs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct LxSnapshot {
+    /// Stellbereich.
+    pub area: String,
     /// Name.
     pub name: String,
     /// Letzte Meldung.
@@ -304,6 +320,8 @@ pub struct LxSnapshot {
 /// Offene Hilfshandlung.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct AuxSnapshot {
+    /// Stellbereich.
+    pub area: String,
     /// Kennung.
     pub aux: u32,
     /// Hilfshandlung.
@@ -317,6 +335,8 @@ pub struct AuxSnapshot {
 /// Zustand eines Gleisfreimeldeabschnitts.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TvdSnapshot {
+    /// Stellbereich.
+    pub area: String,
     /// Name.
     pub name: String,
     /// Letzte Meldung.
@@ -330,6 +350,8 @@ pub struct TvdSnapshot {
 /// Zustand einer Fahrstraße.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RouteSnapshot {
+    /// Stellbereich.
+    pub area: String,
     /// Name.
     pub name: String,
     /// Startsignal.
@@ -340,17 +362,60 @@ pub struct RouteSnapshot {
     pub phase: RoutePhase,
 }
 
-/// Zustandsbild des Stellwerks.
+/// Zustand einer Grenze zu einem Nachbarbereich.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct BorderSnapshot {
+    /// Adresse, z. B. `"Adorf>Strecke"`.
+    pub name: String,
+    /// Hält der Bereich die Erlaubnis?
+    pub holding: bool,
+    /// Laufende Nummer der Erlaubnis.
+    pub seq: u32,
+    /// Abgegeben und angeboten, noch nicht quittiert.
+    pub offering: bool,
+    /// Erlaubnis angefordert.
+    pub requested: bool,
+    /// Annäherungsabschnitt verschlossen (Züge des Nachbarn dürfen kommen).
+    pub approach_locked: bool,
+    /// Letzte Meldung des Nachbarn: hält er die Erlaubnis?
+    pub peer_holding: Option<bool>,
+    /// Letzte Meldung des Nachbarn: ist sein Annäherungsabschnitt frei?
+    pub peer_approach_clear: Option<bool>,
+    /// Zeitpunkt der letzten Meldung des Nachbarn in Millisekunden.
+    pub peer_at_ms: Option<u64>,
+}
+
+/// Zustand eines Stellbereichs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AreaSnapshot {
+    /// Name.
+    pub name: String,
+    /// Zyklusnummer des Kerns.
+    pub cycle: u64,
+    /// Grund des sicheren Zustands, falls aktiv.
+    pub safe_state: Option<String>,
+    /// Prüfsumme des Plans (Hex, gekürzt).
+    pub plan_digest: String,
+    /// Grenzen zu Nachbarbereichen.
+    pub borders: Vec<BorderSnapshot>,
+    /// Zählwerk der Hilfshandlungen.
+    pub aux_counter: u64,
+}
+
+/// Zustandsbild des Stellwerks (aller Stellbereiche).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Snapshot {
     /// Netz.
     pub network: String,
     /// Zeit seit Start in Millisekunden.
     pub time_ms: u64,
-    /// Zyklusnummer.
+    /// Zyklusnummer (des ersten Bereichs).
     pub cycle: u64,
-    /// Grund des sicheren Zustands, falls aktiv.
+    /// Sicherer Zustand eines Bereichs, falls aktiv (`"Bereich: Grund"`).
     pub safe_state: Option<String>,
+    /// Stellbereiche.
+    pub areas: Vec<AreaSnapshot>,
     /// Weichen.
     pub points: Vec<PointSnapshot>,
     /// Signale.
@@ -363,40 +428,112 @@ pub struct Snapshot {
     pub level_crossings: Vec<LxSnapshot>,
     /// Offene Hilfshandlungen.
     pub pending_aux: Vec<AuxSnapshot>,
-    /// Zählwerk der ausgeführten Hilfshandlungen.
+    /// Zählwerk der ausgeführten Hilfshandlungen (Summe aller Bereiche).
     pub aux_counter: u64,
 }
 
 impl Snapshot {
-    /// Zustandsbild aus Plan und Kernzustand.
+    /// Zustandsbild eines einzelnen Kerns.
     pub fn new(plan: &PlanView<'_>, state: &OwnedState, now: Tick) -> Self {
+        Self::network(
+            plan.network_name(),
+            now,
+            &[(plan.network_name(), plan, state)],
+        )
+    }
+
+    /// Zustandsbild aller Bereiche eines Netzes.
+    pub fn network(network: &str, now: Tick, areas: &[(&str, &PlanView<'_>, &OwnedState)]) -> Self {
+        let mut snap = Self {
+            network: network.to_string(),
+            time_ms: now.as_millis(),
+            cycle: areas.first().map_or(0, |(_, _, s)| s.meta().cycle()),
+            safe_state: None,
+            areas: Vec::new(),
+            points: Vec::new(),
+            signals: Vec::new(),
+            tvds: Vec::new(),
+            routes: Vec::new(),
+            level_crossings: Vec::new(),
+            pending_aux: Vec::new(),
+            aux_counter: 0,
+        };
+        let prefixed = areas.len() > 1;
+        for (name, plan, state) in areas {
+            snap.add_area(name, if prefixed { name } else { "" }, plan, state);
+        }
+        snap
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn add_area(&mut self, area: &str, prefix: &str, plan: &PlanView<'_>, state: &OwnedState) {
         let owner = |r: Option<RouteId>| r.map(|r| route_name(plan, r));
         let pictures = railit_movement::Pictures::new(plan, state.signals(), state.routes());
-        Self {
-            network: plan.network_name().to_string(),
-            time_ms: now.as_millis(),
+        let area_name = area.to_string();
+        if self.safe_state.is_none() {
+            self.safe_state = state.meta().safe_state().map(|r| {
+                if prefix.is_empty() {
+                    format!("{r:?}")
+                } else {
+                    format!("{area}: {r:?}")
+                }
+            });
+        }
+        self.aux_counter = self.aux_counter.saturating_add(state.meta().aux_counter());
+        self.areas.push(AreaSnapshot {
+            name: area_name.clone(),
             cycle: state.meta().cycle(),
             safe_state: state.meta().safe_state().map(|r| format!("{r:?}")),
-            points: state
+            plan_digest: crate::keys::to_hex(&plan.digest())
+                .get(..16)
+                .unwrap_or_default()
+                .to_string(),
+            borders: state
+                .borders()
+                .iter()
+                .enumerate()
+                .filter_map(|(i, b)| Some((BorderId::from_index(i)?, b)))
+                .map(|(id, b)| {
+                    let peer = b.peer();
+                    BorderSnapshot {
+                        name: format!("{area}{}", border_name(plan, id)),
+                        holding: b.holding(),
+                        seq: b.seq(),
+                        offering: b.offering(),
+                        requested: b.requested(),
+                        approach_locked: b.approach_locked(),
+                        peer_holding: peer.map(|(m, _)| m.holding),
+                        peer_approach_clear: peer.map(|(m, _)| m.approach_clear),
+                        peer_at_ms: peer.map(|(_, t)| t.as_millis()),
+                    }
+                })
+                .collect(),
+            aux_counter: state.meta().aux_counter(),
+        });
+        self.points.extend(
+            state
                 .points()
                 .iter()
                 .enumerate()
                 .filter_map(|(i, p)| Some((PointId::from_index(i)?, p)))
                 .map(|(id, p)| PointSnapshot {
+                    area: area_name.clone(),
                     name: point_name(plan, id),
                     report: p.report(),
                     commanded: p.commanded(),
                     locked_by: owner(p.owner()),
                     locked_position: p.locked_position(),
                     holds: p.holds(),
-                })
-                .collect(),
-            signals: state
+                }),
+        );
+        self.signals.extend(
+            state
                 .signals()
                 .iter()
                 .enumerate()
                 .filter_map(|(i, s)| Some((SignalId::from_index(i)?, s)))
                 .map(|(id, s)| SignalSnapshot {
+                    area: area_name.clone(),
                     name: signal_name(plan, id),
                     commanded: s.commanded(),
                     report: s.report(),
@@ -407,61 +544,62 @@ impl Snapshot {
                         .unwrap_or_default(),
                     aspects: pictures.picture(id),
                     flank_holds: s.stop_holds(),
-                })
-                .collect(),
-            tvds: state
+                }),
+        );
+        self.tvds.extend(
+            state
                 .tvds()
                 .iter()
                 .enumerate()
                 .filter_map(|(i, t)| Some((TvdId::from_index(i)?, t)))
                 .map(|(id, t)| TvdSnapshot {
+                    area: area_name.clone(),
                     name: tvd_name(plan, id),
                     occupancy: t.occupancy(),
                     locked_by: owner(t.owner()),
                     overlap_of: owner(t.overlap_owner()),
-                })
-                .collect(),
-            routes: plan
-                .routes()
-                .map(|r| RouteSnapshot {
-                    name: r.name().to_string(),
-                    start: signal_name(plan, r.start()),
-                    end: match r.end() {
-                        RouteEnd::Signal(s) => signal_name(plan, s),
-                        RouteEnd::Boundary => "Netzgrenze".into(),
-                        RouteEnd::BufferStop => "Prellbock".into(),
-                        RouteEnd::Border(b) => plan.border_name(b).unwrap_or("?").into(),
-                    },
-                    phase: r
-                        .id()
-                        .index()
-                        .and_then(|i| state.routes().get(i))
-                        .map(railit_kernel::RouteState::phase)
-                        .unwrap_or_default(),
-                })
-                .collect(),
-            level_crossings: state
+                }),
+        );
+        self.routes.extend(plan.routes().map(|r| {
+            RouteSnapshot {
+                area: area_name.clone(),
+                name: r.name().to_string(),
+                start: signal_name(plan, r.start()),
+                end: match r.end() {
+                    RouteEnd::Signal(s) => signal_name(plan, s),
+                    RouteEnd::Boundary => "Netzgrenze".into(),
+                    RouteEnd::BufferStop => "Prellbock".into(),
+                    RouteEnd::Border(b) => format!("{prefix}{}", border_name(plan, b)),
+                },
+                phase: r
+                    .id()
+                    .index()
+                    .and_then(|i| state.routes().get(i))
+                    .map(railit_kernel::RouteState::phase)
+                    .unwrap_or_default(),
+            }
+        }));
+        self.level_crossings.extend(
+            state
                 .level_crossings()
                 .iter()
                 .enumerate()
                 .filter_map(|(i, l)| Some((LxId::from_index(i)?, l)))
                 .map(|(id, l)| LxSnapshot {
+                    area: area_name.clone(),
                     name: lx_name(plan, id),
                     report: l.report(),
                     close_commanded: l.closed_commanded(),
                     holds: l.holds(),
-                })
-                .collect(),
-            pending_aux: state
-                .pending_aux()
-                .map(|a| AuxSnapshot {
-                    aux: a.id().0,
-                    op: NamedAux::new(plan, a.op()),
-                    operator: a.operator().0,
-                    since_ms: a.since().as_millis(),
-                })
-                .collect(),
-            aux_counter: state.meta().aux_counter(),
-        }
+                }),
+        );
+        self.pending_aux
+            .extend(state.pending_aux().map(|a| AuxSnapshot {
+                area: area_name.clone(),
+                aux: a.id().0,
+                op: NamedAux::in_area(plan, prefix, a.op()),
+                operator: a.operator().0,
+                since_ms: a.since().as_millis(),
+            }));
     }
 }

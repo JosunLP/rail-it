@@ -3,14 +3,17 @@
 //! | Methode | Pfad | Zweck |
 //! |---------|------|-------|
 //! | GET | `/v1/health` | Lebenszeichen (ohne Anmeldung) |
-//! | GET | `/v1/plan` | Netz, Fahrstraßen, Elemente, Prüfsumme |
-//! | GET | `/v1/state` | Zustandsbild |
+//! | GET | `/v1/plan` | Netz, Stellbereiche, Fahrstraßen, Elemente, Prüfsummen |
+//! | GET | `/v1/state` | Zustandsbild aller Stellbereiche |
+//! | GET | `/v1/areas` | Stellbereiche mit Grenzen und Erlaubnissen |
 //! | POST | `/v1/routes/{name}/set` | Fahrstraße einstellen |
 //! | POST | `/v1/routes/{name}/cancel` | Fahrstraße zurücknehmen |
 //! | POST | `/v1/points/{name}/move` | Weiche umstellen (`{"position":"left"}`) |
+//! | POST | `/v1/borders/{address}/request` | Erlaubnis an einer Grenze anfordern |
+//! | POST | `/v1/borders/{address}/withdraw` | Anforderung zurückziehen |
 //! | GET | `/v1/aux` | Offene Hilfshandlungen und Zählwerk |
 //! | POST | `/v1/aux` | Hilfshandlung anfordern (`{"kind":…,"element":…}`) |
-//! | POST | `/v1/aux/{id}/confirm` | Hilfshandlung bestätigen (zweiter Bediener) |
+//! | POST | `/v1/aux/{id}/confirm` | Hilfshandlung bestätigen (`?area=` bei mehreren Bereichen) |
 //! | GET | `/v1/events` | Ereignisstrom (SSE, JSON je Ereignis) |
 //! | GET | `/v1/sim/trains` | Züge der Simulation |
 //! | POST | `/v1/sim/trains` | Zug einsetzen |
@@ -21,40 +24,33 @@
 //! `Authorization: Bearer <token>`.
 //!
 //! Hilfshandlungen verlangen zusätzlich den Kopf `X-Railit-Operator: <Nummer>`. Er
-//! **identifiziert** den Bediener für die Zwei-Personen-Regel; die Anmeldung je Bediener
-//! (eigene Tokens, Rollen) folgt mit Phase 3.
+//! **identifiziert** den Bediener für die Zwei-Personen-Regel.
 
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use axum::extract::{Path, Request as HttpRequest, State};
+use axum::extract::{Path, Query, Request as HttpRequest, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use railit_kernel::{AuxId, OperatorId, Request};
-use railit_plan::{PlanView, RouteEnd};
-use railit_runtime::keys::to_hex;
+use railit_kernel::OperatorId;
 use railit_runtime::{NamedAux, NamedEvent, Snapshot};
-use railit_sim::{Fault, TrainSpec};
-use railit_types::{Length, PointPosition, Speed};
+use railit_types::PointPosition;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
-use crate::engine::{Answer, EngineMsg, SimCommand, SimReply};
+use crate::engine::Answer;
+use crate::service::{FaultKind, NewTrain, Service, ServiceError};
 
 /// Gemeinsamer Zustand der Handler.
 #[derive(Clone)]
 pub(crate) struct AppState {
-    pub(crate) plan: PlanView<'static>,
-    pub(crate) tx: mpsc::Sender<EngineMsg>,
-    pub(crate) snapshot: watch::Receiver<Arc<Snapshot>>,
-    pub(crate) events: broadcast::Sender<Arc<str>>,
+    pub(crate) service: Service,
     pub(crate) token: Option<Arc<str>>,
 }
 
@@ -67,28 +63,31 @@ impl IntoResponse for ApiError {
     }
 }
 
-fn not_found(what: &str, name: &str) -> ApiError {
-    ApiError(
-        StatusCode::NOT_FOUND,
-        format!("{what} „{name}“ nicht gefunden"),
-    )
+impl From<ServiceError> for ApiError {
+    fn from(e: ServiceError) -> Self {
+        let status = match e {
+            ServiceError::NotFound(_) => StatusCode::NOT_FOUND,
+            ServiceError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            ServiceError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+            ServiceError::Timeout => StatusCode::GATEWAY_TIMEOUT,
+        };
+        Self(status, e.message())
+    }
 }
 
-fn unavailable() -> ApiError {
-    ApiError(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "Engine nicht erreichbar".into(),
-    )
-}
+type ApiResult = Result<Response, ApiError>;
 
 /// Router mit allen Pfaden.
 pub(crate) fn router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/v1/plan", get(plan))
         .route("/v1/state", get(snapshot))
+        .route("/v1/areas", get(areas))
         .route("/v1/routes/{name}/set", post(set_route))
         .route("/v1/routes/{name}/cancel", post(cancel_route))
         .route("/v1/points/{name}/move", post(move_point))
+        .route("/v1/borders/{address}/request", post(request_permission))
+        .route("/v1/borders/{address}/withdraw", post(withdraw_permission))
         .route("/v1/aux", get(aux_list).post(aux_request))
         .route("/v1/aux/{id}/confirm", post(aux_confirm))
         .route("/v1/events", get(events))
@@ -117,11 +116,36 @@ async fn auth(State(state): State<AppState>, request: HttpRequest, next: Next) -
     next.run(request).await
 }
 
+/// Antwort eines Kerns als HTTP-Antwort: 200 angenommen, 409 abgelehnt.
+fn answer(a: Answer) -> Response {
+    let Answer { area, event, aux } = a;
+    let status = match event {
+        NamedEvent::Accepted { .. } => StatusCode::OK,
+        _ => StatusCode::CONFLICT,
+    };
+    let mut body = serde_json::to_value(&event).unwrap_or(Value::Null);
+    if let Value::Object(map) = &mut body {
+        map.insert("area".into(), json!(area));
+        if let Some(aux) = aux {
+            map.insert(
+                "aux".into(),
+                serde_json::to_value(aux).unwrap_or(Value::Null),
+            );
+        }
+    }
+    (status, Json(body)).into_response()
+}
+
+fn done() -> Response {
+    Json(json!({ "ok": true })).into_response()
+}
+
 async fn health(State(state): State<AppState>) -> Json<Value> {
-    let snap = state.snapshot.borrow().clone();
+    let snap = state.service.snapshot();
     Json(json!({
         "status": if snap.safe_state.is_some() { "safe_state" } else { "ok" },
         "network": snap.network,
+        "areas": snap.areas.iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
         "cycle": snap.cycle,
         "time_ms": snap.time_ms,
         "safe_state": snap.safe_state,
@@ -129,78 +153,56 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
 }
 
 async fn plan(State(state): State<AppState>) -> Json<Value> {
-    let p = state.plan;
-    let names = |n: usize, f: &dyn Fn(usize) -> Option<&'static str>| -> Vec<&'static str> {
-        (0..n).filter_map(f).collect()
-    };
-    Json(json!({
-        "network": p.network_name(),
-        "signed": p.is_signed(),
-        "digest": to_hex(&p.digest()),
-        "points": names(p.point_count(), &|i| railit_types::PointId::from_index(i).and_then(|id| p.point_name(id))),
-        "signals": names(p.signal_count(), &|i| railit_types::SignalId::from_index(i).and_then(|id| p.signal_name(id))),
-        "tvds": names(p.tvd_count(), &|i| railit_types::TvdId::from_index(i).and_then(|id| p.tvd_name(id))),
-        "level_crossings": names(p.lx_count(), &|i| railit_types::LxId::from_index(i).and_then(|id| p.lx_name(id))),
-        "routes": p.routes().map(|r| json!({
-            "name": r.name(),
-            "start": p.signal_name(r.start()),
-            "end": match r.end() {
-                RouteEnd::Signal(s) => p.signal_name(s).unwrap_or("?"),
-                RouteEnd::Boundary => "Netzgrenze",
-                RouteEnd::BufferStop => "Prellbock",
-                RouteEnd::Border(b) => p.border_name(b).unwrap_or("?"),
-            },
-            "speed_kmh": r.speed().map(railit_types::Speed::as_kmh),
-            "points": r.points().map(|(pt, pos)| json!({"point": p.point_name(pt), "position": pos})).collect::<Vec<_>>(),
-            "tvds": r.tvds().map(|t| p.tvd_name(t)).collect::<Vec<_>>(),
-            "overlap": {
-                "tvds": r.overlap_tvds().map(|t| p.tvd_name(t)).collect::<Vec<_>>(),
-                "points": r.overlap_points().map(|(pt, pos)| json!({"point": p.point_name(pt), "position": pos})).collect::<Vec<_>>(),
-            },
-            "flank": r.flank().map(|f| match f.protection {
-                railit_plan::Protection::Point(pt, pos) => json!({"point": p.point_name(pt), "position": pos, "protects": p.tvd_name(f.protects)}),
-                railit_plan::Protection::Signal(s) => json!({"signal": p.signal_name(s), "protects": p.tvd_name(f.protects)}),
-            }).collect::<Vec<_>>(),
-            "level_crossings": r.level_crossings().map(|l| p.lx_name(l)).collect::<Vec<_>>(),
-            "conflicts": r.conflicts().map(|c| p.route_name(c)).collect::<Vec<_>>(),
-        })).collect::<Vec<_>>(),
-    }))
+    Json(state.service.plan_info().as_ref().clone())
 }
 
 async fn snapshot(State(state): State<AppState>) -> Json<Snapshot> {
-    Json(state.snapshot.borrow().as_ref().clone())
+    Json(state.service.snapshot().as_ref().clone())
 }
 
-/// Stellt eine Anforderung und wartet auf die Antwort des Kerns.
-async fn request(state: &AppState, request: Request) -> Result<Response, ApiError> {
-    let (reply, rx) = oneshot::channel();
-    state
-        .tx
-        .send(EngineMsg::Request { request, reply })
-        .await
-        .map_err(|_| unavailable())?;
-    let answer = tokio::time::timeout(std::time::Duration::from_secs(10), rx)
-        .await
-        .map_err(|_| {
-            ApiError(
-                StatusCode::GATEWAY_TIMEOUT,
-                "keine Antwort des Kerns".into(),
-            )
-        })?
-        .map_err(|_| unavailable())?;
-    let Answer { answer, aux } = answer;
-    let status = match answer {
-        NamedEvent::Accepted { .. } => StatusCode::OK,
-        _ => StatusCode::CONFLICT,
-    };
-    let mut body = serde_json::to_value(&answer).unwrap_or(Value::Null);
-    if let (Value::Object(map), Some(aux)) = (&mut body, aux) {
-        map.insert(
-            "aux".into(),
-            serde_json::to_value(aux).unwrap_or(Value::Null),
-        );
-    }
-    Ok((status, Json(body)).into_response())
+async fn areas(State(state): State<AppState>) -> Json<Value> {
+    Json(json!(state.service.snapshot().areas))
+}
+
+async fn set_route(State(state): State<AppState>, Path(name): Path<String>) -> ApiResult {
+    Ok(answer(state.service.set_route(&name).await?))
+}
+
+async fn cancel_route(State(state): State<AppState>, Path(name): Path<String>) -> ApiResult {
+    Ok(answer(state.service.cancel_route(&name).await?))
+}
+
+#[derive(Deserialize)]
+struct MoveBody {
+    position: PointPosition,
+}
+
+async fn move_point(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(body): Json<MoveBody>,
+) -> ApiResult {
+    Ok(answer(
+        state.service.move_point(&name, body.position).await?,
+    ))
+}
+
+async fn request_permission(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> ApiResult {
+    Ok(answer(
+        state.service.request_permission(&address, true).await?,
+    ))
+}
+
+async fn withdraw_permission(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> ApiResult {
+    Ok(answer(
+        state.service.request_permission(&address, false).await?,
+    ))
 }
 
 /// Bedienerkennung aus `X-Railit-Operator`.
@@ -219,7 +221,7 @@ fn operator(headers: &HeaderMap) -> Result<OperatorId, ApiError> {
 }
 
 async fn aux_list(State(state): State<AppState>) -> Json<Value> {
-    let snap = state.snapshot.borrow().clone();
+    let snap = state.service.snapshot();
     Json(json!({
         "pending": snap.pending_aux,
         "counter": snap.aux_counter,
@@ -230,148 +232,54 @@ async fn aux_request(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<NamedAux>,
-) -> Result<Response, ApiError> {
+) -> ApiResult {
     let operator = operator(&headers)?;
-    let op = body
-        .resolve(&state.plan)
-        .map_err(|e| ApiError(StatusCode::NOT_FOUND, e))?;
-    request(&state, Request::AuxRequest { op, operator }).await
+    Ok(answer(state.service.aux_request(&body, operator).await?))
+}
+
+#[derive(Deserialize)]
+struct AreaQuery {
+    area: Option<String>,
 }
 
 async fn aux_confirm(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<u32>,
-) -> Result<Response, ApiError> {
+    Query(query): Query<AreaQuery>,
+) -> ApiResult {
     let operator = operator(&headers)?;
-    request(
-        &state,
-        Request::AuxConfirm {
-            aux: AuxId(id),
-            operator,
-        },
-    )
-    .await
-}
-
-async fn set_route(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> Result<Response, ApiError> {
-    let r = state
-        .plan
-        .find_route(&name)
-        .ok_or_else(|| not_found("Fahrstraße", &name))?;
-    request(&state, Request::SetRoute(r)).await
-}
-
-async fn cancel_route(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> Result<Response, ApiError> {
-    let r = state
-        .plan
-        .find_route(&name)
-        .ok_or_else(|| not_found("Fahrstraße", &name))?;
-    request(&state, Request::CancelRoute(r)).await
-}
-
-#[derive(Deserialize)]
-struct MoveBody {
-    position: PointPosition,
-}
-
-async fn move_point(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-    Json(body): Json<MoveBody>,
-) -> Result<Response, ApiError> {
-    let p = state
-        .plan
-        .find_point(&name)
-        .ok_or_else(|| not_found("Weiche", &name))?;
-    request(&state, Request::MovePoint(p, body.position)).await
+    Ok(answer(
+        state
+            .service
+            .aux_confirm(query.area.as_deref(), id, operator)
+            .await?,
+    ))
 }
 
 async fn events(
     State(state): State<AppState>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<SseEvent, Infallible>>> {
-    let stream = BroadcastStream::new(state.events.subscribe()).filter_map(|item| match item {
+    let stream = BroadcastStream::new(state.service.subscribe()).filter_map(|item| match item {
         Ok(json) => Some(Ok(SseEvent::default().data(json.as_ref()))),
-        // Zu langsame Empfänger verpassen Ereignisse, statt den Kern zu bremsen.
+        // Zu langsame Empfänger verpassen Ereignisse, statt die Kerne zu bremsen.
         Err(_) => None,
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-async fn sim(state: &AppState, command: SimCommand) -> Result<SimReply, ApiError> {
-    let (reply, rx) = oneshot::channel();
-    state
-        .tx
-        .send(EngineMsg::Sim { command, reply })
-        .await
-        .map_err(|_| unavailable())?;
-    rx.await.map_err(|_| unavailable())
+async fn trains(State(state): State<AppState>) -> ApiResult {
+    Ok(Json(state.service.trains().await?).into_response())
 }
 
-fn sim_result(reply: SimReply) -> Result<Response, ApiError> {
-    match reply {
-        SimReply::Done => Ok(Json(json!({ "ok": true })).into_response()),
-        SimReply::Trains(t) => Ok(Json(t).into_response()),
-        SimReply::Error(e) => Err(ApiError(StatusCode::BAD_REQUEST, e)),
-    }
+async fn add_train(State(state): State<AppState>, Json(body): Json<NewTrain>) -> ApiResult {
+    state.service.add_train(body).await?;
+    Ok(done())
 }
 
-async fn trains(State(state): State<AppState>) -> Result<Response, ApiError> {
-    sim_result(sim(&state, SimCommand::Trains).await?)
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TrainBody {
-    name: String,
-    signal: String,
-    length_m: u32,
-    speed_kmh: u16,
-    #[serde(default)]
-    ignore_signals: bool,
-}
-
-async fn add_train(
-    State(state): State<AppState>,
-    Json(body): Json<TrainBody>,
-) -> Result<Response, ApiError> {
-    let signal = state
-        .plan
-        .find_signal(&body.signal)
-        .ok_or_else(|| not_found("Signal", &body.signal))?;
-    let length = Length::from_m(body.length_m)
-        .ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, "Zuglänge zu groß".into()))?;
-    let spec = TrainSpec {
-        name: body.name,
-        signal,
-        length,
-        speed: Speed::from_kmh(body.speed_kmh),
-        ignore_signals: body.ignore_signals,
-    };
-    sim_result(sim(&state, SimCommand::AddTrain(spec)).await?)
-}
-
-async fn remove_train(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> Result<Response, ApiError> {
-    sim_result(sim(&state, SimCommand::RemoveTrain(name)).await?)
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum FaultKind {
-    PointDisturbed,
-    TvdDisturbed,
-    TvdOccupied,
-    SignalDefective,
-    LxDisturbed,
+async fn remove_train(State(state): State<AppState>, Path(name): Path<String>) -> ApiResult {
+    state.service.remove_train(name).await?;
+    Ok(done())
 }
 
 #[derive(Deserialize)]
@@ -387,18 +295,10 @@ const fn yes() -> bool {
     true
 }
 
-async fn fault(
-    State(state): State<AppState>,
-    Json(body): Json<FaultBody>,
-) -> Result<Response, ApiError> {
-    let p = state.plan;
-    let fault = match body.kind {
-        FaultKind::PointDisturbed => p.find_point(&body.element).map(Fault::PointDisturbed),
-        FaultKind::TvdDisturbed => p.find_tvd(&body.element).map(Fault::TvdDisturbed),
-        FaultKind::TvdOccupied => p.find_tvd(&body.element).map(Fault::TvdOccupied),
-        FaultKind::SignalDefective => p.find_signal(&body.element).map(Fault::SignalDefective),
-        FaultKind::LxDisturbed => p.find_lx(&body.element).map(Fault::LxDisturbed),
-    }
-    .ok_or_else(|| not_found("Element", &body.element))?;
-    sim_result(sim(&state, SimCommand::Fault(fault, body.active)).await?)
+async fn fault(State(state): State<AppState>, Json(body): Json<FaultBody>) -> ApiResult {
+    state
+        .service
+        .fault(body.kind, &body.element, body.active)
+        .await?;
+    Ok(done())
 }

@@ -38,7 +38,7 @@ fn run() -> (Runtime<Simulator>, Vec<u8>) {
         Duration::from_millis(100),
     );
     let buf = Shared::default();
-    rt.start_journal(Box::new(buf.clone()), 50).unwrap();
+    rt.start_journal(0, Box::new(buf.clone()), 50).unwrap();
 
     let a = plan.find_signal("A").unwrap();
     rt.field_mut()
@@ -93,7 +93,7 @@ fn journal_replays_to_the_same_state() {
     let summary = verify(bytes.as_slice()).unwrap();
     assert_eq!(summary.cycles, 624);
     assert_eq!(summary.checkpoints, 12);
-    assert_eq!(Some(summary.head.clone()), rt.journal_head());
+    assert_eq!(Some(summary.head.clone()), rt.journal_head(0));
 
     let (replayed, state) = replay(bytes.as_slice(), rt.plan()).unwrap();
     assert_eq!(replayed, summary);
@@ -172,4 +172,47 @@ fn replay_needs_the_recorded_plan() {
     let plan = railit_runtime::load_plan(image, None).unwrap();
     let err = replay(bytes.as_slice(), &plan).unwrap_err();
     assert!(matches!(err, JournalError::Plan(_)), "{err}");
+}
+
+/// REQ-JRN-002: In Netzen mit Stellbereichen hat jeder Kern sein eigenes Journal; jedes
+/// lässt sich für sich abspielen, auch mit Grenzmeldungen als Eingaben.
+#[test]
+fn every_area_journal_replays() {
+    let net = railit_import::toml_format::parse(include_str!("../../../examples/nordbahn.toml"))
+        .unwrap()
+        .topology;
+    let mut rt = railit_runtime::simulation(
+        net,
+        GenericRules::default(),
+        SimConfig::default(),
+        Duration::from_millis(100),
+    )
+    .unwrap();
+    assert_eq!(rt.area_count(), 3);
+    let buffers: Vec<Shared> = (0..3).map(|_| Shared::default()).collect();
+    for (i, b) in buffers.iter().enumerate() {
+        rt.start_journal(i, Box::new(b.clone()), 25).unwrap();
+    }
+    for _ in 0..80 {
+        rt.cycle(&[]);
+    }
+    let (strecke, border) = rt.find_border("Strecke>Adorf").unwrap();
+    rt.cycle_addressed(&[railit_runtime::Addressed {
+        area: strecke,
+        id: RequestId(1),
+        request: Request::RequestPermission(border),
+    }]);
+    for _ in 0..20 {
+        rt.cycle(&[]);
+    }
+    let holds = rt.state_of(strecke).unwrap().borders()[0].holding();
+    assert!(holds, "Strecke hat die Erlaubnis übernommen");
+
+    for (i, b) in buffers.iter().enumerate() {
+        let bytes = b.0.lock().unwrap().clone();
+        let plan = rt.plan_of(i).unwrap();
+        let (summary, state) = replay(bytes.as_slice(), plan).unwrap();
+        assert_eq!(summary.cycles, 101);
+        assert_eq!(&state, rt.state_of(i).unwrap());
+    }
 }

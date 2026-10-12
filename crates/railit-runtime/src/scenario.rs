@@ -44,11 +44,12 @@ use railit_kernel::{
 };
 use railit_rules::GenericRules;
 use railit_sim::{Fault, SimConfig, SimEvent, Simulator, TrainSpec, TrainState};
+use railit_topology::ElementRef;
 use railit_types::{Duration, Length, PointPosition, Speed};
 use serde::Deserialize;
 
 use crate::names::{NamedAux, NamedEvent};
-use crate::runtime::Runtime;
+use crate::runtime::{Addressed, Runtime};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -88,6 +89,28 @@ struct RulesEntry {
     overlap_release_time_ms: Option<u64>,
     aux_confirm_timeout_ms: Option<u64>,
     substitute_duration_ms: Option<u64>,
+    border_settle_time_ms: Option<u64>,
+}
+
+impl RulesEntry {
+    fn apply(&self, mut rules: GenericRules) -> GenericRules {
+        let set = |target: &mut Duration, ms: Option<u64>| {
+            if let Some(ms) = ms {
+                *target = Duration::from_millis(ms);
+            }
+        };
+        set(&mut rules.point_move_timeout, self.point_move_timeout_ms);
+        set(&mut rules.report_timeout, self.report_timeout_ms);
+        set(&mut rules.cancel_time_lock, self.cancel_time_lock_ms);
+        set(
+            &mut rules.overlap_release_time,
+            self.overlap_release_time_ms,
+        );
+        set(&mut rules.aux_confirm_timeout, self.aux_confirm_timeout_ms);
+        set(&mut rules.substitute_duration, self.substitute_duration_ms);
+        set(&mut rules.border_settle_time, self.border_settle_time_ms);
+        rules
+    }
 }
 
 const fn default_cycle_ms() -> u64 {
@@ -109,6 +132,8 @@ struct Step {
     cancel_route: Option<String>,
     #[serde(default)]
     move_point: Option<MovePoint>,
+    #[serde(default)]
+    request_permission: Option<String>,
     #[serde(default)]
     add_train: Option<TrainEntry>,
     #[serde(default)]
@@ -189,6 +214,8 @@ struct Conditions {
     substitute: BTreeMap<String, bool>,
     #[serde(default)]
     picture: BTreeMap<String, String>,
+    #[serde(default)]
+    permission: BTreeMap<String, bool>,
     #[serde(default)]
     lx: BTreeMap<String, LxReport>,
     #[serde(default)]
@@ -318,11 +345,6 @@ pub fn run_str(source: &str, base: &Path) -> Result<Outcome, ScenarioError> {
     let net = railit_import::toml_format::parse(&net_source)
         .map_err(|e| ScenarioError::Network(e.to_string()))?
         .topology;
-    let compiled =
-        railit_planning::compile(&net, None).map_err(|e| ScenarioError::Planning(e.to_string()))?;
-    let plan = crate::load_plan(compiled.image, None)
-        .map_err(|e| ScenarioError::Planning(e.to_string()))?;
-
     let mut cfg = SimConfig::default();
     if let Some(ms) = header.point_move_time_ms {
         cfg.point_move_time = Duration::from_millis(ms);
@@ -330,41 +352,23 @@ pub fn run_str(source: &str, base: &Path) -> Result<Outcome, ScenarioError> {
     if let Some(ms) = header.lx_close_time_ms {
         cfg.lx_close_time = Duration::from_millis(ms);
     }
-    let mut sim = Simulator::new(net, cfg);
+    let rules = header.rules.apply(GenericRules::default());
+    let mut rt = crate::simulation(
+        net,
+        rules,
+        cfg,
+        Duration::from_millis(header.cycle_ms.max(1)),
+    )
+    .map_err(ScenarioError::Planning)?;
     for (name, pos) in &header.points {
-        let id = plan
-            .find_point(name)
-            .ok_or_else(|| ScenarioError::Syntax(format!("unbekannte Weiche „{name}“")))?;
-        sim.set_point_position(id, *pos);
-    }
-
-    let mut rules = GenericRules::default();
-    if let Some(ms) = header.rules.point_move_timeout_ms {
-        rules.point_move_timeout = Duration::from_millis(ms);
-    }
-    if let Some(ms) = header.rules.report_timeout_ms {
-        rules.report_timeout = Duration::from_millis(ms);
-    }
-    if let Some(ms) = header.rules.cancel_time_lock_ms {
-        rules.cancel_time_lock = Duration::from_millis(ms);
-    }
-    if let Some(ms) = header.rules.overlap_release_time_ms {
-        rules.overlap_release_time = Duration::from_millis(ms);
-    }
-    if let Some(ms) = header.rules.aux_confirm_timeout_ms {
-        rules.aux_confirm_timeout = Duration::from_millis(ms);
-    }
-    if let Some(ms) = header.rules.substitute_duration_ms {
-        rules.substitute_duration = Duration::from_millis(ms);
+        let Some(ElementRef::Point(id)) = rt.field().topology().lookup(name) else {
+            return Err(ScenarioError::Syntax(format!("unbekannte Weiche „{name}“")));
+        };
+        rt.field_mut().set_point_position(id, *pos);
     }
 
     let mut ctx = Ctx {
-        rt: Runtime::new(
-            plan,
-            rules,
-            sim,
-            Duration::from_millis(header.cycle_ms.max(1)),
-        ),
+        rt,
         next_request: 0,
         pending: Vec::new(),
         events: Vec::new(),
@@ -391,12 +395,12 @@ pub fn run_str(source: &str, base: &Path) -> Result<Outcome, ScenarioError> {
 struct Ctx {
     rt: Runtime<Simulator>,
     next_request: u64,
-    pending: Vec<(RequestId, Request)>,
+    pending: Vec<Addressed>,
     events: Vec<NamedEvent>,
     sim_events: Vec<SimEvent>,
     requests: Vec<u64>,
-    /// Zuletzt angeforderte Hilfshandlung (für `confirm_aux`).
-    last_aux: Option<u32>,
+    /// Zuletzt angeforderte Hilfshandlung mit Bereich (für `confirm_aux`).
+    last_aux: Option<(usize, u32)>,
 }
 
 const fn sim_event_kind(e: &SimEvent) -> &'static str {
@@ -432,22 +436,31 @@ fn millis(s: f64) -> u64 {
 
 impl Ctx {
     fn cycle(&mut self) {
-        let out = self.rt.cycle(&self.pending);
+        let out = self.rt.cycle_addressed(&self.pending);
         self.pending.clear();
         for e in &out.events {
             let named = self.rt.name_event(e);
             if let NamedEvent::AuxPending { aux, .. } = named {
-                self.last_aux = Some(aux);
+                self.last_aux = Some((e.area, aux));
             }
             self.events.push(named);
         }
         self.sim_events.extend(self.rt.field_mut().take_events());
     }
 
-    fn request(&mut self, request: Request) {
+    fn request(&mut self, area: usize, request: Request) {
         self.next_request = self.next_request.saturating_add(1);
-        self.pending.push((RequestId(self.next_request), request));
+        self.pending.push(Addressed {
+            area,
+            id: RequestId(self.next_request),
+            request,
+        });
         self.requests.push(self.next_request);
+    }
+
+    /// Element des Gesamtnetzes (für Simulator und Feldmeldungen).
+    fn global(&self, name: &str) -> Option<ElementRef> {
+        self.rt.field().topology().lookup(name)
     }
 
     fn run_step(&mut self, index: usize, step: &Step) -> StepOutcome {
@@ -495,36 +508,44 @@ impl Ctx {
 
     fn actions(&mut self, step: &Step) -> Vec<String> {
         let mut failures = Vec::new();
-        let plan = *self.rt.plan();
         if let Some(name) = &step.set_route {
-            match plan.find_route(name) {
-                Some(r) => self.request(Request::SetRoute(r)),
+            match self.rt.find_route(name) {
+                Some((a, r)) => self.request(a, Request::SetRoute(r)),
                 None => failures.push(format!("unbekannte Fahrstraße „{name}“")),
             }
         }
         if let Some(name) = &step.cancel_route {
-            match plan.find_route(name) {
-                Some(r) => self.request(Request::CancelRoute(r)),
+            match self.rt.find_route(name) {
+                Some((a, r)) => self.request(a, Request::CancelRoute(r)),
                 None => failures.push(format!("unbekannte Fahrstraße „{name}“")),
             }
         }
         if let Some(m) = &step.move_point {
-            match plan.find_point(&m.point) {
-                Some(p) => self.request(Request::MovePoint(p, m.position)),
+            match self.rt.find_point(&m.point) {
+                Some((a, p)) => self.request(a, Request::MovePoint(p, m.position)),
                 None => failures.push(format!("unbekannte Weiche „{}“", m.point)),
             }
         }
+        if let Some(address) = &step.request_permission {
+            match self.rt.find_border(address) {
+                Some((a, b)) => self.request(a, Request::RequestPermission(b)),
+                None => failures.push(format!("unbekannte Grenze „{address}“")),
+            }
+        }
         if let Some(t) = &step.add_train {
-            let spec =
-                plan.find_signal(&t.signal)
-                    .zip(metres(t.length_m))
-                    .map(|(signal, length)| TrainSpec {
-                        name: t.name.clone(),
-                        signal,
-                        length,
-                        speed: Speed::from_kmh(t.speed_kmh),
-                        ignore_signals: t.ignore_signals,
-                    });
+            let signal = match self.global(&t.signal) {
+                Some(ElementRef::Signal(s)) => Some(s),
+                _ => None,
+            };
+            let spec = signal
+                .zip(metres(t.length_m))
+                .map(|(signal, length)| TrainSpec {
+                    name: t.name.clone(),
+                    signal,
+                    length,
+                    speed: Speed::from_kmh(t.speed_kmh),
+                    ignore_signals: t.ignore_signals,
+                });
             match spec.map(|s| self.rt.field_mut().add_train(s)) {
                 Some(Ok(())) => {}
                 Some(Err(e)) => failures.push(format!("Zug „{}“: {e}", t.name)),
@@ -536,16 +557,19 @@ impl Ctx {
         }
         for (entry, on) in [(&step.fault, true), (&step.clear_fault, false)] {
             let Some(entry) = entry else { continue };
-            let fault = match entry.kind {
-                FaultKind::PointDisturbed => {
-                    plan.find_point(&entry.element).map(Fault::PointDisturbed)
+            let fault = match (entry.kind, self.global(&entry.element)) {
+                (FaultKind::PointDisturbed, Some(ElementRef::Point(p))) => {
+                    Some(Fault::PointDisturbed(p))
                 }
-                FaultKind::TvdDisturbed => plan.find_tvd(&entry.element).map(Fault::TvdDisturbed),
-                FaultKind::TvdOccupied => plan.find_tvd(&entry.element).map(Fault::TvdOccupied),
-                FaultKind::SignalDefective => {
-                    plan.find_signal(&entry.element).map(Fault::SignalDefective)
+                (FaultKind::TvdDisturbed, Some(ElementRef::Tvd(t))) => Some(Fault::TvdDisturbed(t)),
+                (FaultKind::TvdOccupied, Some(ElementRef::Tvd(t))) => Some(Fault::TvdOccupied(t)),
+                (FaultKind::SignalDefective, Some(ElementRef::Signal(s))) => {
+                    Some(Fault::SignalDefective(s))
                 }
-                FaultKind::LxDisturbed => plan.find_lx(&entry.element).map(Fault::LxDisturbed),
+                (FaultKind::LxDisturbed, Some(ElementRef::LevelCrossing(l))) => {
+                    Some(Fault::LxDisturbed(l))
+                }
+                _ => None,
             };
             match (fault, on) {
                 (Some(f), true) => self.rt.field_mut().inject(f),
@@ -554,20 +578,26 @@ impl Ctx {
             }
         }
         if let Some(a) = &step.aux {
-            match a.op.resolve(&plan) {
-                Ok(op) => self.request(Request::AuxRequest {
-                    op,
-                    operator: OperatorId(a.operator),
-                }),
+            match self.rt.resolve_aux(&a.op) {
+                Ok((area, op)) => self.request(
+                    area,
+                    Request::AuxRequest {
+                        op,
+                        operator: OperatorId(a.operator),
+                    },
+                ),
                 Err(e) => failures.push(format!("Hilfshandlung: {e}")),
             }
         }
         if let Some(c) = &step.confirm_aux {
             match self.last_aux {
-                Some(aux) => self.request(Request::AuxConfirm {
-                    aux: AuxId(aux),
-                    operator: OperatorId(c.operator),
-                }),
+                Some((area, aux)) => self.request(
+                    area,
+                    Request::AuxConfirm {
+                        aux: AuxId(aux),
+                        operator: OperatorId(c.operator),
+                    },
+                ),
                 None => failures.push("keine Hilfshandlung angefordert".into()),
             }
         }
@@ -575,54 +605,67 @@ impl Ctx {
     }
 
     /// Prüft die Zustände einzelner Elemente.
+    #[allow(clippy::too_many_lines)]
     fn check_elements(&self, c: &Conditions) -> Vec<String> {
         let mut failures = Vec::new();
-        let plan = *self.rt.plan();
-        let state = self.rt.state();
-        let sim = self.rt.field();
+        let rt = &self.rt;
+        let sim = rt.field();
 
         for (name, want) in &c.route {
-            let got = plan
-                .find_route(name)
-                .and_then(railit_plan::RouteId::index)
-                .and_then(|i| state.routes().get(i))
-                .map(railit_kernel::RouteState::phase);
+            let got = rt.find_route(name).and_then(|(a, r)| {
+                rt.state_of(a)?
+                    .routes()
+                    .get(r.index()?)
+                    .map(railit_kernel::RouteState::phase)
+            });
             if got != Some(*want) {
                 failures.push(format!("Fahrstraße {name}: erwartet {want:?}, ist {got:?}"));
             }
         }
+        let signal = |name: &str| {
+            rt.find_signal(name)
+                .and_then(|(a, s)| Some((a, s, *rt.state_of(a)?.signals().get(s.index()?)?)))
+        };
         for (name, want) in &c.signal {
-            let got = plan
-                .find_signal(name)
-                .and_then(railit_plan::SignalId::index)
-                .and_then(|i| state.signals().get(i))
-                .map(railit_kernel::SignalState::commanded);
+            let got = signal(name).map(|(_, _, s)| s.commanded());
             if got != Some(*want) {
                 failures.push(format!("Signal {name}: erwartet {want:?}, ist {got:?}"));
             }
         }
         for (name, want) in &c.substitute {
-            let got = plan
-                .find_signal(name)
-                .and_then(railit_plan::SignalId::index)
-                .and_then(|i| state.signals().get(i))
-                .map(railit_kernel::SignalState::substitute);
+            let got = signal(name).map(|(_, _, s)| s.substitute());
             if got != Some(*want) {
                 failures.push(format!("Ersatzsignal {name}: erwartet {want}, ist {got:?}"));
             }
         }
-        let pictures = railit_movement::Pictures::new(&plan, state.signals(), state.routes());
         for (name, want) in &c.picture {
-            let got = plan
-                .find_signal(name)
-                .and_then(|s| pictures.picture(s))
-                .map(|p| p.to_string());
+            let got = rt.find_signal(name).and_then(|(a, s)| {
+                let state = rt.state_of(a)?;
+                let plan = rt.plan_of(a)?;
+                railit_movement::Pictures::new(plan, state.signals(), state.routes())
+                    .picture(s)
+                    .map(|p| p.to_string())
+            });
             if got.as_deref() != Some(want.as_str()) {
                 failures.push(format!("Signalbild {name}: erwartet {want}, ist {got:?}"));
             }
         }
+        for (address, want) in &c.permission {
+            let got = rt.find_border(address).and_then(|(a, b)| {
+                rt.state_of(a)?
+                    .borders()
+                    .get(b.index()?)
+                    .map(railit_kernel::BorderState::holding)
+            });
+            if got != Some(*want) {
+                failures.push(format!("Erlaubnis {address}: erwartet {want}, ist {got:?}"));
+            }
+        }
         for (name, want) in &c.lx {
-            let got = plan.find_lx(name).and_then(|l| sim.lx_report(l));
+            let got = match self.global(name) {
+                Some(ElementRef::LevelCrossing(l)) => sim.lx_report(l),
+                _ => None,
+            };
             if got != Some(*want) {
                 failures.push(format!(
                     "Bahnübergang {name}: erwartet {want:?}, ist {got:?}"
@@ -630,13 +673,19 @@ impl Ctx {
             }
         }
         for (name, want) in &c.point {
-            let got = plan.find_point(name).and_then(|p| sim.point_report(p));
+            let got = match self.global(name) {
+                Some(ElementRef::Point(p)) => sim.point_report(p),
+                _ => None,
+            };
             if got != Some(*want) {
                 failures.push(format!("Weiche {name}: erwartet {want:?}, ist {got:?}"));
             }
         }
         for (name, want) in &c.tvd {
-            let got = plan.find_tvd(name).and_then(|t| sim.occupancy(t));
+            let got = match self.global(name) {
+                Some(ElementRef::Tvd(t)) => sim.occupancy(t),
+                _ => None,
+            };
             if got != Some(*want) {
                 failures.push(format!("Abschnitt {name}: erwartet {want:?}, ist {got:?}"));
             }
@@ -658,7 +707,9 @@ impl Ctx {
     /// Prüft Bedingungen; gibt die Abweichungen zurück.
     fn check(&self, c: &Conditions) -> Vec<String> {
         let mut failures = self.check_elements(c);
-        let state = self.rt.state();
+        let states: Vec<&railit_kernel::OwnedState> = (0..self.rt.area_count())
+            .filter_map(|a| self.rt.state_of(a))
+            .collect();
         let answers: Vec<&NamedEvent> = self
             .events
             .iter()
@@ -708,7 +759,7 @@ impl Ctx {
             }
         }
         if let Some(want) = c.aux_counter {
-            let got = state.meta().aux_counter();
+            let got: u64 = states.iter().map(|s| s.meta().aux_counter()).sum();
             if got != want {
                 failures.push(format!("Zählwerk: erwartet {want}, ist {got}"));
             }
@@ -719,7 +770,7 @@ impl Ctx {
             }
         }
         if let Some(want) = c.safe_state {
-            let got = state.meta().safe_state().is_some();
+            let got = states.iter().any(|s| s.meta().safe_state().is_some());
             if got != want {
                 failures.push(format!("sicherer Zustand: erwartet {want}, ist {got}"));
             }

@@ -11,18 +11,20 @@
 //! Die Runtime selbst ist in Phase 1 eine Server-Variante (`std`). Die Embedded-Variante
 //! mit Timer-Interrupt folgt in Phase 5 (Konzept, Abschnitt 13).
 
+mod directory;
 mod field;
 pub mod keys;
 mod names;
 mod runtime;
 pub mod scenario;
 
+pub use directory::Directory;
 pub use field::FieldAdapter;
 pub use names::{
-    AuxKind, AuxSnapshot, LxSnapshot, NamedAux, NamedEvent, PointSnapshot, RouteSnapshot,
-    SignalSnapshot, Snapshot, TvdSnapshot,
+    AreaSnapshot, AuxKind, AuxSnapshot, BorderSnapshot, LxSnapshot, NamedAux, NamedEvent,
+    PointSnapshot, RouteSnapshot, SignalSnapshot, Snapshot, TvdSnapshot,
 };
-pub use runtime::{CycleOutput, Runtime};
+pub use runtime::{Addressed, AreaEvent, CycleOutput, Runtime};
 
 use railit_plan::{PlanError, PlanView, VerifyingKey};
 use railit_topology::Topology;
@@ -45,6 +47,35 @@ pub fn load_plan(
     };
     let image: &'static [u8] = Box::leak(bytes.into_boxed_slice());
     PlanView::parse(image)
+}
+
+/// Projektiert ein Netz (je Stellbereich, falls es welche hat) und baut eine Runtime mit
+/// dem Simulator für Szenarien, Tests und Ausbildung. Die Pläne bleiben unsigniert.
+///
+/// # Errors
+/// Beschreibung, wenn die Projektierung fehlschlägt.
+pub fn simulation(
+    net: Topology,
+    rules: railit_rules::GenericRules,
+    sim: railit_sim::SimConfig,
+    cycle: railit_types::Duration,
+) -> Result<Runtime<railit_sim::Simulator>, String> {
+    if net.areas().len() == 0 {
+        let compiled = railit_planning::compile(&net, None).map_err(|e| e.to_string())?;
+        let plan = load_plan(compiled.image, None).map_err(|e| e.to_string())?;
+        let field = railit_sim::Simulator::new(net, sim);
+        return Ok(Runtime::new(plan, rules, field, cycle));
+    }
+    let compiled =
+        railit_planning::compile_areas(&net, None, &railit_planning::PlanningConfig::default())
+            .map_err(|e| e.to_string())?;
+    let mut areas = Vec::with_capacity(compiled.len());
+    for a in compiled {
+        let plan = load_plan(a.compiled.image, None).map_err(|e| e.to_string())?;
+        areas.push((plan, a.cut));
+    }
+    let field = railit_sim::Simulator::new(net.clone(), sim);
+    Runtime::for_network(&net, areas, rules, field, cycle)
 }
 
 /// Prüft, ob Plan und Netz zusammengehören (gleiche Elemente in gleicher Reihenfolge).

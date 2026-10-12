@@ -240,7 +240,7 @@ fn journal_verify_and_replay() {
     );
     let journal = dir.join("bs.journal");
     let _ = std::fs::remove_file(&journal);
-    rt.start_journal(Box::new(std::fs::File::create(&journal).unwrap()), 10)
+    rt.start_journal(0, Box::new(std::fs::File::create(&journal).unwrap()), 10)
         .unwrap();
     rt.cycle(&[(
         railit_kernel::RequestId(1),
