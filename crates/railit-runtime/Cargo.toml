@@ -18,6 +18,7 @@ railit-import = { workspace = true }
 railit-rules = { workspace = true }
 railit-kernel = { workspace = true, features = ["alloc", "serde"] }
 railit-movement = { workspace = true, features = ["serde"] }
+railit-safety = { workspace = true, features = ["alloc", "serde"] }
 railit-sim = { workspace = true }
 railit-journal = { workspace = true }
 railit-ops = { workspace = true }

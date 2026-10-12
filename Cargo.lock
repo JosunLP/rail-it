@@ -1573,6 +1573,7 @@ dependencies = [
  "railit-plan",
  "railit-planning",
  "railit-rules",
+ "railit-safety",
  "railit-sim",
  "railit-topology",
  "railit-types",

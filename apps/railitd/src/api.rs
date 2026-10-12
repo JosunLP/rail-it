@@ -62,7 +62,7 @@ use tokio_stream::wrappers::BroadcastStream;
 
 use crate::auth::{AuthMode, Permission, Principal};
 use crate::engine::{Answer, OpsCommand};
-use crate::service::{FaultKind, NewTrain, Service, ServiceError};
+use crate::service::{FaultKind, NewTrain, SafetyAction, Service, ServiceError};
 
 /// Gemeinsamer Zustand der Handler.
 #[derive(Clone)]
@@ -129,6 +129,10 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/v1/etcs", get(etcs))
         .route("/v1/field/links", get(links))
         .route("/v1/field/links/{controller}", post(link_faults))
+        .route("/v1/safety", get(safety))
+        .route("/v1/safety/faults", post(safety_fault))
+        .route("/v1/safety/reintegrate", post(safety_reintegrate))
+        .route("/v1/safety/reset", post(safety_reset))
         .route("/v1/whoami", get(whoami))
         .route("/v1/audit", get(audit))
         .with_state(state.clone())
@@ -531,6 +535,75 @@ async fn link_faults(
     Json(faults): Json<railit_runtime::railit_adapters::LinkFaults>,
 ) -> ApiResult {
     state.service.link_faults(&who, controller, faults).await?;
+    Ok(done())
+}
+
+async fn safety(State(state): State<AppState>) -> Json<Value> {
+    Json(state.service.safety())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SafetyFaultBody {
+    area: Option<String>,
+    channel: usize,
+    fault: railit_runtime::railit_safety::Fault,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChannelBody {
+    area: Option<String>,
+    channel: usize,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct AreaBody {
+    area: Option<String>,
+}
+
+async fn safety_fault(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Json(body): Json<SafetyFaultBody>,
+) -> ApiResult {
+    let action = SafetyAction::Fault {
+        channel: body.channel,
+        fault: body.fault,
+    };
+    state
+        .service
+        .safety_command(&who, body.area.as_deref(), action)
+        .await?;
+    Ok(done())
+}
+
+async fn safety_reintegrate(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Json(body): Json<ChannelBody>,
+) -> ApiResult {
+    let action = SafetyAction::Reintegrate {
+        channel: body.channel,
+    };
+    state
+        .service
+        .safety_command(&who, body.area.as_deref(), action)
+        .await?;
+    Ok(done())
+}
+
+async fn safety_reset(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    body: Option<Json<AreaBody>>,
+) -> ApiResult {
+    let area = body.and_then(|Json(b)| b.area);
+    state
+        .service
+        .safety_command(&who, area.as_deref(), SafetyAction::Reset)
+        .await?;
     Ok(done())
 }
 

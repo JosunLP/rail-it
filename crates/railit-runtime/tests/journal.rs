@@ -217,3 +217,70 @@ fn every_area_journal_replays() {
         assert_eq!(&state, rt.state_of(i).unwrap());
     }
 }
+
+/// REQ-SAF-004, REQ-JRN-002: Abschaltung und Rücksetzen der Sicherheitsschicht stehen im
+/// Journal; das Abspielen überspringt die Zyklen im sicheren Zustand und vergleicht danach
+/// wieder.
+#[test]
+fn journal_covers_trip_and_reset_of_the_safety_layer() {
+    use railit_journal::SafetyKind;
+    use railit_runtime::SafetyConfig;
+    use railit_runtime::railit_safety::{Fault, Redundancy};
+
+    let net = railit_import::toml_format::parse(EXAMPLE).unwrap().topology;
+    let compiled = railit_planning::compile(&net, None).unwrap();
+    let plan = railit_runtime::load_plan(compiled.image, None).unwrap();
+    let sim = Simulator::new(net, SimConfig::default());
+    let mut rt = Runtime::new(
+        plan,
+        GenericRules::default(),
+        sim,
+        Duration::from_millis(100),
+    );
+    rt.set_safety(SafetyConfig {
+        redundancy: Redundancy::TwoOutOfThree,
+        ..SafetyConfig::default()
+    })
+    .unwrap();
+    let buf = Shared::default();
+    rt.start_journal(0, Box::new(buf.clone()), 10).unwrap();
+    let a_n1 = plan.find_route("A-N1").unwrap();
+    rt.cycle(&[(RequestId(1), Request::SetRoute(a_n1))]);
+    for _ in 0..30 {
+        rt.cycle(&[]);
+    }
+    rt.inject_channel_fault(0, 2, Fault::StrayCommand).unwrap();
+    let out = rt.cycle(&[]);
+    assert_eq!(out.safety.len(), 1, "Kanal 2 ausgeschlossen");
+    assert_eq!(out.safe_state, None);
+    rt.reintegrate_channel(0, 2).unwrap();
+    rt.inject_channel_fault(0, 0, Fault::Stall).unwrap();
+    rt.cycle(&[]);
+    rt.inject_channel_fault(0, 1, Fault::StrayCommand).unwrap();
+    let out = rt.cycle(&[]);
+    assert!(out.safe_state.is_some(), "abgeschaltet");
+    for _ in 0..20 {
+        rt.cycle(&[]);
+    }
+    rt.reset_safety(0).unwrap();
+    rt.cycle(&[(RequestId(2), Request::SetRoute(a_n1))]);
+    for _ in 0..30 {
+        rt.cycle(&[]);
+    }
+    assert_eq!(rt.journal_error(), None);
+
+    let bytes = buf.0.lock().unwrap().clone();
+    let (summary, state) = replay(bytes.as_slice(), &plan).unwrap();
+    let kinds: Vec<_> = summary.safety.iter().map(|r| r.kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            SafetyKind::Excluded,
+            SafetyKind::Reintegrated,
+            SafetyKind::Excluded,
+            SafetyKind::Tripped,
+            SafetyKind::Reset
+        ]
+    );
+    assert_eq!(&state, rt.state(), "Endzustand nach dem Rücksetzen");
+}

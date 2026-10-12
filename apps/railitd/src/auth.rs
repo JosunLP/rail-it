@@ -54,17 +54,19 @@ pub(crate) enum Permission {
     Simulate,
     /// Auditprotokoll lesen.
     Audit,
+    /// Technik: Kanäle der Sicherheitsschicht prüfen, wieder aufnehmen, zurücksetzen.
+    Maintain,
 }
 
 impl Role {
     const fn grants(self, p: Permission) -> bool {
-        use Permission::{Audit, Aux, Dispatch, Operate, Read, Simulate};
+        use Permission::{Audit, Aux, Dispatch, Maintain, Operate, Read, Simulate};
         match self {
             Self::Administration => true,
             Self::Beobachter => matches!(p, Read),
             Self::Fahrdienstleiter => matches!(p, Read | Operate | Aux),
             Self::Disponent => matches!(p, Read | Dispatch),
-            Self::Instandhaltung => matches!(p, Read | Simulate | Audit),
+            Self::Instandhaltung => matches!(p, Read | Simulate | Audit | Maintain),
             Self::Projektierer => matches!(p, Read | Audit),
         }
     }
@@ -285,6 +287,9 @@ mod tests {
         let both = p(vec![Role::Disponent, Role::Instandhaltung]);
         assert!(both.may(Permission::Dispatch) && both.may(Permission::Audit));
         assert!(Principal::unrestricted("a").may(Permission::Simulate));
+        // Sicherheitsschicht zurücksetzen: Technik, nicht Betrieb.
+        assert!(both.may(Permission::Maintain));
+        assert!(!fdl.may(Permission::Maintain) && !obs.may(Permission::Maintain));
     }
 
     #[test]

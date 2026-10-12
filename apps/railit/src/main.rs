@@ -140,6 +140,13 @@ enum Command {
     Ops(OpsCommand),
     /// ETCS: angemeldete Züge mit Betriebsart und Fahrerlaubnis (online).
     Etcs,
+    /// Sicherheitsschicht: redundante Kanäle, Voter, sicherer Zustand (online). Ohne
+    /// Unterbefehl: Zustand.
+    Safety {
+        /// Befehl; ohne Angabe `status`.
+        #[command(subcommand)]
+        command: Option<SafetyCommand>,
+    },
     /// Angemeldeter Benutzer (online).
     Whoami,
     /// Auditprotokoll prüfen (offline) oder anzeigen (online).
@@ -168,6 +175,58 @@ enum BorderCommand {
 enum Switch {
     On,
     Off,
+}
+
+#[derive(Debug, Subcommand)]
+enum SafetyCommand {
+    /// Redundanz, mitwählende Kanäle und Abschaltung je Stellbereich.
+    Status,
+    /// Fehler in einen Kanal einbringen (Prüfung; Rolle Instandhaltung).
+    Fault {
+        /// Kanal (0, 1, 2).
+        channel: usize,
+        /// Fehler.
+        #[arg(value_enum)]
+        fault: ChannelFault,
+        /// Stellbereich (bei Netzen mit mehreren Bereichen).
+        #[arg(long)]
+        area: Option<String>,
+    },
+    /// Ausgeschlossenen Kanal wieder aufnehmen.
+    Reintegrate {
+        /// Kanal (0, 1, 2).
+        channel: usize,
+        /// Stellbereich (bei Netzen mit mehreren Bereichen).
+        #[arg(long)]
+        area: Option<String>,
+    },
+    /// Sicheren Zustand zurücksetzen: Neubeginn wie nach einem Neustart.
+    Reset {
+        /// Stellbereich (bei Netzen mit mehreren Bereichen).
+        #[arg(long)]
+        area: Option<String>,
+    },
+}
+
+/// Fehler für einen Kanal.
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum ChannelFault {
+    /// Eingaben eines Zyklus verlieren.
+    DropInputs,
+    /// Falscher Fahrtbefehl in einem Zyklus.
+    StrayCommand,
+    /// Kanal rechnet nicht mehr.
+    Stall,
+}
+
+impl ChannelFault {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::DropInputs => "drop_inputs",
+            Self::StrayCommand => "stray_command",
+            Self::Stall => "stall",
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -614,6 +673,9 @@ fn run_online(
         Command::Areas => online::areas(c, output),
         Command::Whoami => online::whoami(c, output),
         Command::Etcs => online::etcs(c, output),
+        Command::Safety { command } => {
+            run_safety(c, command.unwrap_or(SafetyCommand::Status), output)
+        }
         Command::Border(b) => {
             let (address, verb, what) = match b {
                 BorderCommand::Request { address } => (address, "request", "anfordern"),
@@ -734,6 +796,49 @@ fn run_ops(
         OpsCommand::Delay { train: t, seconds } => (
             c.post(&train(&t, "delay"), Some(json!({ "s": seconds }))),
             format!("Zug {t} wartet zusätzlich {seconds} s."),
+        ),
+    };
+    online::done(result, &what, output)
+}
+
+/// Befehle an die Sicherheitsschicht.
+fn run_safety(
+    c: &online::Client,
+    cmd: SafetyCommand,
+    output: Output,
+) -> Result<ExitCode, online::Failure> {
+    let with_area = |mut body: Value, area: Option<String>| {
+        if let Some(a) = area {
+            body["area"] = json!(a);
+        }
+        body
+    };
+    let (result, what) = match cmd {
+        SafetyCommand::Status => return online::safety(c, output),
+        SafetyCommand::Fault {
+            channel,
+            fault,
+            area,
+        } => (
+            c.post(
+                "/v1/safety/faults",
+                Some(with_area(
+                    json!({ "channel": channel, "fault": fault.as_str() }),
+                    area,
+                )),
+            ),
+            format!("Fehler {} in Kanal {channel} eingebracht.", fault.as_str()),
+        ),
+        SafetyCommand::Reintegrate { channel, area } => (
+            c.post(
+                "/v1/safety/reintegrate",
+                Some(with_area(json!({ "channel": channel }), area)),
+            ),
+            format!("Kanal {channel} wieder aufgenommen."),
+        ),
+        SafetyCommand::Reset { area } => (
+            c.post("/v1/safety/reset", Some(with_area(json!({}), area))),
+            "Sicherer Zustand zurückgesetzt; Neubeginn wie nach einem Neustart.".to_string(),
         ),
     };
     online::done(result, &what, output)

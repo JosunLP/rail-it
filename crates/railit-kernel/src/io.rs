@@ -447,6 +447,8 @@ pub enum SafeStateReason {
     UnsafeLevelCrossing(LxId),
     /// Ersatzsignal ohne passende festgelegte Fahrstraße.
     UnsafeSubstitute(SignalId),
+    /// Die Sicherheitsschicht hat abgeschaltet (Abweichung der Kanäle, Watchdog).
+    SafetyLayer,
 }
 
 /// Empfänger der Ausgaben eines Zyklus.

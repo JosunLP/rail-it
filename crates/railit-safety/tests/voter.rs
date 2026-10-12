@@ -250,6 +250,17 @@ fn two_out_of_two_trips_on_stray_command() {
         s.voted.events
     );
     assert_eq!(s.voted.events.len(), 1, "Anforderung abgelehnt");
+    let primary = b.layer.primary().unwrap();
+    assert_eq!(
+        primary.meta().safe_state(),
+        Some(SafeStateReason::SafetyLayer)
+    );
+    assert!(
+        primary
+            .signals()
+            .iter()
+            .all(|s| s.commanded() == Aspect::Stop)
+    );
 
     // Der sichere Zustand bleibt bestehen; Anforderungen werden abgelehnt.
     for _ in 0..30 {

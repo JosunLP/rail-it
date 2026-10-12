@@ -177,6 +177,18 @@ pub enum ReintegrateError {
     StateMismatch,
 }
 
+impl core::fmt::Display for ReintegrateError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Tripped => "die Sicherheitsschicht ist abgeschaltet; erst zurücksetzen",
+            Self::NoSuchChannel => "diesen Kanal gibt es nicht",
+            Self::AlreadyActive => "der Kanal wählt bereits mit",
+            Self::NoHealthyChannel => "kein gesunder Kanal, dessen Zustand übernommen werden kann",
+            Self::StateMismatch => "die Zustandsspeicher sind verschieden groß",
+        })
+    }
+}
+
 /// Speicher für den Zustand eines Kanals.
 pub trait StateStore {
     /// Veränderliche Sicht auf den Zustand.
@@ -490,8 +502,11 @@ impl<'p, R: RuleSet, S: StateStore, O: ChannelOutputs> Channels<'p, R, S, O> {
         let mut verdict = Verdict::new();
         if let Some(trip) = self.trip {
             self.since_trip = self.since_trip.saturating_add(1);
-            let all = core::mem::take(&mut self.announce)
-                || self.since_trip.checked_rem(RESEND_EVERY) == Some(0);
+            let announce = core::mem::take(&mut self.announce);
+            if announce {
+                self.halt_states(now);
+            }
+            let all = announce || self.since_trip.checked_rem(RESEND_EVERY) == Some(0);
             self.safe_outputs(inputs, all, out);
             verdict.trip = Some(trip);
             return verdict;
@@ -528,10 +543,10 @@ impl<'p, R: RuleSet, S: StateStore, O: ChannelOutputs> Channels<'p, R, S, O> {
                         slot.out.replay(out);
                         verdict.kernel = slot.result;
                     }
-                    _ => self.enter(Trip::OutputOverflow, inputs, out, &mut verdict),
+                    _ => self.enter(now, Trip::OutputOverflow, inputs, out, &mut verdict),
                 }
             }
-            Decision::Trip(trip) => self.enter(trip, inputs, out, &mut verdict),
+            Decision::Trip(trip) => self.enter(now, trip, inputs, out, &mut verdict),
         }
         verdict
     }
@@ -580,6 +595,7 @@ impl<'p, R: RuleSet, S: StateStore, O: ChannelOutputs> Channels<'p, R, S, O> {
 
     fn enter<X: Outputs + ?Sized>(
         &mut self,
+        now: Tick,
         trip: Trip,
         inputs: &[Input],
         out: &mut X,
@@ -588,9 +604,20 @@ impl<'p, R: RuleSet, S: StateStore, O: ChannelOutputs> Channels<'p, R, S, O> {
         self.trip = Some(trip);
         self.announce = false;
         self.since_trip = 0;
+        self.halt_states(now);
         verdict.trip = Some(trip);
         verdict.push(SafetyEvent::Tripped(trip));
         self.safe_outputs(inputs, true, out);
+    }
+
+    /// Alle Kanalzustände in den sicheren Zustand des Kerns: Anzeige und Kernzustand
+    /// entsprechen den Ausgaben der Schicht.
+    fn halt_states(&mut self, now: Tick) {
+        for slot in self.slots.iter_mut().flatten() {
+            slot.state
+                .state()
+                .enter_safe_state(SafeStateReason::SafetyLayer, now);
+        }
     }
 
     /// Ausgaben im sicheren Zustand, allein aus dem Plan: alle Signale Halt, Ersatzsignale

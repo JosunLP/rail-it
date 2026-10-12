@@ -52,6 +52,15 @@
 //! EULYNX SCI und RaSTA zu Objektsteuerungen vor dem Simulator. Die Aktion
 //! `link = { controller = "OC-Weichen", down = true, loss_percent, corrupt_percent, delay_ms }`
 //! stört die Übertragungsstrecke.
+//!
+//! Redundanz: `[scenario] channels = 2` (2-von-2) oder `3` (2-von-3) lässt jeden Stellbereich
+//! über die Sicherheitsschicht mit so vielen Kanälen laufen. Aktionen:
+//! `channel_fault = { channel = 2, fault = "stall" }` (`drop_inputs`, `stray_command`,
+//! `stall`; optional `area`), `reintegrate = { channel = 2 }` (optional `area`),
+//! `reset_safety = true` (alle Bereiche) bzw. `reset_safety = "Adorf"`. Bedingungen:
+//! `safety_trip` (eine Sicherheitsschicht ist abgeschaltet), `safety_event` (Liste:
+//! `channel_excluded`, `tripped`), `active_channels` (mitwählende Kanäle des ersten bzw.
+//! einzigen Bereichs, z. B. `[true, true, false]`).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -69,9 +78,11 @@ use serde::Deserialize;
 use railit_adapters::{EulynxField, LinkFaults};
 use railit_ops::{OpsConfig, OpsEvent, Timetable};
 
+use railit_safety::{Fault as ChannelFault, Redundancy, SafetyEvent};
+
 use crate::field::SimulatedField;
 use crate::names::{NamedAux, NamedEvent};
-use crate::runtime::{Addressed, Runtime};
+use crate::runtime::{Addressed, AreaSafetyEvent, Runtime, SafetyConfig};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -106,6 +117,12 @@ struct Header {
     ars: bool,
     #[serde(default)]
     ops: bool,
+    #[serde(default = "default_channels")]
+    channels: usize,
+}
+
+const fn default_channels() -> usize {
+    1
 }
 
 // Die Einheit gehört zum Feldnamen im Szenarioformat.
@@ -191,6 +208,12 @@ struct Step {
     #[serde(default)]
     link: Option<LinkEntry>,
     #[serde(default)]
+    channel_fault: Option<ChannelFaultEntry>,
+    #[serde(default)]
+    reintegrate: Option<ChannelEntry>,
+    #[serde(default)]
+    reset_safety: Option<AreaSelection>,
+    #[serde(default)]
     wait_s: Option<f64>,
     #[serde(default)]
     until: Option<Conditions>,
@@ -209,6 +232,31 @@ enum FieldKind {
     Direct,
     /// Über EULYNX SCI und RaSTA mit Objektsteuerungen vor dem Simulator.
     Eulynx,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChannelFaultEntry {
+    #[serde(default)]
+    area: Option<String>,
+    channel: usize,
+    fault: ChannelFault,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChannelEntry {
+    #[serde(default)]
+    area: Option<String>,
+    channel: usize,
+}
+
+/// `true` (alle Bereiche) oder Name eines Bereichs.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum AreaSelection {
+    All(bool),
+    Area(String),
 }
 
 // `deny_unknown_fields` verträgt sich nicht mit `flatten`.
@@ -341,6 +389,12 @@ struct Conditions {
     etcs_event: Vec<String>,
     #[serde(default)]
     link_up: BTreeMap<String, bool>,
+    #[serde(default)]
+    safety_trip: Option<bool>,
+    #[serde(default)]
+    safety_event: Vec<String>,
+    #[serde(default)]
+    active_channels: Option<Vec<bool>>,
 }
 
 /// Szenario konnte nicht ausgeführt werden (im Unterschied zu einem fehlgeschlagenen Schritt).
@@ -427,10 +481,19 @@ impl fmt::Display for Outcome {
 /// # Errors
 /// [`ScenarioError`], wenn Datei, Szenario, Netz oder Projektierung unbrauchbar sind.
 pub fn run_file(path: &Path) -> Result<Outcome, ScenarioError> {
+    run_file_with(path, None)
+}
+
+/// Führt die Szenariodatei `path` aus; `channels` gibt die Redundanz für Szenarien ohne
+/// eigene Angabe vor (z. B. um alle Szenarien auch mit 2-von-3 laufen zu lassen).
+///
+/// # Errors
+/// Wie [`run_file`].
+pub fn run_file_with(path: &Path, channels: Option<Redundancy>) -> Result<Outcome, ScenarioError> {
     let source = std::fs::read_to_string(path)
         .map_err(|e| ScenarioError::Io(format!("{}: {e}", path.display())))?;
     let base = path.parent().unwrap_or_else(|| Path::new("."));
-    run_str(&source, base)
+    run_str_with(&source, base, channels)
 }
 
 /// Führt ein Szenario aus; relative Pfade beziehen sich auf `base`.
@@ -438,9 +501,28 @@ pub fn run_file(path: &Path) -> Result<Outcome, ScenarioError> {
 /// # Errors
 /// Wie [`run_file`].
 pub fn run_str(source: &str, base: &Path) -> Result<Outcome, ScenarioError> {
+    run_str_with(source, base, None)
+}
+
+fn run_str_with(
+    source: &str,
+    base: &Path,
+    channels: Option<Redundancy>,
+) -> Result<Outcome, ScenarioError> {
     let file: ScenarioFile =
         toml::from_str(source).map_err(|e| ScenarioError::Syntax(e.to_string()))?;
-    let header = file.scenario;
+    let mut header = file.scenario;
+    if let Some(r) = channels
+        && header.channels == default_channels()
+    {
+        header.channels = r.channels();
+    }
+    if Redundancy::from_channels(header.channels).is_none() {
+        return Err(ScenarioError::Syntax(format!(
+            "channels = {}: erlaubt sind 1, 2 und 3",
+            header.channels
+        )));
+    }
 
     let net_path = base.join(&header.network);
     let net_source = std::fs::read_to_string(&net_path)
@@ -477,6 +559,12 @@ fn run_with<F: SimulatedField>(
     steps: &[Step],
     base: &Path,
 ) -> Result<Outcome, ScenarioError> {
+    let redundancy = Redundancy::from_channels(header.channels).unwrap_or_default();
+    rt.set_safety(SafetyConfig {
+        redundancy,
+        ..SafetyConfig::default()
+    })
+    .map_err(ScenarioError::Planning)?;
     for (name, pos) in &header.points {
         let Some(ElementRef::Point(id)) = rt.field().simulator().topology().lookup(name) else {
             return Err(ScenarioError::Syntax(format!("unbekannte Weiche „{name}“")));
@@ -511,6 +599,7 @@ fn run_with<F: SimulatedField>(
         sim_events: Vec::new(),
         ops_events: Vec::new(),
         etcs_events: Vec::new(),
+        safety_events: Vec::new(),
         requests: Vec::new(),
         last_aux: None,
     };
@@ -538,6 +627,7 @@ struct Ctx<F> {
     sim_events: Vec<SimEvent>,
     ops_events: Vec<OpsEvent>,
     etcs_events: Vec<railit_etcs::RbcEvent>,
+    safety_events: Vec<AreaSafetyEvent>,
     requests: Vec<u64>,
     /// Zuletzt angeforderte Hilfshandlung mit Bereich (für `confirm_aux`).
     last_aux: Option<(usize, u32)>,
@@ -590,6 +680,7 @@ impl<F: SimulatedField> Ctx<F> {
             .extend(self.rt.field_mut().simulator_mut().take_events());
         self.ops_events.extend(out.ops);
         self.etcs_events.extend(out.etcs);
+        self.safety_events.extend(out.safety);
     }
 
     fn request(&mut self, area: usize, request: Request) {
@@ -612,8 +703,10 @@ impl<F: SimulatedField> Ctx<F> {
         self.sim_events.clear();
         self.ops_events.clear();
         self.etcs_events.clear();
+        self.safety_events.clear();
         self.requests.clear();
         let mut failures = self.actions(step);
+        failures.extend(self.safety_actions(step));
 
         let cycle_ms = self.rt.cycle_time().as_millis().max(1);
         if let Some(until) = &step.until {
@@ -976,9 +1069,93 @@ impl<F: SimulatedField> Ctx<F> {
         failures
     }
 
+    /// Bereich nach Name; ohne Namen der erste.
+    fn area(&self, name: Option<&String>) -> Result<usize, String> {
+        name.map_or(Ok(0), |n| {
+            self.rt
+                .find_area(n)
+                .ok_or_else(|| format!("unbekannter Stellbereich „{n}“"))
+        })
+    }
+
+    fn safety_actions(&mut self, step: &Step) -> Vec<String> {
+        let mut failures = Vec::new();
+        if let Some(f) = &step.channel_fault {
+            let result = self
+                .area(f.area.as_ref())
+                .and_then(|a| self.rt.inject_channel_fault(a, f.channel, f.fault));
+            failures.extend(result.err());
+        }
+        if let Some(r) = &step.reintegrate {
+            let result = self
+                .area(r.area.as_ref())
+                .and_then(|a| self.rt.reintegrate_channel(a, r.channel));
+            failures.extend(result.err());
+        }
+        match &step.reset_safety {
+            Some(AreaSelection::All(true)) => {
+                for a in 0..self.rt.area_count() {
+                    failures.extend(self.rt.reset_safety(a).err());
+                }
+            }
+            Some(AreaSelection::Area(name)) => {
+                let result = self.area(Some(name)).and_then(|a| self.rt.reset_safety(a));
+                failures.extend(result.err());
+            }
+            Some(AreaSelection::All(false)) | None => {}
+        }
+        failures
+    }
+
+    fn check_safety(&self, c: &Conditions) -> Vec<String> {
+        let mut failures = Vec::new();
+        let status: Vec<_> = (0..self.rt.area_count())
+            .filter_map(|a| self.rt.safety_status(a))
+            .collect();
+        if let Some(want) = c.safety_trip {
+            let got = status.iter().any(|s| s.trip.is_some());
+            if got != want {
+                failures.push(format!(
+                    "Sicherheitsschicht abgeschaltet: erwartet {want}, ist {got}"
+                ));
+            }
+        }
+        for kind in &c.safety_event {
+            let got = self.safety_events.iter().any(|e| {
+                matches!(
+                    (kind.as_str(), e.event),
+                    ("channel_excluded", SafetyEvent::ChannelExcluded { .. })
+                        | ("tripped", SafetyEvent::Tripped(_))
+                )
+            });
+            if !got {
+                failures.push(format!(
+                    "Meldung der Sicherheitsschicht „{kind}“ erwartet, gemeldet {:?}",
+                    self.safety_events
+                ));
+            }
+        }
+        if let Some(want) = &c.active_channels {
+            let got: Vec<bool> = status.first().map_or_else(Vec::new, |s| {
+                s.active
+                    .iter()
+                    .take(s.redundancy.channels())
+                    .copied()
+                    .collect()
+            });
+            if &got != want {
+                failures.push(format!(
+                    "mitwählende Kanäle: erwartet {want:?}, ist {got:?}"
+                ));
+            }
+        }
+        failures
+    }
+
     /// Prüft Bedingungen; gibt die Abweichungen zurück.
     fn check(&self, c: &Conditions) -> Vec<String> {
         let mut failures = self.check_elements(c);
+        failures.extend(self.check_safety(c));
         failures.extend(self.check_ops(c));
         failures.extend(self.check_etcs(c));
         let links = self.rt.field().links();

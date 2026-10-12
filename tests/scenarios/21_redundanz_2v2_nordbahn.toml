@@ -1,0 +1,32 @@
+[scenario]
+name = "Nordbahn 2-von-2: Abschaltung eines Stellbereichs"
+description = """
+Jeder Stellbereich der Nordbahn rechnet in zwei Kanälen. Ein Kanal in Adorf gibt einen
+falschen Fahrtbefehl aus. Der Voter erkennt die Abweichung, der Befehl erreicht das Feld nie:
+Adorf schaltet ab und zeigt überall Halt. Die Nachbarn arbeiten weiter; die Strecke erkennt,
+dass Adorf nicht mehr meldet. Nach dem Rücksetzen läuft Adorf wieder an.
+"""
+network = "../../examples/nordbahn.toml"
+channels = 2
+
+[[step]]
+note = "Anlauf: Grundstellung in allen Bereichen"
+wait_s = 6
+expect = { safety_trip = false, active_channels = [true, true] }
+
+[[step]]
+note = "Kanal 1 in Adorf: falscher Fahrtbefehl ⇒ Adorf schaltet ab"
+channel_fault = { area = "Adorf", channel = 1, fault = "stray_command" }
+wait_s = 1
+expect = { safety_event = ["tripped"], safety_trip = true, safe_state = true }
+
+[[step]]
+note = "Die Strecke verliert die Meldungen von Adorf"
+wait_s = 5
+expect = { alarm = ["border_lost"] }
+
+[[step]]
+note = "Adorf zurücksetzen"
+reset_safety = "Adorf"
+wait_s = 6
+expect = { safety_trip = false, safe_state = false }

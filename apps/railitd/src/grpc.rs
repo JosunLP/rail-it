@@ -16,7 +16,7 @@ use tonic::{Request, Response, Status};
 
 use crate::auth::Principal;
 use crate::engine::{Answer, OpsCommand};
-use crate::service::{FaultKind, NewTrain, Service, ServiceError};
+use crate::service::{FaultKind, NewTrain, SafetyAction, Service, ServiceError};
 
 /// Aus dem Vertrag erzeugter Code.
 #[allow(
@@ -35,6 +35,7 @@ use pb::etcs_server::{Etcs, EtcsServer};
 use pb::events_server::{Events, EventsServer};
 use pb::interlocking_server::{Interlocking, InterlockingServer};
 use pb::operations_server::{Operations, OperationsServer};
+use pb::safety_server::{Safety, SafetyServer};
 use pb::simulation_server::{Simulation, SimulationServer};
 
 /// Alle gRPC-Dienste als Router (unter `/railit.v1.<Dienst>/<Methode>`).
@@ -47,6 +48,7 @@ pub(crate) fn router(service: &Service) -> axum::Router {
         .add_service(SimulationServer::new(api.clone()))
         .add_service(EventsServer::new(api.clone()))
         .add_service(EtcsServer::new(api.clone()))
+        .add_service(SafetyServer::new(api.clone()))
         .add_service(DiagnosticsServer::new(api))
         .into_axum_router()
 }
@@ -451,6 +453,71 @@ impl Etcs for Grpc {
                 })
                 .collect(),
         }))
+    }
+}
+
+fn area_of(area: &str) -> Option<&str> {
+    (!area.is_empty()).then_some(area)
+}
+
+fn channel_of(channel: u32) -> Result<usize, Status> {
+    usize::try_from(channel).map_err(|_| Status::invalid_argument("Kanal zu groß"))
+}
+
+#[tonic::async_trait]
+impl Safety for Grpc {
+    async fn get_safety(&self, _request: Request<pb::GetSafetyRequest>) -> Res<pb::SafetyState> {
+        let snap = self.service.snapshot();
+        Ok(Response::new(pb::SafetyState {
+            areas: snap
+                .areas
+                .iter()
+                .map(|a| pb::AreaSafety {
+                    area: a.name.clone(),
+                    redundancy: name(&a.safety.redundancy),
+                    active: a.safety.channels.iter().map(|c| c.active).collect(),
+                    trip: a
+                        .safety
+                        .trip
+                        .map(|t| serde_json::to_string(&t).unwrap_or_default())
+                        .unwrap_or_default(),
+                })
+                .collect(),
+        }))
+    }
+
+    async fn inject_fault(&self, request: Request<pb::SafetyFaultRequest>) -> Res<pb::Done> {
+        let who = who(&request)?;
+        let r = request.get_ref();
+        let action = SafetyAction::Fault {
+            channel: channel_of(r.channel)?,
+            fault: parse("Kanalfehler", &r.fault)?,
+        };
+        self.service
+            .safety_command(&who, area_of(&r.area), action)
+            .await?;
+        Ok(done())
+    }
+
+    async fn reintegrate(&self, request: Request<pb::ChannelRequest>) -> Res<pb::Done> {
+        let who = who(&request)?;
+        let r = request.get_ref();
+        let action = SafetyAction::Reintegrate {
+            channel: channel_of(r.channel)?,
+        };
+        self.service
+            .safety_command(&who, area_of(&r.area), action)
+            .await?;
+        Ok(done())
+    }
+
+    async fn reset(&self, request: Request<pb::SafetyResetRequest>) -> Res<pb::Done> {
+        let who = who(&request)?;
+        let r = request.get_ref();
+        self.service
+            .safety_command(&who, area_of(&r.area), SafetyAction::Reset)
+            .await?;
+        Ok(done())
     }
 }
 

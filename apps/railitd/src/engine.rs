@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use railit_kernel::{Request, RequestId};
 use railit_runtime::railit_adapters::{LinkFaults, LinkStatus};
-use railit_runtime::{Addressed, NamedEvent, Runtime, Snapshot};
+use railit_runtime::railit_safety::SafetyEvent;
+use railit_runtime::{Addressed, AreaSafetyEvent, NamedEvent, Runtime, Snapshot};
 use railit_runtime::{DynField, SimulatedField};
 use railit_sim::{Fault, SimEvent, TrainInfo, TrainSpec};
 use serde_json::{Value, json};
@@ -44,6 +45,21 @@ pub(crate) enum OpsCommand {
     },
     Delay(String, u32),
     SetArs(bool),
+}
+
+/// Befehl an die Sicherheitsschicht eines Stellbereichs.
+#[derive(Debug)]
+pub(crate) enum SafetyCommand {
+    /// Fehler in einen Kanal einbringen (Prüfung).
+    Fault {
+        area: usize,
+        channel: usize,
+        fault: railit_runtime::railit_safety::Fault,
+    },
+    /// Ausgeschlossenen Kanal wieder aufnehmen.
+    Reintegrate { area: usize, channel: usize },
+    /// Sicheren Zustand zurücksetzen (Neubeginn wie nach einem Neustart).
+    Reset { area: usize },
 }
 
 /// Antwort auf einen Simulationsbefehl.
@@ -83,6 +99,11 @@ pub(crate) enum EngineMsg {
     /// Befehl an die Betriebsführung; Antwort sofort.
     Ops {
         command: OpsCommand,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// Befehl an die Sicherheitsschicht; Antwort sofort.
+    Safety {
+        command: SafetyCommand,
         reply: oneshot::Sender<Result<(), String>>,
     },
 }
@@ -202,6 +223,7 @@ impl Engine {
             }
             let _ = self.ch.events.send(event_json(time_ms, None, value));
         }
+        self.publish_safety(time_ms, &out.safety);
         if let Some((area, reason)) = out.safe_state
             && !self.safe_state_logged
         {
@@ -210,6 +232,31 @@ impl Engine {
             self.safe_state_logged = true;
         }
         self.ch.snapshot.send_replace(Arc::new(self.rt.snapshot()));
+    }
+
+    /// Meldungen der Sicherheitsschichten: protokollieren und als Ereignis senden.
+    fn publish_safety(&self, time_ms: u64, events: &[AreaSafetyEvent]) {
+        for e in events {
+            let area = self.rt.area_name(e.area).unwrap_or("?").to_string();
+            let value = match e.event {
+                SafetyEvent::ChannelExcluded {
+                    channel,
+                    divergence,
+                } => {
+                    tracing::warn!(area, channel, ?divergence, "Kanal ausgeschlossen");
+                    json!({"type": "safety", "event": "channel_excluded",
+                           "channel": channel, "divergence": divergence})
+                }
+                SafetyEvent::Tripped(trip) => {
+                    tracing::error!(area, ?trip, "Sicherheitsschicht abgeschaltet");
+                    json!({"type": "safety", "event": "tripped", "trip": trip})
+                }
+            };
+            let _ = self
+                .ch
+                .events
+                .send(event_json(time_ms, Some(area.as_str()), value));
+        }
     }
 
     fn message(&mut self, msg: EngineMsg) {
@@ -229,6 +276,28 @@ impl Engine {
             }
             EngineMsg::Sim { command, reply } => {
                 let _ = reply.send(sim_command(&mut self.rt, command));
+            }
+            EngineMsg::Safety { command, reply } => {
+                let result = match command {
+                    SafetyCommand::Fault {
+                        area,
+                        channel,
+                        fault,
+                    } => self.rt.inject_channel_fault(area, channel, fault),
+                    SafetyCommand::Reintegrate { area, channel } => {
+                        self.rt.reintegrate_channel(area, channel)
+                    }
+                    SafetyCommand::Reset { area } => {
+                        let result = self.rt.reset_safety(area);
+                        if result.is_ok() {
+                            tracing::warn!(area, "sicherer Zustand zurückgesetzt");
+                            self.safe_state_logged = false;
+                        }
+                        result
+                    }
+                };
+                self.ch.snapshot.send_replace(Arc::new(self.rt.snapshot()));
+                let _ = reply.send(result);
             }
             EngineMsg::Ops { command, reply } => {
                 let result = ops_command(&mut self.rt, command);

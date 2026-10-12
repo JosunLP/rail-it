@@ -8,8 +8,9 @@
 //! - [`scenario`]: deklarative Betriebsszenarien ausführen.
 //! - [`keys`]: Schlüssel für signierte Plan-Images.
 //!
-//! Die Runtime selbst ist in Phase 1 eine Server-Variante (`std`). Die Embedded-Variante
-//! mit Timer-Interrupt folgt in Phase 5 (Konzept, Abschnitt 13).
+//! Jeder Stellbereich läuft über die Sicherheitsschicht `railit-safety`: ein, zwei oder drei
+//! Kanäle mit Voter und optionalem Watchdog ([`SafetyConfig`]). Dies ist die Server-Variante
+//! (`std`); die Embedded-Variante ist `railit-embedded` (Konzept, Abschnitt 13).
 
 mod directory;
 mod field;
@@ -24,10 +25,14 @@ pub use names::{
     AreaSnapshot, AuxKind, AuxSnapshot, BorderSnapshot, LxSnapshot, NamedAux, NamedEvent,
     PointSnapshot, RouteSnapshot, SignalSnapshot, Snapshot, TvdSnapshot,
 };
+pub use names::{ChannelSnapshot, SafetySnapshot};
 pub use railit_adapters;
 pub use railit_etcs;
 pub use railit_ops;
-pub use runtime::{Addressed, AreaEvent, CycleOutput, OPS_REQUEST_BASE, Runtime};
+pub use railit_safety;
+pub use runtime::{
+    Addressed, AreaEvent, AreaSafetyEvent, CycleOutput, OPS_REQUEST_BASE, Runtime, SafetyConfig,
+};
 
 use railit_plan::{PlanError, PlanView, VerifyingKey};
 use railit_topology::Topology;

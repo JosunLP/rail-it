@@ -686,6 +686,44 @@ pub(crate) fn audit_show(c: &Client, last: usize, output: Output) -> Res<ExitCod
 }
 
 /// ETCS: angemeldete Züge mit Betriebsart und Fahrerlaubnis.
+/// Zustand der Sicherheitsschicht je Stellbereich.
+pub(crate) fn safety(c: &Client, output: Output) -> Res<ExitCode> {
+    let areas = c.get("/v1/safety")?;
+    if output == Output::Json {
+        print_json(&areas);
+        return Ok(ExitCode::SUCCESS);
+    }
+    for a in areas.as_array().cloned().unwrap_or_default() {
+        let redundancy = match show(&a["redundancy"]) {
+            "single" => "1 Kanal",
+            "two_out_of_two" => "2-von-2",
+            "two_out_of_three" => "2-von-3",
+            other => other,
+        };
+        let channels: Vec<String> = a["channels"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|ch| {
+                let mark = if ch["active"] == true { "✔" } else { "✘" };
+                format!("K{} {mark}", ch["channel"])
+            })
+            .collect();
+        let state = if a["trip"].is_null() {
+            "in Betrieb".to_string()
+        } else {
+            format!("ABGESCHALTET ({})", a["trip"])
+        };
+        println!(
+            "{:<12} {redundancy:<8} {}  {state}",
+            show(&a["area"]),
+            channels.join("  ")
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 pub(crate) fn etcs(c: &Client, output: Output) -> Res<ExitCode> {
     let trains = c.get("/v1/etcs")?;
     if output == Output::Json {

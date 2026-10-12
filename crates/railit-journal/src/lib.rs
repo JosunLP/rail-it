@@ -178,6 +178,34 @@ pub enum Entry {
     Header(Header),
     /// Zyklus.
     Cycle(Cycle),
+    /// Meldung der Sicherheitsschicht (redundante Kanäle).
+    Safety(SafetyRecord),
+}
+
+/// Art einer Meldung der Sicherheitsschicht.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SafetyKind {
+    /// Ein Kanal wurde ausgeschlossen; die Ausgaben bleiben die der Mehrheit.
+    Excluded,
+    /// Ein Kanal wurde wieder aufgenommen.
+    Reintegrated,
+    /// Übergang in den sicheren Zustand: Ab dem folgenden Zyklus stammen die Ausgaben von
+    /// der Schicht, nicht vom Kern.
+    Tripped,
+    /// Rücksetzen: Alle Kanäle beginnen wie nach einem Neustart.
+    Reset,
+}
+
+/// Meldung der Sicherheitsschicht im Journal. Sie steht vor dem Zyklus, in dem sie wirkt.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SafetyRecord {
+    /// Zeitpunkt in Millisekunden.
+    pub now_ms: u64,
+    /// Art.
+    pub kind: SafetyKind,
+    /// Beschreibung (Kanal, Grund).
+    pub detail: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -291,6 +319,18 @@ impl<W: Write> JournalWriter<W> {
         }))
     }
 
+    /// Hält eine Meldung der Sicherheitsschicht fest (vor dem Zyklus, in dem sie wirkt).
+    ///
+    /// # Errors
+    /// Schreibfehler.
+    pub fn record_safety(&mut self, now: Tick, kind: SafetyKind, detail: &str) -> io::Result<()> {
+        self.write(&Entry::Safety(SafetyRecord {
+            now_ms: now.as_millis(),
+            kind,
+            detail: detail.to_string(),
+        }))
+    }
+
     /// Schreibt gepufferte Daten.
     ///
     /// # Errors
@@ -372,6 +412,8 @@ pub struct Summary {
     pub head: String,
     /// Die letzte Zeile war unvollständig (Abbruch beim Schreiben) und wurde ignoriert.
     pub truncated: bool,
+    /// Meldungen der Sicherheitsschicht.
+    pub safety: Vec<SafetyRecord>,
 }
 
 /// Liest ein Journal und prüft dabei die Hashkette. `on_cycle` erhält jeden Zyklus.
@@ -379,7 +421,9 @@ fn read<R: BufRead>(
     reader: R,
     mut on_header: impl FnMut(&Header) -> Result<(), JournalError>,
     mut on_cycle: impl FnMut(&Cycle) -> Result<(), JournalError>,
+    mut on_safety: impl FnMut(&SafetyRecord),
 ) -> Result<Summary, JournalError> {
+    let mut safety = Vec::new();
     let mut prev: Hash32 = [0; 32];
     let mut header = None;
     let mut cycles = 0u64;
@@ -429,8 +473,12 @@ fn read<R: BufRead>(
                     "Zeile {number}: zweiter Kopf"
                 )));
             }
-            (Entry::Cycle(_), None) => {
+            (Entry::Cycle(_) | Entry::Safety(_), None) => {
                 return Err(JournalError::Format("Kopf fehlt".into()));
+            }
+            (Entry::Safety(r), Some(_)) => {
+                on_safety(r);
+                safety.push(r.clone());
             }
             (Entry::Cycle(c), Some(_)) => {
                 on_cycle(c)?;
@@ -448,6 +496,7 @@ fn read<R: BufRead>(
         last_ms,
         head: to_hex(&prev),
         truncated,
+        safety,
     })
 }
 
@@ -456,7 +505,7 @@ fn read<R: BufRead>(
 /// # Errors
 /// [`JournalError`] bei Lese-, Format- oder Kettenfehlern.
 pub fn verify<R: BufRead>(reader: R) -> Result<Summary, JournalError> {
-    read(reader, |_| Ok(()), |_| Ok(()))
+    read(reader, |_| Ok(()), |_| Ok(()), |_| {})
 }
 
 /// Spielt ein Journal gegen `plan` erneut ab und vergleicht Ausgaben und Prüfpunkte
@@ -468,7 +517,9 @@ pub fn replay<R: BufRead>(
     reader: R,
     plan: &PlanView<'_>,
 ) -> Result<(Summary, OwnedState), JournalError> {
-    let mut state = OwnedState::new(plan);
+    let state = std::cell::RefCell::new(OwnedState::new(plan));
+    // Abgeschaltete Sicherheitsschicht: Die Ausgaben stammen nicht vom Kern.
+    let tripped = std::cell::Cell::new(false);
     let mut out = VecOutputs::default();
     let kernel: std::cell::OnceCell<Interlocking<'_, GenericRules>> = std::cell::OnceCell::new();
     let digest = to_hex(&plan.digest());
@@ -489,6 +540,10 @@ pub fn replay<R: BufRead>(
             let Some(k) = kernel.get() else {
                 return Err(JournalError::Format("Kopf fehlt".into()));
             };
+            if tripped.get() {
+                return Ok(());
+            }
+            let mut state = state.borrow_mut();
             out.clear();
             // Der sichere Zustand ist ein reguläres, aufgezeichnetes Ergebnis.
             let _ = k.step(
@@ -512,6 +567,14 @@ pub fn replay<R: BufRead>(
             }
             Ok(())
         },
+        |r| match r.kind {
+            SafetyKind::Tripped => tripped.set(true),
+            SafetyKind::Reset => {
+                tripped.set(false);
+                state.borrow_mut().view().reset();
+            }
+            SafetyKind::Excluded | SafetyKind::Reintegrated => {}
+        },
     )?;
-    Ok((summary, state))
+    Ok((summary, state.into_inner()))
 }

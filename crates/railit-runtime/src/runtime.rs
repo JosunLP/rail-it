@@ -12,9 +12,10 @@
 //! Die Kerne teilen keinen Zustand; sie sprechen nur über Grenzmeldungen miteinander.
 
 use std::io::Write;
+use std::time::Instant;
 
 use railit_etcs::{PositionReport, Rbc, RbcEvent, RbcView};
-use railit_journal::{Header, JournalWriter};
+use railit_journal::{Header, JournalWriter, SafetyKind};
 use railit_kernel::{
     AuxOperation, BorderMessage, Command, Event, Input, Interlocking, OwnedState, Request,
     RequestId, SafeStateReason, VecOutputs,
@@ -22,12 +23,13 @@ use railit_kernel::{
 use railit_ops::{Ops, OpsConfig, OpsEvent, OpsNet, OpsView, Timetable};
 use railit_plan::PlanView;
 use railit_rules::GenericRules;
+use railit_safety::{Channels, Fault, Redundancy, SafetyEvent, Status, Watchdog};
 use railit_topology::{AreaCut, Topology};
 use railit_types::{BorderId, Duration, LxId, PointId, RouteId, SignalId, Tick, TvdId};
 
 use crate::directory::Directory;
 use crate::field::FieldAdapter;
-use crate::names::{NamedAux, NamedEvent, Snapshot};
+use crate::names::{NamedAux, NamedEvent, SafetySnapshot, Snapshot};
 
 /// Ereignis eines Kerns mit seinem Bereich.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -36,6 +38,37 @@ pub struct AreaEvent {
     pub area: usize,
     /// Ereignis.
     pub event: Event,
+}
+
+/// Meldung der Sicherheitsschicht eines Bereichs.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct AreaSafetyEvent {
+    /// Index des Bereichs.
+    pub area: usize,
+    /// Meldung.
+    pub event: SafetyEvent,
+}
+
+/// Redundanz und Überwachung der Stellbereiche (Konzept, Abschnitt 15).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct SafetyConfig {
+    /// Anzahl der Kanäle je Bereich.
+    pub redundancy: Redundancy,
+    /// Watchdog: Frist für die Rechenzeit eines Bereichs je Zyklus und höchster Abstand zweier
+    /// Zyklen, in Mikrosekunden (Wanduhr).
+    pub watchdog: Option<(u64, u64)>,
+    /// Zustandsvergleich alle so viele Zyklen (Ausgaben werden immer verglichen).
+    pub state_check_every: u64,
+}
+
+impl Default for SafetyConfig {
+    fn default() -> Self {
+        Self {
+            redundancy: Redundancy::Single,
+            watchdog: None,
+            state_check_every: 1,
+        }
+    }
 }
 
 /// Anforderung an den Kern eines Bereichs.
@@ -58,8 +91,11 @@ pub struct CycleOutput {
     pub events: Vec<AreaEvent>,
     /// Stellbefehle ans Feld (IDs des Gesamtnetzes).
     pub commands: Vec<Command>,
-    /// Erster Bereich, dessen Kern im sicheren Zustand ist, mit Grund.
+    /// Erster Bereich, dessen Kern im sicheren Zustand ist, mit Grund
+    /// ([`SafeStateReason::SafetyLayer`], wenn die Sicherheitsschicht abgeschaltet hat).
     pub safe_state: Option<(usize, SafeStateReason)>,
+    /// Meldungen der Sicherheitsschichten.
+    pub safety: Vec<AreaSafetyEvent>,
     /// Ereignisse der Betriebsführung.
     pub ops: Vec<OpsEvent>,
     /// Ereignisse des RBC (ETCS).
@@ -74,15 +110,15 @@ struct RbcAreas<'a>(&'a [Area]);
 
 impl RbcView for RbcAreas<'_> {
     fn plan(&self, area: usize) -> Option<&PlanView<'_>> {
-        self.0.get(area).map(|a| a.kernel.plan())
+        self.0.get(area).map(Area::plan)
     }
 
     fn signals(&self, area: usize) -> &[railit_kernel::SignalState] {
-        self.0.get(area).map_or(&[], |a| a.state.signals())
+        self.0.get(area).map_or(&[], |a| a.state().signals())
     }
 
     fn routes(&self, area: usize) -> &[railit_kernel::RouteState] {
-        self.0.get(area).map_or(&[], |a| a.state.routes())
+        self.0.get(area).map_or(&[], |a| a.state().routes())
     }
 
     fn peer(&self, area: usize, border: BorderId) -> Option<(usize, BorderId)> {
@@ -104,7 +140,7 @@ struct AreasView<'a>(&'a [Area]);
 impl OpsView for AreasView<'_> {
     fn route_phase(&self, area: usize, route: RouteId) -> Option<railit_kernel::RoutePhase> {
         let a = self.0.get(area)?;
-        a.state
+        a.state()
             .routes()
             .get(route.index()?)
             .map(railit_kernel::RouteState::phase)
@@ -112,7 +148,7 @@ impl OpsView for AreasView<'_> {
 
     fn holding(&self, area: usize, border: BorderId) -> Option<bool> {
         let a = self.0.get(area)?;
-        a.state
+        a.state()
             .borders()
             .get(border.index()?)
             .map(railit_kernel::BorderState::holding)
@@ -181,11 +217,32 @@ fn lookup(rev: &Reverse, global: Option<usize>) -> Option<(usize, u32)> {
     rev.get(global?).copied().flatten()
 }
 
-/// Ein Stellbereich mit seinem Kern.
+/// Kanäle eines Stellbereichs.
+type AreaChannels = Channels<'static, GenericRules, OwnedState, VecOutputs>;
+
+fn build_channels(
+    plan: PlanView<'static>,
+    rules: GenericRules,
+    cfg: &SafetyConfig,
+) -> AreaChannels {
+    let channel = || Some((OwnedState::new(&plan), VecOutputs::default()));
+    let slots = match cfg.redundancy {
+        Redundancy::Single => [channel(), None, None],
+        Redundancy::TwoOutOfTwo => [channel(), channel(), None],
+        Redundancy::TwoOutOfThree => [channel(), channel(), channel()],
+    };
+    match Channels::new(Interlocking::new(plan, rules), slots) {
+        Ok(c) => c.with_state_check_every(cfg.state_check_every),
+        // Frische Zustände sind gleich, die Kanäle lückenlos: kann nicht auftreten.
+        Err(e) => unreachable!("Kanäle: {e:?}"),
+    }
+}
+
+/// Ein Stellbereich mit seinen Kanälen.
 struct Area {
     name: String,
-    kernel: Interlocking<'static, GenericRules>,
-    state: OwnedState,
+    channels: AreaChannels,
+    watchdog: Option<Watchdog>,
     map: AreaMap,
     /// Je Grenze: Bereich und Grenze auf der anderen Seite.
     peers: Vec<Option<(usize, BorderId)>>,
@@ -201,8 +258,8 @@ impl Area {
     fn new(name: String, plan: PlanView<'static>, rules: GenericRules, map: AreaMap) -> Self {
         Self {
             name,
-            kernel: Interlocking::new(plan, rules),
-            state: OwnedState::new(&plan),
+            channels: build_channels(plan, rules, &SafetyConfig::default()),
+            watchdog: None,
             map,
             peers: vec![None; plan.border_count()],
             inbox: vec![None; plan.border_count()],
@@ -210,6 +267,49 @@ impl Area {
             inputs: Vec::new(),
             journal: None,
             journal_error: None,
+        }
+    }
+
+    fn plan(&self) -> &PlanView<'static> {
+        self.channels.kernel().plan()
+    }
+
+    fn rules(&self) -> &GenericRules {
+        self.channels.kernel().rules()
+    }
+
+    /// Zustand des ersten mitwählenden Kanals.
+    fn state(&self) -> &OwnedState {
+        self.channels
+            .primary()
+            .unwrap_or_else(|| unreachable!("Stellbereich ohne Kanal"))
+    }
+
+    /// Hält eine Meldung des Voters im Journal fest.
+    fn journal_safety_event(&mut self, now: Tick, event: SafetyEvent) {
+        let (kind, detail) = match event {
+            SafetyEvent::ChannelExcluded {
+                channel,
+                divergence,
+            } => (
+                SafetyKind::Excluded,
+                format!("Kanal {channel}: {divergence:?}"),
+            ),
+            SafetyEvent::Tripped(trip) => (SafetyKind::Tripped, format!("{trip:?}")),
+        };
+        self.journal_safety(now, kind, &detail);
+    }
+
+    /// Hält eine Meldung der Sicherheitsschicht im Journal fest.
+    fn journal_safety(&mut self, now: Tick, kind: SafetyKind, detail: &str) {
+        if let Some(journal) = &mut self.journal {
+            let written = journal
+                .record_safety(now, kind, detail)
+                .and_then(|()| journal.flush());
+            if let Err(e) = written {
+                self.journal_error = Some(e.to_string());
+                self.journal = None;
+            }
         }
     }
 }
@@ -231,6 +331,9 @@ pub struct Runtime<F> {
     ops_pending: Vec<Addressed>,
     ops_next: u64,
     rbc: Rbc,
+    safety: SafetyConfig,
+    /// Monotone Uhr für den Watchdog.
+    clock: Instant,
 }
 
 impl<F: FieldAdapter> Runtime<F> {
@@ -335,12 +438,7 @@ impl<F: FieldAdapter> Runtime<F> {
             LxId::index,
             max(&|m| m.lxs.iter().filter_map(|p| p.index()).max()),
         );
-        let directory = Directory::new(
-            areas
-                .iter()
-                .map(|a| (a.name.clone(), *a.kernel.plan()))
-                .collect(),
-        );
+        let directory = Directory::new(areas.iter().map(|a| (a.name.clone(), *a.plan())).collect());
         Self {
             network,
             areas,
@@ -357,7 +455,90 @@ impl<F: FieldAdapter> Runtime<F> {
             ops_pending: Vec::new(),
             ops_next: OPS_REQUEST_BASE,
             rbc: Rbc::new(),
+            safety: SafetyConfig::default(),
+            clock: Instant::now(),
         }
+    }
+
+    /// Legt Redundanz und Watchdog aller Stellbereiche fest (vor dem ersten Zyklus).
+    ///
+    /// # Errors
+    /// Beschreibung, wenn bereits Zyklen gelaufen sind.
+    pub fn set_safety(&mut self, cfg: SafetyConfig) -> Result<(), String> {
+        if self.now != Tick::ZERO {
+            return Err("Redundanz nur vor dem ersten Zyklus änderbar".into());
+        }
+        for area in &mut self.areas {
+            area.channels = build_channels(*area.plan(), *area.rules(), &cfg);
+            area.watchdog = cfg
+                .watchdog
+                .map(|(deadline, gap)| Watchdog::new(deadline, gap));
+        }
+        self.safety = cfg;
+        Ok(())
+    }
+
+    /// Redundanz und Watchdog.
+    pub fn safety(&self) -> SafetyConfig {
+        self.safety
+    }
+
+    /// Zustand der Sicherheitsschicht eines Bereichs.
+    pub fn safety_status(&self, area: usize) -> Option<Status> {
+        self.areas.get(area).map(|a| a.channels.status())
+    }
+
+    fn area_mut(&mut self, area: usize) -> Result<&mut Area, String> {
+        self.areas
+            .get_mut(area)
+            .ok_or_else(|| format!("unbekannter Stellbereich {area}"))
+    }
+
+    /// Bringt einen Fehler in einen Kanal ein (Simulation, Prüfstand).
+    ///
+    /// # Errors
+    /// Unbekannter Bereich oder Kanal.
+    pub fn inject_channel_fault(
+        &mut self,
+        area: usize,
+        channel: usize,
+        fault: Fault,
+    ) -> Result<(), String> {
+        if self.area_mut(area)?.channels.inject(channel, fault) {
+            Ok(())
+        } else {
+            Err(format!("Kanal {channel} gibt es nicht"))
+        }
+    }
+
+    /// Nimmt einen ausgeschlossenen Kanal wieder auf (REQ-SAF-003).
+    ///
+    /// # Errors
+    /// Beschreibung, wenn der Kanal nicht aufgenommen werden kann.
+    pub fn reintegrate_channel(&mut self, area: usize, channel: usize) -> Result<(), String> {
+        let now = self.now;
+        let a = self.area_mut(area)?;
+        a.channels
+            .reintegrate(channel)
+            .map_err(|e| format!("Kanal {channel} nicht aufgenommen: {e}"))?;
+        a.journal_safety(now, SafetyKind::Reintegrated, &format!("Kanal {channel}"));
+        Ok(())
+    }
+
+    /// Setzt den sicheren Zustand eines Bereichs zurück – den der Sicherheitsschicht wie den
+    /// des Kerns: Alle Kanäle beginnen wie nach einem Neustart (REQ-SAF-004).
+    ///
+    /// # Errors
+    /// Unbekannter Bereich.
+    pub fn reset_safety(&mut self, area: usize) -> Result<(), String> {
+        let now = self.now;
+        let a = self.area_mut(area)?;
+        a.channels.reset();
+        if let Some(w) = &mut a.watchdog {
+            w.restart();
+        }
+        a.journal_safety(now, SafetyKind::Reset, "");
+        Ok(())
     }
 
     /// RBC (ETCS Level 2).
@@ -437,7 +618,7 @@ impl<F: FieldAdapter> Runtime<F> {
         let plans: Vec<(&str, &PlanView<'_>)> = self
             .areas
             .iter()
-            .map(|a| (a.name.as_str(), a.kernel.plan()))
+            .map(|a| (a.name.as_str(), a.plan()))
             .collect();
         let peer = |area: usize, b: BorderId| {
             self.areas
@@ -526,7 +707,7 @@ impl<F: FieldAdapter> Runtime<F> {
             .areas
             .get_mut(area)
             .ok_or_else(|| std::io::Error::other("unbekannter Stellbereich"))?;
-        let header = Header::new(a.kernel.plan(), a.kernel.rules(), cycle, checkpoint_every);
+        let header = Header::new(a.plan(), a.rules(), cycle, checkpoint_every);
         let mut journal = JournalWriter::new(out, header)?;
         journal.flush()?;
         a.journal = Some(journal);
@@ -578,13 +759,25 @@ impl<F: FieldAdapter> Runtime<F> {
         let mut commands = Vec::new();
         let mut mail = Vec::new();
         let mut safe_state = None;
+        let mut safety = Vec::new();
         let now = self.now;
+        let clock = self.clock;
+        let micros = || u64::try_from(clock.elapsed().as_micros()).unwrap_or(u64::MAX);
         for (index, area) in self.areas.iter_mut().enumerate() {
-            let result = area
-                .kernel
-                .step(&mut area.state.view(), now, &area.inputs, &mut area.out);
-            if let (Err(reason), None) = (result, safe_state) {
+            let started = micros();
+            let verdict = area.channels.step(now, &area.inputs, &mut area.out);
+            let finished = micros();
+            let reason = match (verdict.trip, verdict.kernel) {
+                (Some(_), _) => Some(SafeStateReason::SafetyLayer),
+                (None, Err(reason)) => Some(reason),
+                (None, Ok(())) => None,
+            };
+            if let (Some(reason), None) = (reason, safe_state) {
                 safe_state = Some((index, reason));
+            }
+            for event in verdict.events() {
+                area.journal_safety_event(now, event);
+                safety.push(AreaSafetyEvent { area: index, event });
             }
             events.extend(area.out.events.iter().map(|event| AreaEvent {
                 area: index,
@@ -606,12 +799,29 @@ impl<F: FieldAdapter> Runtime<F> {
             }
             if let Some(journal) = &mut area.journal {
                 let written = journal
-                    .record(now, &area.inputs, &area.out, &area.state)
+                    .record(
+                        now,
+                        &area.inputs,
+                        &area.out,
+                        area.channels
+                            .primary()
+                            .unwrap_or_else(|| unreachable!("Stellbereich ohne Kanal")),
+                    )
                     .and_then(|()| journal.flush());
                 if let Err(e) = written {
                     area.journal_error = Some(e.to_string());
                     area.journal = None;
                 }
+            }
+            if verdict.trip.is_none()
+                && let Some(Err(trip)) = area.watchdog.as_mut().map(|w| w.check(started, finished))
+            {
+                area.channels.trip(trip);
+                area.journal_safety(now, SafetyKind::Tripped, &format!("{trip:?}"));
+                safety.push(AreaSafetyEvent {
+                    area: index,
+                    event: SafetyEvent::Tripped(trip),
+                });
             }
         }
         for ((area, border), message) in mail {
@@ -632,6 +842,7 @@ impl<F: FieldAdapter> Runtime<F> {
             events,
             commands,
             safe_state,
+            safety,
             ops,
             etcs,
         }
@@ -741,28 +952,27 @@ impl<F: FieldAdapter> Runtime<F> {
 
     /// Plan eines Bereichs.
     pub fn plan_of(&self, area: usize) -> Option<&PlanView<'static>> {
-        self.areas.get(area).map(|a| a.kernel.plan())
+        self.areas.get(area).map(Area::plan)
     }
 
     /// Kernzustand eines Bereichs.
     pub fn state_of(&self, area: usize) -> Option<&OwnedState> {
-        self.areas.get(area).map(|a| &a.state)
+        self.areas.get(area).map(Area::state)
     }
 
     /// Plan des ersten (bzw. einzigen) Bereichs.
     pub fn plan(&self) -> &PlanView<'static> {
         // Eine Runtime hat immer mindestens einen Bereich.
-        self.areas.first().map_or_else(
-            || unreachable!("Runtime ohne Stellbereich"),
-            |a| a.kernel.plan(),
-        )
+        self.areas
+            .first()
+            .map_or_else(|| unreachable!("Runtime ohne Stellbereich"), Area::plan)
     }
 
     /// Kernzustand des ersten (bzw. einzigen) Bereichs.
     pub fn state(&self) -> &OwnedState {
         self.areas
             .first()
-            .map_or_else(|| unreachable!("Runtime ohne Stellbereich"), |a| &a.state)
+            .map_or_else(|| unreachable!("Runtime ohne Stellbereich"), Area::state)
     }
 
     /// Namensauflösung über alle Bereiche.
@@ -833,9 +1043,12 @@ impl<F: FieldAdapter> Runtime<F> {
         let areas: Vec<(&str, &PlanView<'static>, &OwnedState)> = self
             .areas
             .iter()
-            .map(|a| (a.name.as_str(), a.kernel.plan(), &a.state))
+            .map(|a| (a.name.as_str(), a.plan(), a.state()))
             .collect();
         let mut snap = Snapshot::network(&self.network, self.now, &areas);
+        for (area, snapshot) in self.areas.iter().zip(&mut snap.areas) {
+            snapshot.safety = SafetySnapshot::new(&area.channels.status());
+        }
         snap.ops = self.ops.as_ref().map(Ops::snapshot);
         snap.etcs = self.etcs_snapshot();
         snap
@@ -844,7 +1057,7 @@ impl<F: FieldAdapter> Runtime<F> {
     /// Ereignis mit fachlichen Namen.
     pub fn name_event(&self, event: &AreaEvent) -> NamedEvent {
         let area = self.areas.get(event.area);
-        let plan = area.map_or_else(|| self.plan(), |a| a.kernel.plan());
+        let plan = area.map_or_else(|| self.plan(), Area::plan);
         let prefix = if self.areas.len() > 1 {
             area.map_or("", |a| a.name.as_str())
         } else {

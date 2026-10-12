@@ -423,6 +423,22 @@ impl<'s> KernelState<'s> {
         })
     }
 
+    /// Versetzt den Zustand von außen in den sicheren Zustand (Sicherheitsschicht): alle
+    /// Signale Halt, Ersatzsignale aus. Danach lehnt der Kern alle Anforderungen ab, bis der
+    /// Zustand zurückgesetzt wird. Ein bestehender Grund bleibt erhalten.
+    pub fn enter_safe_state(&mut self, reason: SafeStateReason, now: Tick) {
+        if self.meta.safe_state.is_none() {
+            self.meta.safe_state = Some(reason);
+        }
+        for s in self.signals.iter_mut() {
+            if s.commanded != crate::io::Aspect::Stop {
+                s.commanded = crate::io::Aspect::Stop;
+                s.commanded_at = now;
+            }
+            s.substitute = false;
+        }
+    }
+
     /// Kürzere Sicht auf denselben Speicher.
     pub fn reborrow(&mut self) -> KernelState<'_> {
         KernelState {

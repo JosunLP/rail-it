@@ -577,3 +577,90 @@ fn field_over_eulynx_and_rasta() {
     }
     assert!(links_up(&d).contains(&("OC-Signale".to_string(), false)));
 }
+
+/// REQ-SAF-002/003/004: Dienst mit drei Kanälen; Ausschluss, Wiederaufnahme, Abschaltung und
+/// Rücksetzen über die API.
+#[test]
+fn redundant_channels_over_api() {
+    let (plan, public) = prepare("safety", true);
+    let d = start(&[
+        "--plan",
+        plan.to_str().unwrap(),
+        "--trusted-key",
+        public.to_str().unwrap(),
+        "--channels",
+        "3",
+        "--watchdog-ms",
+        "2000",
+    ]);
+    let safety = |d: &Daemon| get(d, "/v1/safety", true).1[0].clone();
+    let active = |d: &Daemon| {
+        safety(d)["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["active"] == true)
+            .collect::<Vec<_>>()
+    };
+    let wait = |d: &Daemon, what: &str, cond: &dyn Fn(&Daemon) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !cond(d) {
+            assert!(Instant::now() < deadline, "{what}: {}", safety(d));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let s = safety(&d);
+    assert_eq!(s["redundancy"], "two_out_of_three");
+    assert_eq!(active(&d), [true, true, true]);
+
+    let fault = |d: &Daemon, channel: u32, fault: &str| {
+        post(
+            d,
+            "/v1/safety/faults",
+            Some(json!({"channel": channel, "fault": fault})),
+        )
+        .0
+    };
+    assert_eq!(fault(&d, 2, "stall"), 200);
+    wait(&d, "Kanal 2 ausgeschlossen", &|d| {
+        active(d) == [true, true, false]
+    });
+    assert_eq!(post(&d, "/v1/routes/A-N1/set", None).0, 200);
+    wait_for(&d, "A-N1", "proceed");
+
+    let reintegrate = json!({"channel": 2});
+    assert_eq!(
+        post(&d, "/v1/safety/reintegrate", Some(reintegrate.clone())).0,
+        200
+    );
+    assert_eq!(active(&d), [true, true, true]);
+    assert_eq!(
+        post(&d, "/v1/safety/reintegrate", Some(reintegrate)).0,
+        400,
+        "Kanal wählt bereits mit"
+    );
+    assert_eq!(fault(&d, 7, "stall"), 400);
+
+    assert_eq!(fault(&d, 0, "stall"), 200);
+    wait(&d, "Kanal 0 ausgeschlossen", &|d| !active(d)[0]);
+    assert_eq!(fault(&d, 1, "stray_command"), 200);
+    wait(&d, "abgeschaltet", &|d| !safety(d)["trip"].is_null());
+    let (_, state) = get(&d, "/v1/state", true);
+    assert!(state["safe_state"].is_string(), "{}", state["safe_state"]);
+    assert!(
+        state["signals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["commanded"] == "stop"),
+        "alle Signale Halt"
+    );
+    assert_eq!(post(&d, "/v1/routes/N1-GE/set", None).0, 409);
+
+    assert_eq!(post(&d, "/v1/safety/reset", None).0, 200);
+    let (_, state) = get(&d, "/v1/state", true);
+    assert!(state["safe_state"].is_null());
+    assert_eq!(active(&d), [true, true, true]);
+    assert_eq!(post(&d, "/v1/routes/A-N2/set", None).0, 200);
+    wait_for(&d, "A-N2", "proceed");
+}

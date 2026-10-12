@@ -37,7 +37,8 @@ use railit_runtime::DynField;
 use railit_runtime::keys::{read_verifying_key, to_hex};
 use railit_runtime::railit_adapters::EulynxField;
 use railit_runtime::railit_ops::{OpsConfig, Timetable};
-use railit_runtime::{Runtime, check_correspondence, load_plan};
+use railit_runtime::railit_safety::Redundancy;
+use railit_runtime::{Runtime, SafetyConfig, check_correspondence, load_plan};
 use railit_sim::{SimConfig, Simulator};
 use railit_topology::Topology;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -86,6 +87,13 @@ struct Args {
     /// Anbindung der (simulierten) Feldebene: direkt oder über EULYNX SCI und RaSTA.
     #[arg(long, value_enum, default_value_t = FieldArg::Direct)]
     field: FieldArg,
+    /// Kanäle je Stellbereich: 1 (ohne Vergleich), 2 (2-von-2) oder 3 (2-von-3).
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=3))]
+    channels: u8,
+    /// Watchdog: Frist für die Rechenzeit eines Stellbereichs je Zyklus in Millisekunden
+    /// (Wanduhr). Überschreitung oder ausbleibende Zyklen führen in den sicheren Zustand.
+    #[arg(long)]
+    watchdog_ms: Option<u64>,
     /// Fahrplan (TOML, siehe `railit_ops`); setzt Züge nach Plan ein.
     #[arg(long)]
     timetable: Option<PathBuf>,
@@ -200,6 +208,27 @@ fn load(args: &Args) -> Result<(Topology, Runtime<DynField>), String> {
             .map_err(|e| format!("Pläne passen nicht zum Netz: {e}"))?
     };
     let mut rt = rt;
+    let period_us = args
+        .cycle_ms
+        .max(1)
+        .saturating_mul(1000)
+        .checked_div(u64::from(args.speed.max(1)))
+        .unwrap_or(1);
+    rt.set_safety(SafetyConfig {
+        redundancy: Redundancy::from_channels(usize::from(args.channels)).unwrap_or_default(),
+        // Ausbleibende Zyklen: mehr als vier Zyklen plus Frist ohne Zyklusbeginn.
+        watchdog: args.watchdog_ms.map(|ms| {
+            let deadline = ms.saturating_mul(1000);
+            (
+                deadline,
+                period_us.saturating_mul(4).saturating_add(deadline),
+            )
+        }),
+        ..SafetyConfig::default()
+    })?;
+    if args.channels > 1 {
+        tracing::info!(channels = args.channels, "redundante Kanäle mit Voter");
+    }
     let timetable = match &args.timetable {
         Some(path) => {
             let source =

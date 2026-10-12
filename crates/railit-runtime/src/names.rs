@@ -403,6 +403,48 @@ pub struct AreaSnapshot {
     pub borders: Vec<BorderSnapshot>,
     /// Zählwerk der Hilfshandlungen.
     pub aux_counter: u64,
+    /// Redundante Kanäle und Voter.
+    pub safety: SafetySnapshot,
+}
+
+/// Zustand der Sicherheitsschicht eines Stellbereichs.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct SafetySnapshot {
+    /// Projektierte Redundanz.
+    pub redundancy: railit_safety::Redundancy,
+    /// Kanäle.
+    pub channels: Vec<ChannelSnapshot>,
+    /// Grund der Abschaltung, falls die Schicht im sicheren Zustand ist.
+    pub trip: Option<railit_safety::Trip>,
+}
+
+/// Zustand eines Kanals.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ChannelSnapshot {
+    /// Nummer (0, 1, 2).
+    pub channel: usize,
+    /// Wählt mit (sonst ausgeschlossen).
+    pub active: bool,
+}
+
+impl SafetySnapshot {
+    /// Zustandsbild aus dem Status der Schicht.
+    pub fn new(status: &railit_safety::Status) -> Self {
+        Self {
+            redundancy: status.redundancy,
+            channels: status
+                .active
+                .iter()
+                .take(status.redundancy.channels())
+                .enumerate()
+                .map(|(channel, active)| ChannelSnapshot {
+                    channel,
+                    active: *active,
+                })
+                .collect(),
+            trip: status.trip,
+        }
+    }
 }
 
 /// Zustandsbild des Stellwerks (aller Stellbereiche).
@@ -494,6 +536,7 @@ impl Snapshot {
             name: area_name.clone(),
             cycle: state.meta().cycle(),
             safe_state: state.meta().safe_state().map(|r| format!("{r:?}")),
+            safety: SafetySnapshot::default(),
             plan_digest: crate::keys::to_hex(&plan.digest())
                 .get(..16)
                 .unwrap_or_default()

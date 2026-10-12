@@ -306,6 +306,52 @@ message EtcsSection {
   optional uint32 speed_kmh = 4;
 }
 
+// ── Sicherheitsschicht ───────────────────────────────────────────────────────────────────
+
+service Safety {
+  // Redundanz, mitwählende Kanäle und Abschaltung je Stellbereich.
+  rpc GetSafety(GetSafetyRequest) returns (SafetyState);
+  // Fehler in einen Kanal einbringen (Prüfung; Recht der Instandhaltung).
+  rpc InjectFault(SafetyFaultRequest) returns (Done);
+  // Ausgeschlossenen Kanal wieder aufnehmen.
+  rpc Reintegrate(ChannelRequest) returns (Done);
+  // Sicheren Zustand zurücksetzen: Neubeginn wie nach einem Neustart.
+  rpc Reset(SafetyResetRequest) returns (Done);
+}
+
+message GetSafetyRequest {}
+
+message SafetyState {
+  repeated AreaSafety areas = 1;
+}
+
+message AreaSafety {
+  string area = 1;
+  // "single", "two_out_of_two", "two_out_of_three".
+  string redundancy = 2;
+  // Je Kanal: wählt mit.
+  repeated bool active = 3;
+  // Grund der Abschaltung als JSON; leer, solange die Schicht arbeitet.
+  string trip = 4;
+}
+
+message SafetyFaultRequest {
+  // Stellbereich; leer bei Netzen mit nur einem Bereich.
+  string area = 1;
+  uint32 channel = 2;
+  // "drop_inputs", "stray_command", "stall".
+  string fault = 3;
+}
+
+message ChannelRequest {
+  string area = 1;
+  uint32 channel = 2;
+}
+
+message SafetyResetRequest {
+  string area = 1;
+}
+
 // ── Diagnose ─────────────────────────────────────────────────────────────────────────────
 
 service Diagnostics {

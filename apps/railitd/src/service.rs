@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::auth::{Permission, Principal};
-use crate::engine::{Answer, EngineMsg, OpsCommand, SimCommand, SimReply};
+use crate::engine::{Answer, EngineMsg, OpsCommand, SafetyCommand, SimCommand, SimReply};
 use railit_runtime::railit_adapters::{LinkFaults, LinkStatus};
 
 /// Fehler einer Operation.
@@ -59,6 +59,20 @@ type Res<T> = Result<T, ServiceError>;
 
 fn not_found(what: &str, name: &str) -> ServiceError {
     ServiceError::NotFound(format!("{what} „{name}“ nicht gefunden"))
+}
+
+/// Handlung an der Sicherheitsschicht.
+#[derive(Copy, Clone, Debug)]
+pub(crate) enum SafetyAction {
+    /// Fehler in einen Kanal einbringen.
+    Fault {
+        channel: usize,
+        fault: railit_runtime::railit_safety::Fault,
+    },
+    /// Kanal wieder aufnehmen.
+    Reintegrate { channel: usize },
+    /// Sicheren Zustand zurücksetzen.
+    Reset,
 }
 
 /// Art einer simulierten Störung.
@@ -463,6 +477,90 @@ impl Service {
             self.sim_done(command),
         )
         .await
+    }
+
+    /// Zustand der Sicherheitsschicht je Stellbereich.
+    pub(crate) fn safety(&self) -> Value {
+        let snap = self.snapshot();
+        Value::Array(
+            snap.areas
+                .iter()
+                .map(|a| {
+                    let mut v = json!(a.safety);
+                    if let Value::Object(map) = &mut v {
+                        map.insert("area".into(), json!(a.name));
+                    }
+                    v
+                })
+                .collect(),
+        )
+    }
+
+    /// Befehl an die Sicherheitsschicht eines Stellbereichs (Recht `Maintain`). Ohne
+    /// Bereichsangabe gilt der einzige Bereich.
+    pub(crate) async fn safety_command(
+        &self,
+        who: &Principal,
+        area: Option<&str>,
+        action: SafetyAction,
+    ) -> Res<()> {
+        let index = match area {
+            Some(name) => self
+                .directory
+                .areas()
+                .position(|(n, _)| n == name)
+                .ok_or_else(|| not_found("Stellbereich", name))?,
+            None if self.directory.areas().count() == 1 => 0,
+            None => {
+                return Err(ServiceError::BadRequest(
+                    "das Netz hat mehrere Stellbereiche: „area“ angeben".into(),
+                ));
+            }
+        };
+        let area_name = self.area_name(index);
+        let (name, command) = match action {
+            SafetyAction::Fault { channel, fault } => (
+                "safety_fault",
+                SafetyCommand::Fault {
+                    area: index,
+                    channel,
+                    fault,
+                },
+            ),
+            SafetyAction::Reintegrate { channel } => (
+                "safety_reintegrate",
+                SafetyCommand::Reintegrate {
+                    area: index,
+                    channel,
+                },
+            ),
+            SafetyAction::Reset => ("safety_reset", SafetyCommand::Reset { area: index }),
+        };
+        let target = format!("{command:?}");
+        self.authorize(
+            who,
+            Permission::Maintain,
+            area_name.as_deref(),
+            name,
+            &target,
+        )?;
+        let result = async {
+            let (reply, rx) = oneshot::channel();
+            self.tx
+                .send(EngineMsg::Safety { command, reply })
+                .await
+                .map_err(|_| ServiceError::Unavailable)?;
+            rx.await
+                .map_err(|_| ServiceError::Unavailable)?
+                .map_err(ServiceError::BadRequest)
+        }
+        .await;
+        let outcome = match &result {
+            Ok(()) => "ok".to_string(),
+            Err(e) => format!("error: {}", e.message()),
+        };
+        self.audit(who, name, Some(&target), area_name.as_deref(), outcome);
+        result
     }
 
     /// Befehl an die Betriebsführung.
