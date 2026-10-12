@@ -158,10 +158,36 @@ const fn terminal_kind_str(k: TerminalKind) -> &'static str {
     }
 }
 
+/// Namen der Abschnitte eines Stellbereichs.
+fn area_tvds<'a>(net: &'a Topology, tvds: &[railit_types::TvdId]) -> Vec<&'a str> {
+    tvds.iter()
+        .filter_map(|&t| net.tvd(t).map(|x| x.name.as_str()))
+        .collect()
+}
+
+/// Namen der Haltsignale eines Bahnsteigs.
+fn platform_signals<'a>(net: &'a Topology, signals: &[railit_types::SignalId]) -> Vec<&'a str> {
+    signals
+        .iter()
+        .filter_map(|&s| net.signal(s).map(|x| x.name.as_str()))
+        .collect()
+}
+
 fn info_json(net: &Topology) -> Value {
     let name_of = |e| net.element_name(e).unwrap_or("?");
     json!({
         "network": net.name(),
+        "areas": net.areas().map(|(_, a)| json!({
+            "name": a.name,
+            "tvds": area_tvds(net, &a.tvds),
+        })).collect::<Vec<_>>(),
+        "stations": net.stations().map(|(_, st)| json!({
+            "name": st.name,
+            "platforms": st.platforms.iter().map(|p| json!({
+                "name": p.name,
+                "signals": platform_signals(net, &p.signals),
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
         "components": net.components(),
         "tracks": net.tracks().map(|(id, t)| json!({
             "name": t.name,
@@ -274,6 +300,8 @@ fn print_info_text(net: &Topology) {
         }
     }
 
+    print_areas_and_stations(net);
+
     println!("\nGleisfreimeldeabschnitte ({}):", net.tvds().len());
     for (_, t) in net.tvds() {
         let members: Vec<_> = t
@@ -282,5 +310,32 @@ fn print_info_text(net: &Topology) {
             .map(|m| net.element_name((*m).into()).unwrap_or("?"))
             .collect();
         println!("  {:<12} {}", t.name, members.join(", "));
+    }
+}
+
+/// Stellbereiche und Betriebsstellen.
+fn print_areas_and_stations(net: &Topology) {
+    if net.areas().len() > 0 {
+        println!("\nStellbereiche ({}):", net.areas().len());
+        for (_, a) in net.areas() {
+            println!("  {:<12} {}", a.name, area_tvds(net, &a.tvds).join(", "));
+        }
+    }
+    if net.stations().len() > 0 {
+        println!("\nBetriebsstellen ({}):", net.stations().len());
+        for (_, st) in net.stations() {
+            let platforms: Vec<String> = st
+                .platforms
+                .iter()
+                .map(|p| {
+                    format!(
+                        "Gleis {} ({})",
+                        p.name,
+                        platform_signals(net, &p.signals).join("/")
+                    )
+                })
+                .collect();
+            println!("  {:<12} {}", st.name, platforms.join(", "));
+        }
     }
 }

@@ -85,6 +85,9 @@ pub(crate) fn compile(network: &Path, out: &Path, key: Option<&Path>, output: Ou
         Ok(k) => k,
         Err(e) => return fail_usage(&e),
     };
+    if net.areas().len() > 0 {
+        return compile_areas(&net, out, key.as_ref(), output);
+    }
     let compiled = match railit_planning::compile(&net, key.as_ref()) {
         Ok(c) => c,
         Err(report) => {
@@ -125,6 +128,72 @@ pub(crate) fn compile(network: &Path, out: &Path, key: Option<&Path>, output: Ou
     ExitCode::SUCCESS
 }
 
+/// Projektiert ein Netz mit Stellbereichen: je Bereich ein Plan-Image `<Bereich>.rplan` im
+/// Verzeichnis `out` (Eingabe für `railitd --plan <Verzeichnis>`).
+fn compile_areas(
+    net: &railit_topology::Topology,
+    out: &Path,
+    key: Option<&railit_plan::SigningKey>,
+    output: Output,
+) -> ExitCode {
+    let cfg = railit_planning::PlanningConfig::default();
+    let areas = match railit_planning::compile_areas(net, key, &cfg) {
+        Ok(a) => a,
+        Err(report) => {
+            return fail(
+                EXIT_INVALID,
+                &format!("Projektierung fehlgeschlagen:\n{report}"),
+            );
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(out) {
+        return fail_usage(&format!("{}: {e}", out.display()));
+    }
+    let mut written = Vec::new();
+    for a in &areas {
+        let path = out.join(format!("{}.rplan", a.name));
+        if let Err(e) = std::fs::write(&path, &a.compiled.image) {
+            return fail_usage(&format!("{}: {e}", path.display()));
+        }
+        let digest = PlanView::parse(&a.compiled.image)
+            .map(|v| to_hex(&v.digest()))
+            .unwrap_or_default();
+        written.push(json!({
+            "area": a.name, "plan": path, "routes": a.compiled.plan.routes.len(),
+            "borders": a.compiled.plan.borders.len(), "digest": digest,
+        }));
+    }
+    match output {
+        Output::Json => print_json(&json!({
+            "network": net.name(), "signed": key.is_some(), "areas": written,
+        })),
+        Output::Text => {
+            println!(
+                "Netz „{}“: {} Stellbereiche nach {} ({})",
+                net.name(),
+                areas.len(),
+                out.display(),
+                if key.is_some() {
+                    "signiert"
+                } else {
+                    "unsigniert"
+                }
+            );
+            for w in &written {
+                println!(
+                    "  {:<12} {} Fahrstraßen, {} Grenzen, Prüfsumme {}",
+                    w["area"].as_str().unwrap_or("?"),
+                    w["routes"],
+                    w["borders"],
+                    w["digest"].as_str().unwrap_or("?")
+                );
+            }
+            println!("Generator und unabhängige Gegenprüfung stimmen je Bereich überein.");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 /// Prüft ein Plan-Image: Struktur, Prüfsumme, optional Signatur und Übereinstimmung mit
 /// einem Netz (unabhängige Gegenprüfung).
 pub(crate) fn verify(
@@ -157,7 +226,22 @@ pub(crate) fn verify(
             Ok(n) => n,
             Err((code, msg)) => return fail(code, &msg),
         };
-        if let Err(report) = railit_planning::verify(&net, &Plan::from_view(&view)) {
+        // Plan eines Stellbereichs („Netz/Bereich“): gegen das Teilnetz prüfen.
+        let cut = match view.network_name().split_once('/') {
+            Some((_, area)) => match net.find_area(area).map(|id| net.area_cut(id)) {
+                Some(Ok(cut)) => Some(cut),
+                Some(Err(report)) => return fail(EXIT_INVALID, &report.to_string()),
+                None => {
+                    return fail(
+                        EXIT_INVALID,
+                        &format!("Stellbereich „{area}“ nicht im Netz"),
+                    );
+                }
+            },
+            None => None,
+        };
+        let target = cut.as_ref().map_or(&net, |c| &c.topology);
+        if let Err(report) = railit_planning::verify(target, &Plan::from_view(&view)) {
             return fail(
                 EXIT_INVALID,
                 &format!("Plan passt nicht zum Netz:\n{report}"),

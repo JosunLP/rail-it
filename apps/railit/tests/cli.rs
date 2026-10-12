@@ -278,3 +278,111 @@ fn journal_verify_and_replay() {
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("Hashkette in Zeile"), "{stdout}");
 }
+
+/// Netz mit Stellbereichen: je Bereich ein Plan-Image, jedes einzeln gegen sein Teilnetz
+/// geprüft.
+#[test]
+fn compile_and_verify_area_network() {
+    let network = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/nordbahn.toml");
+    let dir = tmp_dir("area-plans");
+    let out = railit(&[
+        "plan",
+        "compile",
+        network,
+        "--out",
+        dir.to_str().unwrap(),
+        "-o",
+        "json",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let areas: Vec<&str> = json["areas"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["area"].as_str().unwrap())
+        .collect();
+    assert_eq!(areas, ["Adorf", "Strecke", "Bstadt"]);
+    for area in areas {
+        let plan = dir.join(format!("{area}.rplan"));
+        let out = railit(&[
+            "plan",
+            "verify",
+            plan.to_str().unwrap(),
+            "--network",
+            network,
+        ]);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{area}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    // Ein Bereichsplan passt nicht zum Netz eines anderen Bereichs.
+    let wrong = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/beispielstadt.toml"
+    );
+    let plan = dir.join("Adorf.rplan");
+    let out = railit(&["plan", "verify", plan.to_str().unwrap(), "--network", wrong]);
+    assert_eq!(out.status.code(), Some(1));
+}
+
+/// REQ-SEC-001, REQ-SEC-004: Token erzeugen, Auditprotokoll prüfen.
+#[test]
+fn token_and_audit_verification() {
+    let out = railit(&["auth", "token", "fdl-adorf", "-o", "json"]);
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let token = json["token"].as_str().unwrap();
+    let hash = json["token_sha256"].as_str().unwrap();
+    assert!(token.starts_with("rit_") && token.len() == 68);
+    assert_eq!(hash.len(), 64);
+    let again = railit(&["auth", "token", "x", "-o", "json"]);
+    assert_ne!(again.stdout, out.stdout, "Token sind zufällig");
+
+    let dir = tmp_dir("audit");
+    let path = dir.join("audit.log");
+    let mut w = railit_journal::audit::AuditWriter::open(&path).unwrap();
+    for action in ["set_route", "cancel_route"] {
+        w.append(railit_journal::audit::AuditRecord {
+            seq: 0,
+            time_ms: 1,
+            user: "fdl".into(),
+            action: action.into(),
+            target: Some("A-N1".into()),
+            area: None,
+            outcome: "ok".into(),
+        })
+        .unwrap();
+    }
+    drop(w);
+    let out = railit(&["audit", "verify", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("2 Einträge"));
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, text.replacen("cancel_route", "set_route", 1)).unwrap();
+    let out = railit(&["audit", "verify", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("UNGÜLTIG"));
+}
+
+#[test]
+fn tls_options_are_checked() {
+    let out = railit(&[
+        "--server",
+        "https://127.0.0.1:1",
+        "--ca",
+        "/gibt/es/nicht.pem",
+        "state",
+    ]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("nicht.pem"));
+}

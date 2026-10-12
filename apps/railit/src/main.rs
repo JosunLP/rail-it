@@ -5,12 +5,14 @@
 //! ```text
 //! railit net validate|info NETZ.toml
 //! railit plan keygen PRÄFIX
-//! railit plan compile NETZ.toml --out PLAN.rplan [--key PRÄFIX.key]
+//! railit plan compile NETZ.toml --out PLAN.rplan|VERZEICHNIS [--key PRÄFIX.key]
 //! railit plan verify PLAN.rplan [--key PRÄFIX.pub] [--network NETZ.toml]
 //! railit plan info PLAN.rplan
 //! railit scenario run SZENARIO.toml…
 //! railit journal verify JOURNAL
 //! railit journal replay JOURNAL --plan PLAN.rplan
+//! railit audit verify AUDITPROTOKOLL
+//! railit auth token NAME
 //! ```
 //!
 //! **Online** (Client von `railitd`, Adresse über `--server` bzw. `RAILIT_SERVER`):
@@ -22,14 +24,22 @@
 //! railit sim train add|list|remove …
 //! railit sim fault set|clear ART ELEMENT
 //! railit aux list
-//! railit aux request ART ELEMENT [--position left|right] --operator NR
-//! railit aux confirm ID --operator NR
+//! railit aux request ART ELEMENT [--position left|right] [--operator NR]
+//! railit aux confirm ID [--area BEREICH] [--operator NR]
+//! railit areas
+//! railit border request|withdraw BEREICH>NACHBAR
+//! railit ops list|ars on|off|describe|erase|hold|release|platform|delay …
+//! railit whoami
+//! railit audit show [--last N]
 //! railit watch
 //! ```
+//!
+//! Mit TLS: `--server https://…`, `--ca` (Server-CA), für mTLS `--cert` und `--key`.
 //!
 //! Exit-Codes: `0` Erfolg, `1` ungültig bzw. abgelehnt, `2` Bedien-, Lese- oder
 //! Verbindungsfehler.
 
+mod admin;
 mod journal;
 mod net;
 mod online;
@@ -64,6 +74,18 @@ struct Cli {
     /// Zugangstoken für railitd.
     #[arg(long, global = true, env = "RAILIT_TOKEN", hide_env_values = true)]
     token: Option<String>,
+
+    /// CA des Serverzertifikats (PEM) für `https://`.
+    #[arg(long, global = true, env = "RAILIT_CA")]
+    ca: Option<PathBuf>,
+
+    /// Client-Zertifikat (PEM) für die Anmeldung mit mTLS.
+    #[arg(long, global = true, env = "RAILIT_CERT", requires = "key")]
+    cert: Option<PathBuf>,
+
+    /// Privater Schlüssel des Client-Zertifikats (PEM).
+    #[arg(long, global = true, env = "RAILIT_KEY", requires = "cert")]
+    key: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Command,
@@ -107,6 +129,116 @@ enum Command {
     Aux(AuxCommand),
     /// Ereignisse fortlaufend ausgeben (online).
     Watch,
+    /// Stellbereiche mit Grenzen und Erlaubnissen (online).
+    Areas,
+    /// Erlaubnis an einer Bereichsgrenze (online).
+    #[command(subcommand)]
+    Border(BorderCommand),
+    /// Betriebsführung: Zugnummern, Zuglenkung, Disposition (online).
+    #[command(subcommand)]
+    Ops(OpsCommand),
+    /// Angemeldeter Benutzer (online).
+    Whoami,
+    /// Auditprotokoll prüfen (offline) oder anzeigen (online).
+    #[command(subcommand)]
+    Audit(AuditCommand),
+    /// Zugangsdaten verwalten.
+    #[command(subcommand)]
+    Auth(AuthCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum BorderCommand {
+    /// Erlaubnis anfordern.
+    Request {
+        /// Adresse `Bereich>Nachbar`, z. B. `Strecke>Adorf`.
+        address: String,
+    },
+    /// Anforderung zurückziehen.
+    Withdraw {
+        /// Adresse `Bereich>Nachbar`.
+        address: String,
+    },
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum Switch {
+    On,
+    Off,
+}
+
+#[derive(Debug, Subcommand)]
+enum OpsCommand {
+    /// Züge mit Zugnummer, Halt und Verspätung.
+    List,
+    /// Zuglenkung ein- oder ausschalten.
+    Ars {
+        /// Ein oder aus.
+        #[arg(value_enum)]
+        state: Switch,
+    },
+    /// Zugnummer an einem Signal eintragen.
+    Describe {
+        /// Zugnummer.
+        train: String,
+        /// Signal.
+        signal: String,
+    },
+    /// Zugnummer löschen.
+    Erase {
+        /// Zugnummer.
+        train: String,
+    },
+    /// Zug von der Zuglenkung zurückhalten.
+    Hold {
+        /// Zugnummer.
+        train: String,
+    },
+    /// Zurückgehaltenen Zug freigeben.
+    Release {
+        /// Zugnummer.
+        train: String,
+    },
+    /// Gleiswechsel für den nächsten Halt an einer Betriebsstelle.
+    Platform {
+        /// Zugnummer.
+        train: String,
+        /// Betriebsstelle.
+        station: String,
+        /// Bahnsteiggleis.
+        platform: String,
+    },
+    /// Zusätzliche Wartezeit vor den folgenden Abfahrten.
+    Delay {
+        /// Zugnummer.
+        train: String,
+        /// Sekunden.
+        seconds: u32,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AuditCommand {
+    /// Prüft die Hashkette eines Auditprotokolls (offline).
+    Verify {
+        /// Auditprotokoll (`railitd --audit`).
+        file: PathBuf,
+    },
+    /// Letzte Einträge vom Dienst (online; Rolle mit Auditrecht).
+    Show {
+        /// Anzahl.
+        #[arg(long, default_value_t = 20)]
+        last: usize,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AuthCommand {
+    /// Erzeugt ein Zugangstoken und den Eintrag für die Benutzerdatei.
+    Token {
+        /// Benutzername.
+        name: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -130,11 +262,12 @@ enum PlanCommand {
         /// Dateipräfix.
         prefix: PathBuf,
     },
-    /// Erzeugt Fahrstraßen, prüft sie unabhängig und schreibt das Plan-Image.
+    /// Erzeugt Fahrstraßen, prüft sie unabhängig und schreibt das Plan-Image (bei Netzen
+    /// mit Stellbereichen je Bereich `<Bereich>.rplan` in das Verzeichnis `--out`).
     Compile {
         /// Netzbeschreibung.
         network: PathBuf,
-        /// Ausgabedatei.
+        /// Ausgabedatei bzw. -verzeichnis.
         #[arg(short = 'O', long = "out")]
         out: PathBuf,
         /// Geheimer Schlüssel zum Signieren.
@@ -223,17 +356,20 @@ enum AuxCommand {
         /// Ziellage (nur force-point).
         #[arg(long, value_enum)]
         position: Option<Position>,
-        /// Bedienernummer.
+        /// Bedienernummer (nur ohne Benutzerverwaltung des Dienstes).
         #[arg(long)]
-        operator: u32,
+        operator: Option<u32>,
     },
     /// Hilfshandlung bestätigen (zweiter, anderer Bediener).
     Confirm {
         /// Kennung aus der Anforderung.
         id: u32,
-        /// Bedienernummer.
+        /// Stellbereich (bei mehreren Bereichen).
         #[arg(long)]
-        operator: u32,
+        area: Option<String>,
+        /// Bedienernummer (nur ohne Benutzerverwaltung des Dienstes).
+        #[arg(long)]
+        operator: Option<u32>,
     },
 }
 
@@ -381,9 +517,17 @@ fn main() -> ExitCode {
         Command::Journal(JournalCommand::Replay { file, plan }) => {
             journal::replay(&file, &plan, output)
         }
+        Command::Audit(AuditCommand::Verify { file }) => admin::audit_verify(&file, output),
+        Command::Auth(AuthCommand::Token { name }) => admin::token(&name, output),
         online => {
-            let client = online::Client::new(&cli.server, cli.token);
-            run_online(&client, online, output).unwrap_or_else(online::Failure::exit)
+            let tls = online::TlsFiles {
+                ca: cli.ca,
+                cert: cli.cert,
+                key: cli.key,
+            };
+            online::Client::new(&cli.server, cli.token, &tls)
+                .and_then(|client| run_online(&client, online, output))
+                .unwrap_or_else(online::Failure::exit)
         }
     }
 }
@@ -393,7 +537,7 @@ fn run_online(
     command: Command,
     output: Output,
 ) -> Result<ExitCode, online::Failure> {
-    let path = |segment: &str| segment.replace('/', "%2F");
+    let path = online::segment;
     match command {
         Command::State => online::state(c, output),
         Command::Route(RouteCommand::List) => online::route_list(c, output),
@@ -425,43 +569,7 @@ fn run_online(
                 output,
             )
         }
-        Command::Sim(SimCommand::Train(TrainCommand::Add {
-            name,
-            at,
-            length,
-            speed,
-            ignore_signals,
-        })) => {
-            let body = json!({
-                "name": name, "signal": at, "length_m": length, "speed_kmh": speed,
-                "ignore_signals": ignore_signals,
-            });
-            online::sim_done(
-                c.post("/v1/sim/trains", Some(body)),
-                &format!("Zug {name} steht vor {at}."),
-                output,
-            )
-        }
-        Command::Sim(SimCommand::Train(TrainCommand::List)) => online::trains(c, output),
-        Command::Sim(SimCommand::Train(TrainCommand::Remove { name })) => online::sim_done(
-            c.delete(&format!("/v1/sim/trains/{}", path(&name)))
-                .map(|v| (200, v)),
-            &format!("Zug {name} entfernt."),
-            output,
-        ),
-        Command::Sim(SimCommand::Fault(f)) => {
-            let (kind, element, active) = match f {
-                FaultCommand::Set { kind, element } => (kind, element, true),
-                FaultCommand::Clear { kind, element } => (kind, element, false),
-            };
-            let body = json!({ "kind": kind.as_str(), "element": element, "active": active });
-            let what = format!(
-                "Störung {} an {element} {}.",
-                kind.as_str(),
-                if active { "gesetzt" } else { "aufgehoben" }
-            );
-            online::sim_done(c.post("/v1/sim/faults", Some(body)), &what, output)
-        }
+        Command::Sim(cmd) => run_sim(c, cmd, output),
         Command::Aux(AuxCommand::List) => online::aux_list(c, output),
         Command::Aux(AuxCommand::Request {
             kind,
@@ -475,14 +583,143 @@ fn run_online(
             }
             online::aux(c, "/v1/aux", Some(body), operator, output)
         }
-        Command::Aux(AuxCommand::Confirm { id, operator }) => {
-            online::aux(c, &format!("/v1/aux/{id}/confirm"), None, operator, output)
+        Command::Aux(AuxCommand::Confirm { id, area, operator }) => {
+            let query = area
+                .map(|a| format!("?area={}", path(&a)))
+                .unwrap_or_default();
+            online::aux(
+                c,
+                &format!("/v1/aux/{id}/confirm{query}"),
+                None,
+                operator,
+                output,
+            )
         }
         Command::Watch => online::watch(c, output),
-        Command::Net(_) | Command::Plan(_) | Command::Scenario(_) | Command::Journal(_) => {
-            Ok(ExitCode::SUCCESS)
+        Command::Areas => online::areas(c, output),
+        Command::Whoami => online::whoami(c, output),
+        Command::Border(b) => {
+            let (address, verb, what) = match b {
+                BorderCommand::Request { address } => (address, "request", "anfordern"),
+                BorderCommand::Withdraw { address } => (address, "withdraw", "zurückziehen"),
+            };
+            online::request(
+                c,
+                &format!("/v1/borders/{}/{verb}", path(&address)),
+                None,
+                &format!("Erlaubnis {address} {what}"),
+                output,
+            )
+        }
+        Command::Ops(cmd) => run_ops(c, cmd, output),
+        Command::Audit(AuditCommand::Show { last }) => online::audit_show(c, last, output),
+        Command::Net(_)
+        | Command::Plan(_)
+        | Command::Scenario(_)
+        | Command::Journal(_)
+        | Command::Audit(AuditCommand::Verify { .. })
+        | Command::Auth(_) => Ok(ExitCode::SUCCESS),
+    }
+}
+
+/// Simulationsbefehle.
+fn run_sim(
+    c: &online::Client,
+    command: SimCommand,
+    output: Output,
+) -> Result<ExitCode, online::Failure> {
+    let path = online::segment;
+    match command {
+        SimCommand::Train(TrainCommand::Add {
+            name,
+            at,
+            length,
+            speed,
+            ignore_signals,
+        }) => {
+            let body = json!({
+                "name": name, "signal": at, "length_m": length, "speed_kmh": speed,
+                "ignore_signals": ignore_signals,
+            });
+            online::sim_done(
+                c.post("/v1/sim/trains", Some(body)),
+                &format!("Zug {name} steht vor {at}."),
+                output,
+            )
+        }
+        SimCommand::Train(TrainCommand::List) => online::trains(c, output),
+        SimCommand::Train(TrainCommand::Remove { name }) => online::sim_done(
+            c.delete(&format!("/v1/sim/trains/{}", path(&name)))
+                .map(|v| (200, v)),
+            &format!("Zug {name} entfernt."),
+            output,
+        ),
+        SimCommand::Fault(f) => {
+            let (kind, element, active) = match f {
+                FaultCommand::Set { kind, element } => (kind, element, true),
+                FaultCommand::Clear { kind, element } => (kind, element, false),
+            };
+            let body = json!({ "kind": kind.as_str(), "element": element, "active": active });
+            let what = format!(
+                "Störung {} an {element} {}.",
+                kind.as_str(),
+                if active { "gesetzt" } else { "aufgehoben" }
+            );
+            online::sim_done(c.post("/v1/sim/faults", Some(body)), &what, output)
         }
     }
+}
+
+/// Befehle der Betriebsführung.
+fn run_ops(
+    c: &online::Client,
+    cmd: OpsCommand,
+    output: Output,
+) -> Result<ExitCode, online::Failure> {
+    let train = |t: &str, action: &str| format!("/v1/ops/trains/{}/{action}", online::segment(t));
+    let (result, what) = match cmd {
+        OpsCommand::List => return online::ops_list(c, output),
+        OpsCommand::Ars { state } => {
+            let on = matches!(state, Switch::On);
+            (
+                c.post("/v1/ops/ars", Some(json!({ "on": on }))),
+                format!("Zuglenkung {}.", if on { "ein" } else { "aus" }),
+            )
+        }
+        OpsCommand::Describe { train: t, signal } => (
+            c.post(&train(&t, "describe"), Some(json!({ "signal": signal }))),
+            format!("Zugnummer {t} an {signal} eingetragen."),
+        ),
+        OpsCommand::Erase { train: t } => (
+            c.delete(&format!("/v1/ops/trains/{}", online::segment(&t)))
+                .map(|v| (200, v)),
+            format!("Zugnummer {t} gelöscht."),
+        ),
+        OpsCommand::Hold { train: t } => (
+            c.post(&train(&t, "hold"), None),
+            format!("Zug {t} zurückgehalten."),
+        ),
+        OpsCommand::Release { train: t } => (
+            c.post(&train(&t, "release"), None),
+            format!("Zug {t} freigegeben."),
+        ),
+        OpsCommand::Platform {
+            train: t,
+            station,
+            platform,
+        } => (
+            c.post(
+                &train(&t, "platform"),
+                Some(json!({ "station": station, "platform": platform })),
+            ),
+            format!("Zug {t} hält in {station} an Gleis {platform}."),
+        ),
+        OpsCommand::Delay { train: t, seconds } => (
+            c.post(&train(&t, "delay"), Some(json!({ "s": seconds }))),
+            format!("Zug {t} wartet zusätzlich {seconds} s."),
+        ),
+    };
+    online::done(result, &what, output)
 }
 
 pub(crate) fn fail_usage(msg: &str) -> ExitCode {

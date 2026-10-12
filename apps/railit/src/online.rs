@@ -2,9 +2,14 @@
 
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use serde_json::{Value, json};
+use ureq::tls::{
+    Certificate, ClientCert, PemItem, PrivateKey, RootCerts, TlsConfig, TlsProvider, parse_pem,
+};
 
 use crate::{EXIT_INVALID, EXIT_USAGE, Output, print_json};
 
@@ -27,17 +32,79 @@ impl Failure {
 
 type Res<T> = Result<T, Failure>;
 
+/// TLS-Einstellungen des Clients.
+#[derive(Debug, Default)]
+pub(crate) struct TlsFiles {
+    /// CA, der das Serverzertifikat vertrauen muss (sonst die eingebauten Wurzeln).
+    pub(crate) ca: Option<PathBuf>,
+    /// Client-Zertifikat für mTLS.
+    pub(crate) cert: Option<PathBuf>,
+    /// Privater Schlüssel des Client-Zertifikats.
+    pub(crate) key: Option<PathBuf>,
+}
+
+fn read(path: &Path) -> Res<Vec<u8>> {
+    std::fs::read(path).map_err(|e| Failure(EXIT_USAGE, format!("{}: {e}", path.display())))
+}
+
+fn tls_config(files: &TlsFiles) -> Res<TlsConfig> {
+    let bad = |e: ureq::Error| Failure(EXIT_USAGE, format!("TLS: {e}"));
+    let mut tls = TlsConfig::builder()
+        .provider(TlsProvider::Rustls)
+        .unversioned_rustls_crypto_provider(Arc::new(rustls::crypto::ring::default_provider()));
+    if let Some(ca) = &files.ca {
+        let certs = parse_pem(&read(ca)?)
+            .filter_map(|item| match item {
+                Ok(PemItem::Certificate(c)) => Some(Ok(c.to_owned())),
+                Ok(_) => None,
+                Err(e) => Some(Err(e)),
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(bad)?;
+        tls = tls.root_certs(RootCerts::Specific(Arc::new(certs)));
+    }
+    match (&files.cert, &files.key) {
+        (Some(cert), Some(key)) => {
+            let chain = [Certificate::from_pem(&read(cert)?).map_err(bad)?];
+            let key = PrivateKey::from_pem(&read(key)?).map_err(bad)?;
+            tls = tls.client_cert(Some(ClientCert::new_with_certs(&chain, key)));
+        }
+        (None, None) => {}
+        _ => {
+            return Err(Failure(
+                EXIT_USAGE,
+                "--cert und --key nur gemeinsam angeben".into(),
+            ));
+        }
+    }
+    Ok(tls.build())
+}
+
+/// Kodiert einen Namen als Pfadsegment (z. B. `AN1->Strecke`, `Adorf>Strecke`).
+pub(crate) fn segment(name: &str) -> String {
+    name.bytes()
+        .fold(String::with_capacity(name.len()), |mut out, b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+                out.push(char::from(b));
+            } else {
+                let _ = write!(out, "%{b:02X}");
+            }
+            out
+        })
+}
+
 impl Client {
-    pub(crate) fn new(server: &str, token: Option<String>) -> Self {
+    pub(crate) fn new(server: &str, token: Option<String>, tls: &TlsFiles) -> Res<Self> {
         let agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
+            .tls_config(tls_config(tls)?)
             .build()
             .into();
-        Self {
+        Ok(Self {
             base: server.trim_end_matches('/').to_string(),
             token,
             agent,
-        }
+        })
     }
 
     fn auth<B>(&self, req: ureq::RequestBuilder<B>) -> ureq::RequestBuilder<B> {
@@ -62,7 +129,14 @@ impl Client {
         match status {
             401 => Err(Failure(
                 EXIT_USAGE,
-                "Anmeldung abgewiesen (Token prüfen: --token oder RAILIT_TOKEN)".into(),
+                "Anmeldung abgewiesen (Token oder Client-Zertifikat prüfen)".into(),
+            )),
+            403 => Err(Failure(
+                EXIT_INVALID,
+                format!(
+                    "keine Berechtigung: {}",
+                    body["error"].as_str().unwrap_or("Rolle oder Stellbereich")
+                ),
             )),
             404 | 400 => Err(Failure(
                 EXIT_INVALID,
@@ -90,16 +164,17 @@ impl Client {
         self.finish(result)
     }
 
-    /// POST mit Bedienerkennung (Hilfshandlungen).
+    /// POST mit Bedienerkennung (Hilfshandlungen ohne Benutzerverwaltung).
     pub(crate) fn post_as(
         &self,
         path: &str,
         body: Option<Value>,
-        operator: u32,
+        operator: Option<u32>,
     ) -> Res<(u16, Value)> {
-        let req = self
-            .auth(self.agent.post(format!("{}{path}", self.base)))
-            .header("X-Railit-Operator", operator.to_string());
+        let mut req = self.auth(self.agent.post(format!("{}{path}", self.base)));
+        if let Some(op) = operator {
+            req = req.header("X-Railit-Operator", op.to_string());
+        }
         let result = match body {
             Some(b) => req.send_json(b),
             None => req.send_empty(),
@@ -446,7 +521,7 @@ pub(crate) fn aux(
     c: &Client,
     path: &str,
     body: Option<Value>,
-    operator: u32,
+    operator: Option<u32>,
     output: Output,
 ) -> Res<ExitCode> {
     let (status, answer) = c.post_as(path, body, operator)?;
@@ -474,4 +549,138 @@ pub(crate) fn aux(
     } else {
         ExitCode::from(EXIT_INVALID)
     })
+}
+
+/// Angemeldeter Benutzer.
+pub(crate) fn whoami(c: &Client, output: Output) -> Res<ExitCode> {
+    let me = c.get("/v1/whoami")?;
+    if output == Output::Json {
+        print_json(&me);
+        return Ok(ExitCode::SUCCESS);
+    }
+    let roles: Vec<&str> = me["roles"]
+        .as_array()
+        .map(|r| r.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    println!("Benutzer: {}", show(&me["name"]));
+    println!("Rollen:   {}", roles.join(", "));
+    if let Some(op) = me["operator"].as_u64() {
+        println!("Bediener: {op}");
+    }
+    if let Some(areas) = me["areas"].as_array() {
+        let areas: Vec<&str> = areas.iter().filter_map(Value::as_str).collect();
+        println!("Bereiche: {}", areas.join(", "));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Stellbereiche mit Grenzen und Erlaubnissen.
+pub(crate) fn areas(c: &Client, output: Output) -> Res<ExitCode> {
+    let areas = c.get("/v1/areas")?;
+    if output == Output::Json {
+        print_json(&areas);
+        return Ok(ExitCode::SUCCESS);
+    }
+    for a in areas.as_array().cloned().unwrap_or_default() {
+        let safe = a["safe_state"]
+            .as_str()
+            .map(|r| format!(" · SICHERER ZUSTAND: {r}"))
+            .unwrap_or_default();
+        println!(
+            "{} (Zyklus {}, Zählwerk {}){safe}",
+            show(&a["name"]),
+            a["cycle"],
+            a["aux_counter"]
+        );
+        for b in a["borders"].as_array().cloned().unwrap_or_default() {
+            let state = if b["holding"] == true {
+                "hält Erlaubnis"
+            } else if b["offering"] == true {
+                "bietet Erlaubnis an"
+            } else {
+                "ohne Erlaubnis"
+            };
+            let requested = if b["requested"] == true {
+                ", angefordert"
+            } else {
+                ""
+            };
+            println!("  {:<20} {state}{requested}", show(&b["name"]));
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Betriebsführung: Züge mit Zugnummer, Halt und Verspätung.
+pub(crate) fn ops_list(c: &Client, output: Output) -> Res<ExitCode> {
+    let ops = c.get("/v1/ops")?;
+    if output == Output::Json {
+        print_json(&ops);
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!(
+        "Fahrplan: {} · Zuglenkung {}",
+        ops["timetable"]
+            .as_str()
+            .filter(|t| !t.is_empty())
+            .unwrap_or("–"),
+        if ops["ars"] == true { "ein" } else { "aus" }
+    );
+    for t in ops["trains"].as_array().cloned().unwrap_or_default() {
+        let place = if t["left"] == true {
+            "hat das Netz verlassen".to_string()
+        } else {
+            format!("an {}", show(&t["berth"]))
+        };
+        let stop = match (t["at_stop"].as_str(), t["next_stop"].as_str()) {
+            (Some(at), _) => format!(" · hält in {at}"),
+            (None, Some(next)) => format!(" · nächster Halt {next}"),
+            _ => String::new(),
+        };
+        let delay = t["delay_s"]
+            .as_i64()
+            .map(|d| format!(" · {:+} min", d / 60))
+            .unwrap_or_default();
+        let hold = if t["hold"] == true {
+            " · ZURÜCKGEHALTEN"
+        } else {
+            ""
+        };
+        println!("  {:<8} {place}{stop}{delay}{hold}", show(&t["number"]));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Befehl ohne fachliche Antwort (Betriebsführung).
+pub(crate) fn done(result: Res<(u16, Value)>, what: &str, output: Output) -> Res<ExitCode> {
+    sim_done(result, what, output)
+}
+
+/// Auditprotokoll des Dienstes.
+pub(crate) fn audit_show(c: &Client, last: usize, output: Output) -> Res<ExitCode> {
+    let log = c.get(&format!("/v1/audit?last={last}"))?;
+    if output == Output::Json {
+        print_json(&log);
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!(
+        "Auditprotokoll: {} Einträge, Kette gültig, Kopf {}",
+        log["records"],
+        show(&log["head"])
+    );
+    for r in log["last"].as_array().cloned().unwrap_or_default() {
+        let area = r["area"]
+            .as_str()
+            .map(|a| format!(" [{a}]"))
+            .unwrap_or_default();
+        println!(
+            "  #{:<5} {:<14} {:<20} {}{area} → {}",
+            r["seq"],
+            show(&r["user"]),
+            show(&r["action"]),
+            show(&r["target"]),
+            show(&r["outcome"])
+        );
+    }
+    Ok(ExitCode::SUCCESS)
 }
