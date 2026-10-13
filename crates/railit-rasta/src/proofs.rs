@@ -55,7 +55,7 @@ fn md4_never_panics_on_two_blocks() {
 /// Eine geschlossene Verbindung stellt nie Nutzdaten zu und gerät in keinen Panikpfad.
 #[kani::proof]
 #[kani::stub(crate::md4::md4, checksum_stub)]
-#[kani::unwind(50)]
+#[kani::unwind(64)]
 fn closed_connection_never_delivers() {
     let mut server = Connection::new(Config::new(OC, IXL, Role::Server));
     let mut buf = [0u8; LEN];

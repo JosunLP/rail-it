@@ -2,7 +2,9 @@
 //! (REQ-EMB-001 … 004).
 
 use railit_embedded::wire::HostMsg;
-use railit_embedded::{ChannelMemory, Node, NodeClient, NodeConfig, NodeCycle};
+use railit_embedded::{
+    ChannelMemory, Node, NodeClient, NodeConfig, NodeCycle, NodeEvent, NodeSync,
+};
 use railit_kernel::*;
 use railit_plan::PlanView;
 use railit_rasta::{Config, Connection, MAX_PDU, Role};
@@ -26,6 +28,12 @@ fn node_config() -> NodeConfig {
         deadline_us: 50_000,
         gap_limit_us: 1_000_000,
     }
+}
+
+fn short_digest(state: &mut OwnedState) -> [u8; 8] {
+    railit_safety::state_digest(&state.view()).0[..8]
+        .try_into()
+        .unwrap()
 }
 
 type TestNode<'s> = Node<'static, 's, GenericRules, 256, 256, 256>;
@@ -99,6 +107,10 @@ struct Bench {
     /// Übertragung unterbrochen.
     cut: bool,
     compare: bool,
+    /// Abgeschlossene Zustandsabgleiche.
+    syncs: Vec<NodeSync>,
+    /// Je Zyklus des Knotens: Zustand des Referenzkerns danach.
+    history: Vec<(u64, OwnedState)>,
 }
 
 impl Bench {
@@ -115,6 +127,8 @@ impl Bench {
             next: 0,
             cut: false,
             compare: true,
+            syncs: Vec::new(),
+            history: Vec::new(),
         }
     }
 
@@ -173,14 +187,28 @@ impl Bench {
             used,
             &mut reference,
         );
-        let got = self.client.take_cycle();
+        let mut got = None;
+        while let Some(event) = self.client.poll() {
+            match event {
+                NodeEvent::Cycle(c) => got = Some(c),
+                NodeEvent::Synced(s) => self.syncs.push(s),
+            }
+        }
         if let Some(c) = &got {
             self.field.apply(&c.commands);
             if self.compare {
                 assert_eq!(c.now_ms, self.now_ms);
                 assert_eq!(c.commands, reference.commands, "Zyklus {}", c.cycle);
                 assert_eq!(c.events, reference.events, "Zyklus {}", c.cycle);
+                assert_eq!(usize::from(c.end.inputs), used.len(), "Zyklus {}", c.cycle);
+                assert_eq!(
+                    c.end.digest,
+                    short_digest(&mut self.ref_state),
+                    "Zyklus {}",
+                    c.cycle
+                );
             }
+            self.history.push((c.cycle, self.ref_state.clone()));
         }
         got
     }
@@ -405,4 +433,59 @@ fn memory_capacity_is_checked() {
     assert!(ChannelMemory::<64>::fits(&plan));
     assert!(!ChannelMemory::<2>::fits(&plan));
     assert!(ChannelMemory::<2>::new().state(&plan).is_none());
+}
+
+/// REQ-EMB-006: Zustandsabgleich. Der Knoten überträgt seinen Zustand in Teilen über mehrere Zyklen, während
+/// er weiterrechnet. Der daraus gebaute Spiegel gleicht dem Zustand des Knotens am Ende des
+/// angegebenen Zyklus; jeder Zyklus meldet Anzahl der Eingaben und Digest.
+#[test]
+fn state_sync_rebuilds_the_mirror() {
+    let plan = plan();
+    let (mut a, mut b, mut sync) = (
+        ChannelMemory::<64>::new(),
+        ChannelMemory::<64>::new(),
+        ChannelMemory::<64>::new(),
+    );
+    let states = [a.state(&plan), b.state(&plan), None];
+    let mut node: TestNode<'_> = Node::new(
+        Interlocking::new(plan, GenericRules::default()),
+        states,
+        node_config(),
+    )
+    .unwrap()
+    .with_sync_buffer(sync.state(&plan).unwrap());
+    let mut bench = Bench::new(plan);
+    let a_n1 = bench.route("A-N1");
+    for k in 0..40 {
+        let requests = if k == 10 {
+            vec![Request::SetRoute(a_n1)]
+        } else {
+            vec![]
+        };
+        let extra = if k == 30 { vec![HostMsg::Sync] } else { vec![] };
+        bench.cycle(&mut node, &extra, &requests);
+    }
+    assert_eq!(bench.syncs.len(), 1, "ein Abgleich");
+    let synced = &bench.syncs[0];
+    assert_eq!(synced.plan, plan.digest()[..8]);
+    let mut mirror = OwnedState::new(&plan);
+    {
+        let mut view = mirror.view();
+        assert_eq!(synced.parts.len(), view.part_count());
+        assert!(
+            synced.parts.len() > railit_embedded::SYNC_PARTS_PER_TICK,
+            "über mehrere Zyklen"
+        );
+        for part in &synced.parts {
+            view.apply(*part).unwrap();
+        }
+    }
+    assert_eq!(short_digest(&mut mirror), synced.digest);
+    let (_, expected) = bench
+        .history
+        .iter()
+        .find(|(cycle, _)| *cycle == synced.cycle)
+        .expect("Zyklus des Abgleichs empfangen");
+    assert_eq!(&mirror, expected);
+    assert_eq!(bench.client.protocol_errors(), 0);
 }

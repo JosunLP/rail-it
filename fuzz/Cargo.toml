@@ -74,3 +74,10 @@ path = "fuzz_targets/node_wire.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "mirror_state"
+path = "fuzz_targets/mirror_state.rs"
+test = false
+doc = false
+bench = false

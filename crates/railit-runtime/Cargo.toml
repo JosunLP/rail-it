@@ -24,6 +24,8 @@ railit-journal = { workspace = true }
 railit-ops = { workspace = true }
 railit-etcs = { workspace = true }
 railit-adapters = { workspace = true }
+railit-embedded = { workspace = true, features = ["host"] }
+railit-rasta = { workspace = true }
 serde = { workspace = true, features = ["std"] }
 sha2 = { workspace = true }
 toml = { workspace = true }

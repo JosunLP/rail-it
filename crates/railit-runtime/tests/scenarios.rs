@@ -3,16 +3,30 @@
 use std::path::PathBuf;
 
 use railit_runtime::railit_safety::Redundancy;
+use railit_runtime::scenario::RunOptions;
 
 #[test]
 fn all_scenarios_pass() {
-    run_all(None);
+    run_all(RunOptions::default());
 }
 
 /// REQ-SAF-001: Mit drei fehlerfreien Kanälen verhält sich das Stellwerk genau wie mit einem.
 #[test]
 fn all_scenarios_pass_with_three_channels() {
-    run_all(Some(Redundancy::TwoOutOfThree));
+    run_all(RunOptions {
+        channels: Some(Redundancy::TwoOutOfThree),
+        node: false,
+    });
+}
+
+/// REQ-EMB-005: Jeder Stellbereich rechnet auf einem Knoten des sicheren Rechners, angebunden
+/// über RaSTA mit Spiegel und Zustandsabgleich – alle Szenarien verhalten sich wie im Dienst.
+#[test]
+fn all_scenarios_pass_on_safe_computer_nodes() {
+    run_all(RunOptions {
+        channels: None,
+        node: true,
+    });
 }
 
 fn scenario_files() -> Vec<PathBuf> {
@@ -27,10 +41,10 @@ fn scenario_files() -> Vec<PathBuf> {
     files
 }
 
-fn run_all(channels: Option<Redundancy>) {
+fn run_all(opts: RunOptions) {
     let mut failed = Vec::new();
     for file in &scenario_files() {
-        let outcome = railit_runtime::scenario::run_file_with(file, channels)
+        let outcome = railit_runtime::scenario::run_file_opts(file, opts)
             .unwrap_or_else(|e| panic!("{}: {e}", file.display()));
         println!("{outcome}");
         if !outcome.passed {

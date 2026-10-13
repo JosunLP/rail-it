@@ -16,7 +16,8 @@ railit-plan = { workspace = true, features = ["alloc"] }
 railit-planning = { workspace = true }
 railit-import = { workspace = true }
 railit-rules = { workspace = true }
-railit-kernel = { workspace = true, features = ["alloc"] }
+railit-kernel = { workspace = true, features = ["alloc", "serde"] }
+postcard = { workspace = true, features = ["alloc"] }
 railit-movement = { workspace = true }
 railit-journal = { workspace = true }
 railit-ops = { workspace = true }

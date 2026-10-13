@@ -1,7 +1,8 @@
 # Anforderungen an den sicheren Rechner (`REQ-EMB`)
 
 Umgesetzt in `crates/railit-embedded` (Knoten, Zustandsspeicher, Binärprotokoll; `no_std`,
-ohne Allokator). Nachweise in `crates/railit-embedded/tests/node.rs`, den Modultests in
+ohne Allokator). Anbindung im Dienst in `crates/railit-runtime/src/remote.rs`, eigenständiger Knoten in
+`apps/railit-node`. Nachweise in `crates/railit-embedded/tests/node.rs`, den Modultests in
 `wire.rs`, dem Kani-Nachweis `proofs.rs`, dem Fuzz-Ziel `node_wire` und dem Build für
 `armv7r-none-eabihf` (Cortex-R) in der CI.
 
@@ -11,3 +12,5 @@ ohne Allokator). Nachweise in `crates/railit-embedded/tests/node.rs`, den Modult
 | REQ-EMB-002 | Den Zyklus stößt der Timer des Knotens an, nicht der Host. Bricht die Verbindung ab, rechnet der Knoten weiter: Die Meldungen fehlen, der Kern behandelt die Elemente nach der Meldezeit als gestört und nimmt die Fahrt zurück. Der Host baut die Verbindung neu auf. | H-005, H-014 | `link_loss_is_fail_safe` |
 | REQ-EMB-003 | Ausgaben gehen je Zyklus vollständig an den Host (`Begin` … `End` mit Anzahlen); der Host wendet nur vollständige, stimmige Zyklen an. Ein unlesbares Telegramm hinter gültigem Sicherheitscode und ein voller Sendepuffer bauen die Verbindung ab; verlorene Eingaben werden gemeldet. Handlungen an der Sicherheitsschicht (Fehler, Wiederaufnahme, Rücksetzen) laufen über dieselbe Verbindung. | H-014 | `safety_layer_over_the_wire`, `malformed_payload_drops_the_link`, `roundtrip_across_payloads`, `garbage_is_malformed`, Kani `packer_respects_the_payload_limit`, Fuzz-Ziel `node_wire` |
 | REQ-EMB-004 | Der Knoten hat einen eigenen Watchdog (REQ-SAF-005). | H-007, H-015 | `watchdog_trips_on_overrun` |
+| REQ-EMB-005 | Anbindung im Dienst: Mit `railitd --node` rechnet der Kern eines Stellbereichs auf einem Knoten (`railit-node` über UDP oder im Gleichschritt). Der Dienst wendet nur die Ausgaben des Knotens an; sein Spiegel des Kernzustands (Anzeige, Betriebsführung, RBC, SIL 0) rechnet jeden Zyklus des Knotens mit denselben Eingaben nach und vergleicht Befehle, Ereignisse und den Zustands-Digest. Liefert der Knoten keine Zyklen mehr, stellt der Dienst alle Signale des Bereichs auf Halt; Bedienplätze zeigen den Bereich als gestört. Alle Betriebsszenarien gelten unverändert über Knoten. | H-007, H-015, H-016 | `all_scenarios_pass_on_safe_computer_nodes`, `node_process_over_udp`, `safe_computer_nodes_over_api` |
+| REQ-EMB-006 | Zustandsabgleich: Nach dem Aufbau der Verbindung und bei jeder Abweichung des Spiegels kopiert der Knoten seinen Zustand am Ende eines Zyklus in einen Abgleichspeicher und überträgt ihn in Teilen, während er weiterrechnet; jeder Zyklus meldet Anzahl der verwendeten Eingaben und Digest. Der Dienst setzt den Zustand nur ein, wenn Plan und Digest übereinstimmen, rechnet die inzwischen gelaufenen Zyklen nach und gibt dem Feld das Stellbild des Kerns (Signale, Ersatzsignale, Bahnübergänge, keine Weichen) – Befehle aus Zyklen ohne Verbindung erreichen es so doch. | H-015, H-016 | `state_sync_rebuilds_the_mirror`, `state_transfer_reproduces_the_state`, Fuzz-Ziel `mirror_state`, Szenario 18 |

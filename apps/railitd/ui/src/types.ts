@@ -53,6 +53,20 @@ export interface PendingAux {
   check: string;
 }
 
+/** Anbindung eines Stellbereichs an seinen Knoten des sicheren Rechners. */
+export interface NodeState {
+  link: string;
+  up: boolean;
+  available: boolean;
+  synced: boolean;
+  cycles: number;
+  syncs: number;
+  divergences: number;
+  link_losses: number;
+  protocol_errors: number;
+  last_problem: string | null;
+}
+
 export interface BorderState {
   name: string;
   holding: boolean;
@@ -71,7 +85,12 @@ export interface Snapshot {
     name: string;
     safe_state: string | null;
     borders: BorderState[];
-    safety: { redundancy: string; channels: { channel: number; active: boolean }[]; trip: unknown };
+    safety: {
+      redundancy: string;
+      channels: { channel: number; active: boolean }[];
+      trip: unknown;
+      node?: NodeState | null;
+    };
   }[];
   points: {
     area: string;

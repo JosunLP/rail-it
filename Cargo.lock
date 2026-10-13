@@ -529,6 +529,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
+name = "embedded-io"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef1a6892d9eef45c8fa6b9e0086428a2cca8491aca8f787c534a3d6d0bcb3ced"
+
+[[package]]
+name = "embedded-io"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1223,6 +1235,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6764c3b5dd454e283a30e6dfe78e9b31096d9e32036b5d1eaac7a6119ccb9a24"
 dependencies = [
  "cobs",
+ "embedded-io 0.4.0",
+ "embedded-io 0.6.1",
  "serde",
 ]
 
@@ -1498,6 +1512,7 @@ dependencies = [
 name = "railit-fuzz"
 version = "0.1.0"
 dependencies = [
+ "postcard",
  "proptest",
  "railit-adapters",
  "railit-embedded",
@@ -1579,6 +1594,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "railit-node"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "railit-import",
+ "railit-kernel",
+ "railit-planning",
+ "railit-rasta",
+ "railit-rules",
+ "railit-runtime",
+ "railit-sim",
+ "railit-types",
+]
+
+[[package]]
 name = "railit-ops"
 version = "0.1.0"
 dependencies = [
@@ -1633,6 +1663,7 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
  "railit-adapters",
+ "railit-embedded",
  "railit-etcs",
  "railit-import",
  "railit-journal",
@@ -1641,6 +1672,7 @@ dependencies = [
  "railit-ops",
  "railit-plan",
  "railit-planning",
+ "railit-rasta",
  "railit-rules",
  "railit-safety",
  "railit-sim",

@@ -67,6 +67,11 @@ rit-status .network {
   font-weight: 600;
 }
 
+rit-status .node-problem {
+  color: var(--error);
+  font-weight: 700;
+}
+
 rit-status .clock,
 rit-status .cycle {
   font-variant-numeric: tabular-nums;

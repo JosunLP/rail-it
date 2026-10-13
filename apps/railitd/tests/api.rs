@@ -699,3 +699,77 @@ fn redundant_channels_over_api() {
     assert_eq!(post(&d, "/v1/routes/A-N2/set", None).0, 200);
     wait_for(&d, "A-N2", "proceed");
 }
+
+/// REQ-EMB-005: Stellbereiche auf Knoten des sicheren Rechners (`--node lockstep`): Der Dienst
+/// zeigt die Anbindung, bedient über den Knoten und weist widersprüchliche Angaben ab.
+#[test]
+fn safe_computer_nodes_over_api() {
+    let (plan, _) = prepare("node", false);
+    let d = start(&[
+        "--plan",
+        plan.to_str().unwrap(),
+        "--allow-unsigned",
+        "--channels",
+        "2",
+        "--node",
+        "lockstep",
+    ]);
+    let node = |d: &Daemon| get(d, "/v1/state", true).1["areas"][0]["safety"].clone();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while node(&d)["node"]["synced"] != true {
+        assert!(Instant::now() < deadline, "Abgleich: {}", node(&d));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let s = node(&d);
+    assert_eq!(s["redundancy"], "two_out_of_two", "{s}");
+    assert_eq!(s["node"]["available"], true, "{s}");
+    assert_eq!(s["node"]["link"], "im Gleichschritt");
+    assert_eq!(post(&d, "/v1/routes/A-N1/set", None).0, 200);
+    wait_for(&d, "A-N1", "proceed");
+    assert_eq!(node(&d)["node"]["divergences"], 0);
+
+    // Widersprüchliche Angaben.
+    let fails = |args: &[&str], text: &str| {
+        let out = daemon(args).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(text), "{stderr}");
+    };
+    let p = plan.to_str().unwrap();
+    fails(
+        &[
+            "--plan",
+            p,
+            "--allow-unsigned",
+            "--node",
+            "127.0.0.1:1",
+            "--speed",
+            "10",
+        ],
+        "--speed 1",
+    );
+    fails(
+        &[
+            "--plan",
+            p,
+            "--allow-unsigned",
+            "--node",
+            "Adorf=127.0.0.1:1",
+        ],
+        "unbekannt",
+    );
+    let journal = tmp("node.journal");
+    let _ = std::fs::remove_file(&journal);
+    fails(
+        &[
+            "--plan",
+            p,
+            "--allow-unsigned",
+            "--node",
+            "lockstep",
+            "--journal",
+            journal.to_str().unwrap(),
+        ],
+        "Journal",
+    );
+}

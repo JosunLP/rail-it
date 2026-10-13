@@ -31,7 +31,8 @@ Runtime für den sicheren Rechner auf Cortex-R, formale Nachweise mit Kani, Fuzz
 [Sicherheitsnachweis](docs/safety/safety-case.md) und automatische
 [Rückverfolgbarkeit](docs/safety/traceability.md)) und Phase 6 (Bedienplatz: automatisch
 berechneter Spurplan, Web-Bedienplatz mit Anzeigeüberwachung und sicherer Anzeige- und
-Bestätigungskette für Hilfshandlungen) sind umgesetzt.
+Bestätigungskette für Hilfshandlungen) sind umgesetzt. Phase 7 (Betriebsreife) ist in Arbeit:
+Der sichere Rechner ist als Knoten im Dienst angebunden (`railit-node`, `railitd --node`).
 
 | Crate | Inhalt | |
 |-------|--------|---|
@@ -54,6 +55,7 @@ Bestätigungskette für Hilfshandlungen) sind umgesetzt.
 | `railit-import` | rail-it-TOML, railML 3 (Import und Export) | |
 | `railit-layout` | Spurplan: schematische Geometrie aus der Topologie, SVG-Export | |
 | `railit-fuzz` | Fuzz-Ziele für alle Eingangsschnittstellen (mit `fuzz/` für cargo-fuzz) | |
+| `railit-node` | Knoten des sicheren Rechners als Serverprogramm: Kern mit Voter und Watchdog, eigener Takt, RaSTA über UDP | |
 | `railitd` | Dienst mit REST/JSON-API, gRPC (`proto/railit/v1`), Ereignisstrom, Rollen, TLS/mTLS, Audit, Bedienplatz unter `/ui/` | |
 | `apps/railitd/ui` | Bedienplatz: Spurplan-UI in TypeScript mit bQuery, gebaut mit Bun | SIL 0, reiner API-Client |
 | `railit` | Kommandozeile (offline und online) | |
@@ -118,6 +120,23 @@ build`; Prüfungen mit `bun run check`, `bun run test` und `bun run e2e` (Playwr
 einen echten `railitd`, vorher `cargo build -p railit -p railitd`). Das gebaute Bundle
 `apps/railitd/ui/dist` ist eingecheckt, damit `cargo build` ohne Bun auskommt; die CI prüft,
 dass es zum Quelltext passt.
+
+### Sicherer Rechner
+
+Der Kern eines Stellbereichs kann auf einem eigenen Knoten rechnen (Konzept, Abschnitt 13):
+`railit-node` führt ihn mit 2 oder 3 Kanälen, Voter und Watchdog im eigenen Takt aus und
+spricht über RaSTA auf UDP mit `railitd`. Der Dienst wendet nur die Befehle des Knotens an und
+führt einen per Digest geprüften Spiegel für Anzeige und Betrieb.
+
+```sh
+railit-node --plan beispielstadt.rplan --trusted-key railit.pub --listen 127.0.0.1:7979 &
+railitd --network examples/beispielstadt.toml --plan beispielstadt.rplan \
+        --trusted-key railit.pub --node 127.0.0.1:7979 &
+# Netze mit Stellbereichen: --node Adorf=…:7979 --node Strecke=…:7980 …
+
+# Alle Szenarien über Knoten im Gleichschritt (vollständiges Protokoll, deterministisch)
+railit scenario run --node tests/scenarios/*.toml
+```
 
 ### Netz mit mehreren Bahnhöfen: Nordbahn
 

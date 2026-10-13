@@ -1,6 +1,6 @@
 # Sicherheitsnachweis (Safety Case)
 
-> Stand: Phase 6 · Gliederung nach EN 50129, Abschnitt 5 · lebendes Dokument
+> Stand: Phase 7 · Gliederung nach EN 50129, Abschnitt 5 · lebendes Dokument
 >
 > **Geltungsbereich:** rail-it als **Kandidat für den Laborbetrieb** – Simulation, Ausbildung,
 > Prüfstände. rail-it ist **nicht zugelassen** für den realen Bahnbetrieb. Dieser Nachweis
@@ -16,10 +16,10 @@
 | Beschreibung | [Konzept](../KONZEPT.md), Abschnitte 1 bis 15 |
 | Sicherheitsrelevante Teile (SIL 4 angestrebt) | `railit-types`, `railit-plan`, `railit-rules`, `railit-kernel`, `railit-movement`, `railit-safety`, `railit-rasta`, `railit-embedded` – alle `no_std`, ohne `unsafe`, ohne Panikpfade |
 | Nicht sicherheitsrelevant (SIL 0) | Import, Projektierungswerkzeug (abgesichert durch unabhängige Gegenprüfung und Signatur), Simulator, Betriebsführung, Dienst, CLI, Bedienplatz und Spurplan-Geometrie |
-| Einsatzvarianten | 1. alles auf dem Server (`railitd` mit 1, 2 oder 3 Kanälen je Stellbereich); 2. verteilt: Kern und Sicherheitsschicht auf einem sicheren Rechner (`railit-embedded`, Cortex-R), Anbindung über RaSTA |
+| Einsatzvarianten | 1. alles auf dem Server (`railitd` mit 1, 2 oder 3 Kanälen je Stellbereich); 2. verteilt: Kern und Sicherheitsschicht auf einem sicheren Rechner (`railit-embedded`; auf dem Server als `railit-node`, Ziel Cortex-R), angebunden über RaSTA mit `railitd --node` |
 | Schnittstellen | Plan-Image (signiert), Feld über EULYNX SCI-P/-LS/-TDS/-LX auf RaSTA, Nachbarstellwerke über Grenzmeldungen, ETCS-Fahrzeuge über die RBC-Funktion, Bedienung über REST/gRPC und den Bedienplatz (`/ui/`) |
 | Gefährdungen | [Gefährdungsliste](hazard-log.md), H-001 bis H-016 |
-| Anforderungen | [Anforderungen](../requirements/README.md), 98 Anforderungen mit stabilen IDs |
+| Anforderungen | [Anforderungen](../requirements/README.md), 101 Anforderungen mit stabilen IDs |
 
 ## Teil 2 – Qualitätsmanagementbericht
 
@@ -82,14 +82,16 @@ Kontext: nur Simulation, Ausbildung, Prüfstände (Teil 1); Anwendungsbedingunge
 | Watchdog für Rechenzeit und Zyklusabstand | REQ-SAF-005, Kani `watchdog_detects_every_overrun` (fand einen Randfehler bei unbegrenzter Frist, behoben) |
 | Keine Panikpfade, keine Überläufe | Lints, Kani-Nachweise (REQ-SAF-006), Fuzzing (REQ-SAF-007) |
 | Embedded-Runtime ohne Allokator für sichere Rechner | REQ-EMB-001 … 004, Build für `armv7r-none-eabihf` |
+| Sicherer Rechner im Dienst: Knoten maßgeblich, Spiegel im Dienst per Digest geprüft und per Zustandsabgleich nachgeführt; Ausfall des Knotens ⇒ alle Signale Halt | REQ-EMB-005, REQ-EMB-006, alle Szenarien über Knoten, `node_process_over_udp` (eigener Prozess über UDP, Ausfall und Neustart) |
 
 ### G4 – Die Übertragung ist gegen die Bedrohungen nach EN 50159 gesichert
 
 | Strategie | Belege |
 |-----------|--------|
-| RaSTA: Sicherheitscode, Kennungen, Sequenznummern, Zeitstempel, Lebenszeichen | REQ-COM-001 … 005, Property-Test unter Verlust, Verdopplung, Vertauschung |
+| RaSTA: Sicherheitscode, Kennungen, Datenindex, Zeitstempel, Lebenszeichen | REQ-COM-001 … 005, Property-Tests unter Verlust, Verdopplung, Vertauschung in beide Richtungen |
+| Verlust führt zur Wiederholung statt zum Abbau; Wiederholung idempotent | REQ-COM-007 (20 % Verlust ohne Abbau; vorher brachen Strecken schon bei 5 % Verlust ab) |
 | Fehlende Meldungen wirken wie gestört | REQ-COM-006, REQ-IXL-009, REQ-EMB-002 |
-| Empfang beliebiger Bytes ohne Panik | Kani `closed_connection_never_delivers` und MD4-Nachweise; Fuzz-Ziele `rasta` (aufgebaute Verbindung), `sci`, `node_wire` |
+| Empfang beliebiger Bytes ohne Panik | Kani `closed_connection_never_delivers` und MD4-Nachweise; Fuzz-Ziele `rasta` (aufgebaute Verbindung), `sci`, `node_wire`, `mirror_state` |
 
 ### G5 – Bedienhandlungen können keine unsichere Lage herbeiführen
 
@@ -154,7 +156,7 @@ rail-it ist als **generisches Produkt** angelegt. Für einen Einsatz sind zusät
 | Systematische Gefährdungsanalyse mit Bewertung (FMEA, FTA, quantitative Ziele) | Gefährdungsliste |
 | Qualifizierte Toolchain (z. B. Ferrocene) für die SIL-4-Crates | Konzept 16.2 |
 | Hardware des sicheren Rechners festlegen; Kanäle auf getrennter Hardware bzw. im Lockstep, Speicherprüfungen | H-015, Konzept 19 |
-| Anbindung `railitd` ↔ sicherer Rechner im Dienst (heute Knoten und Gegenstelle als Bibliothek mit Tests) | REQ-EMB |
+| Journal auf dem Knoten des sicheren Rechners (heute: mit `--node` kein Journal); Knoten auf der Zielhardware | REQ-EMB, REQ-JRN |
 | Kani-Nachweise für den gesamten Kernzyklus (heute Eigenschaftstests und Fuzzing) | H-007 |
 | Sicherheitscode von RaSTA nach Zulassungsanforderung prüfen | H-014 |
 | Regelwerke `de-estw` und `etcs` mit den Regeln eines Betreibers | Teil 5 |

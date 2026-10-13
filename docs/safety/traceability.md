@@ -42,9 +42,11 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | ID | Gefährdung | Code | Nachweis |
 |----|------------|------|----------|
 | REQ-EMB-001 | H-007, H-015 | – | `node_matches_reference_kernel`<br>`memory_capacity_is_checked`<br>`crates/railit-embedded/tests/node.rs` |
-| REQ-EMB-002 | H-005, H-014 | – | `link_loss_is_fail_safe`<br>`crates/railit-embedded/tests/node.rs` |
+| REQ-EMB-002 | H-005, H-014 | `crates/railit-runtime/src/remote.rs` | `link_loss_is_fail_safe`<br>`crates/railit-embedded/tests/node.rs` |
 | REQ-EMB-003 | H-014 | – | `safety_layer_over_the_wire`<br>`malformed_payload_drops_the_link`<br>`roundtrip_across_payloads`<br>`garbage_is_malformed`<br>`packer_respects_the_payload_limit`<br>`node_wire`<br>`crates/railit-embedded/tests/node.rs` |
 | REQ-EMB-004 | H-007, H-015 | – | `watchdog_trips_on_overrun`<br>`crates/railit-embedded/tests/node.rs` |
+| REQ-EMB-005 | H-007, H-015, H-016 | `crates/railit-runtime/src/remote.rs` | `all_scenarios_pass_on_safe_computer_nodes`<br>`node_process_over_udp`<br>`safe_computer_nodes_over_api`<br>`apps/railit-node/tests/udp.rs`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-runtime/tests/scenarios.rs` |
+| REQ-EMB-006 | H-015, H-016 | `crates/railit-embedded/src/node.rs`<br>`crates/railit-kernel/src/kernel.rs`<br>`crates/railit-runtime/src/remote.rs` | `state_sync_rebuilds_the_mirror`<br>`state_transfer_reproduces_the_state`<br>`mirror_state`<br>`crates/railit-embedded/tests/node.rs`<br>Szenario 18 |
 
 ## [etcs.md](../requirements/etcs.md)
 
@@ -84,7 +86,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-IXL-007 | H-001, H-003 | `crates/railit-kernel/src/kernel.rs` | `route_lifecycle_with_partial_release`<br>`overlap_release_waits_for_time_and_vacancy`<br>`flank_protection_is_released_with_its_section`<br>Szenario 01<br>Szenario 02 |
 | REQ-IXL-008 | H-007 | `crates/railit-kernel/src/invariants.rs`<br>`crates/railit-kernel/src/kernel.rs`<br>`crates/railit-kernel/src/lib.rs` | `invariant_violation_enters_safe_state`<br>`first_cycle_commands_stop_everywhere`<br>`crates/railit-kernel/tests/invariants.rs`<br>`crates/railit-kernel/tests/kernel.rs` |
 | REQ-IXL-009 | H-005 | `crates/railit-adapters/src/lib.rs`<br>`crates/railit-kernel/src/lib.rs` | `nothing_is_clear_without_reports`<br>`stale_reports_drop_the_signal`<br>`crates/railit-kernel/tests/kernel.rs` |
-| REQ-IXL-010 | H-002 | – | `setting_times_out_when_points_do_not_move`<br>Szenario 06 |
+| REQ-IXL-010 | H-002 | `crates/railit-kernel/src/kernel.rs` | `setting_times_out_when_points_do_not_move`<br>Szenario 06 |
 | REQ-IXL-011 | H-009 | `crates/railit-kernel/src/kernel.rs`<br>`crates/railit-kernel/src/lib.rs` | `unauthorized_occupancy_is_alarmed`<br>`signal_passed_at_danger`<br>`crates/railit-kernel/tests/borders.rs`<br>`crates/railit-kernel/tests/phase2.rs`<br>Szenario 11 |
 | REQ-IXL-012 | H-001, H-009 | `crates/railit-kernel/src/kernel.rs`<br>`crates/railit-kernel/src/lib.rs` | `overlap_is_locked_and_points_are_set`<br>`continuation_may_use_the_overlap`<br>`crates/railit-kernel/tests/phase2.rs`<br>Szenario 08 |
 | REQ-IXL-013 | H-001 | `crates/railit-kernel/src/kernel.rs`<br>`crates/railit-kernel/src/lib.rs` | `flank_signals_are_held_at_stop`<br>`crates/railit-kernel/tests/phase2.rs`<br>Szenario 08 |
@@ -104,10 +106,11 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 |----|------------|------|----------|
 | REQ-COM-001 | H-005, H-014 | – | `corruption_is_detected`<br>`crates/railit-rasta/tests/rasta.rs`<br>Szenario 18 |
 | REQ-COM-002 | H-014 | – | `foreign_sender_is_rejected`<br>`crates/railit-rasta/tests/rasta.rs` |
-| REQ-COM-003 | H-014 | – | `replayed_messages_are_discarded`<br>`lost_messages_are_retransmitted_in_order`<br>`delivery_is_an_in_order_prefix`<br>`crates/railit-rasta/tests/rasta.rs` |
+| REQ-COM-003 | H-014 | `crates/railit-rasta/src/lib.rs` | `replayed_messages_are_discarded`<br>`lost_messages_are_retransmitted_in_order`<br>`lost_last_message_is_noticed_by_heartbeat`<br>`delivery_is_an_in_order_prefix`<br>`both_directions_deliver_in_order_prefixes`<br>`crates/railit-rasta/tests/rasta.rs` |
 | REQ-COM-004 | H-014 | – | `delayed_messages_break_the_connection`<br>`crates/railit-rasta/tests/rasta.rs` |
 | REQ-COM-005 | H-005, H-014 | – | `heartbeats_keep_the_connection_alive`<br>`silence_times_out`<br>`crates/railit-rasta/tests/rasta.rs` |
 | REQ-COM-006 | H-005, H-014 | – | `field_over_eulynx_and_rasta`<br>`apps/railitd/tests/api.rs`<br>Szenario 18<br>Szenario 19 |
+| REQ-COM-007 | H-005, H-014 | `crates/railit-rasta/src/lib.rs` | `twenty_percent_loss_does_not_break_the_connection`<br>`both_directions_deliver_in_order_prefixes`<br>`crates/railit-rasta/tests/rasta.rs`<br>Szenario 18 |
 
 ## [plan.md](../requirements/plan.md)
 
@@ -171,4 +174,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-98 Anforderungen, davon 98 mit Nachweis.
+101 Anforderungen, davon 101 mit Nachweis.

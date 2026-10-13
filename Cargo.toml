@@ -24,6 +24,7 @@ members = [
     "crates/railit-layout",
     "apps/railit",
     "apps/railitd",
+    "apps/railit-node",
     "xtask",
 ]
 

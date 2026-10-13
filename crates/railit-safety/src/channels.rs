@@ -413,6 +413,13 @@ impl<'p, R: RuleSet, S: StateStore, O: ChannelOutputs> Channels<'p, R, S, O> {
             .map(|s| &s.state)
     }
 
+    /// Zustandsspeicher des ersten Kanals zum Einsetzen eines übertragenen Zustands (Spiegel
+    /// auf dem Host des sicheren Rechners). Nicht für Kanäle, die mitrechnen sollen: Die
+    /// übrigen Kanäle behalten ihren Zustand.
+    pub fn primary_mut(&mut self) -> Option<&mut S> {
+        self.slots.iter_mut().flatten().next().map(|s| &mut s.state)
+    }
+
     /// Bringt einen Fehler in einen Kanal ein. `false`, wenn es den Kanal nicht gibt.
     pub fn inject(&mut self, channel: usize, fault: Fault) -> bool {
         match self.slots.get_mut(channel) {

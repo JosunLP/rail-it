@@ -7,15 +7,27 @@
 //! | Bedrohung | Maßnahme |
 //! |-----------|----------|
 //! | Verfälschung | Sicherheitscode (MD4 mit vereinbarten Anfangswerten, 8 Byte) |
-//! | Wiederholung, Vertauschung, Verlust | Sequenznummer, Quittierung, Wiederholanforderung |
+//! | Wiederholung, Vertauschung, Verlust | Datenindex, Quittierung, Wiederholanforderung |
 //! | Verzögerung | Zeitstempel und bestätigter Zeitstempel, Höchstalter `t_max` |
 //! | Einfügung, Maskerade | Absender- und Empfängerkennung, Sicherheitscode |
 //! | Ausfall | Lebenszeichen (Heartbeat) alle `t_h`, Abbau nach `t_max` ohne Meldung |
 //!
 //! **PDU** (little-endian): Länge u16, Typ u16, Empfänger u32, Absender u32,
 //! Sequenznummer u32, bestätigte Sequenznummer u32, Zeitstempel u32, bestätigter
-//! Zeitstempel u32, Nutzdaten, Sicherheitscode (erste 8 Byte von MD4 über alles davor).
-//! Datennachrichten tragen vor den Nutzdaten deren Länge (u16).
+//! Zeitstempel u32, bestätigter Datenindex u32, nächster eigener Datenindex u32, Nutzdaten, Sicherheitscode (erste 8 Byte von
+//! MD4 über alles davor). Datennachrichten tragen vor den Nutzdaten deren Länge (u16) und
+//! ihren Datenindex (u32).
+//!
+//! **Wiederholung** (REQ-COM-003, REQ-COM-007): Datennachrichten sind fortlaufend nummeriert
+//! (Datenindex). Der Empfänger
+//! liefert sie nur lückenlos in dieser Reihenfolge; ältere Indizes sind Doppel und werden
+//! verworfen. Jede PDU quittiert den nächsten erwarteten Index. Fehlt eine Nachricht, fordert
+//! der Empfänger die Wiederholung an (wiederholt alle `t_h / 3`, solange die Lücke besteht) –
+//! auch wenn die letzte Nachricht fehlt: Jede PDU nennt den nächsten Datenindex ihres Senders;
+//! der Sender schickt dann alle unquittierten Nachrichten mit ihrem ursprünglichen Index
+//! erneut. Eine Wiederholung ist damit beliebig oft möglich, ohne dass etwas doppelt geliefert
+//! wird. Lebendüberwachung und Zeitstempelbestätigung folgen jeder authentischen,
+//! rechtzeitigen PDU.
 //!
 //! Die Verbindung ist eine reine Zustandsmaschine ohne I/O und ohne Uhr: Der Aufrufer reicht
 //! empfangene PDUs und die aktuelle Zeit herein und holt zu sendende PDUs ab
@@ -47,13 +59,15 @@ pub mod md4;
 mod proofs;
 
 /// Länge des Kopfs in Byte.
-pub const HEADER_LEN: usize = 28;
+pub const HEADER_LEN: usize = 36;
 /// Länge des Sicherheitscodes in Byte.
 pub const SAFETY_CODE_LEN: usize = 8;
 /// Höchstlänge der Nutzdaten einer Datennachricht.
 pub const MAX_PAYLOAD: usize = 256;
+/// Kopf einer Datennachricht vor den Nutzdaten: Länge (u16) und Datenindex (u32).
+pub const DATA_HEADER_LEN: usize = 6;
 /// Höchstlänge einer PDU.
-pub const MAX_PDU: usize = HEADER_LEN + 2 + MAX_PAYLOAD + SAFETY_CODE_LEN;
+pub const MAX_PDU: usize = HEADER_LEN + DATA_HEADER_LEN + MAX_PAYLOAD + SAFETY_CODE_LEN;
 /// Anzahl unquittierter Nachrichten, die für Wiederholungen gehalten werden (`N_sendmax`).
 pub const SEND_BUFFER: usize = 16;
 /// Länge der Sendewarteschlange.
@@ -139,13 +153,13 @@ pub struct Config {
 }
 
 impl Config {
-    /// Vorgaben: `t_max` 750 ms, `t_h` 300 ms, Standard-MD4.
+    /// Vorgaben nach DIN VDE V 0831-200: `t_max` 1800 ms, `t_h` 300 ms, Standard-MD4.
     pub const fn new(local: u32, peer: u32, role: Role) -> Self {
         Self {
             local,
             peer,
             role,
-            t_max_ms: 750,
+            t_max_ms: 1800,
             t_h_ms: 300,
             md4_iv: md4::STANDARD_IV,
             initial_sn: 0,
@@ -175,11 +189,11 @@ pub enum Fault {
     SafetyCode,
     /// Absender oder Empfänger falsch (Einfügung, Maskerade).
     Address,
-    /// Sequenznummer bereits empfangen (Wiederholung).
+    /// Daten bereits empfangen (Wiederholung) oder außer der Reihe.
     Duplicate,
     /// Nachricht zu alt oder bestätigter Zeitstempel unplausibel (Verzögerung).
     Timeliness,
-    /// Quittierte Sequenznummer unplausibel.
+    /// Quittierte Sequenznummer oder quittierter Datenindex unplausibel.
     Confirmation,
     /// Zu lange keine Meldung der Gegenstelle.
     Timeout,
@@ -307,6 +321,10 @@ struct Header {
     cs: u32,
     ts: u32,
     cts: u32,
+    /// Nächster erwarteter Datenindex der Gegenstelle (Quittung der eigenen Daten).
+    ca: u32,
+    /// Nächster Datenindex der Gegenstelle (zeigt Lücken auch ohne folgende Daten).
+    dt: u32,
 }
 
 /// Eine RaSTA-Verbindung (Sicherheits- und Wiederholschicht).
@@ -315,19 +333,23 @@ pub struct Connection {
     state: State,
     /// Nächste eigene Sequenznummer.
     sn_t: u32,
-    /// Erwartete Sequenznummer der Gegenstelle.
+    /// Höchste empfangene Sequenznummer der Gegenstelle plus eins.
     sn_r: u32,
-    /// Letzte von der Gegenstelle quittierte eigene Sequenznummer.
-    cs_r: u32,
     /// Letzter Zeitstempel der Gegenstelle (wird als bestätigter Zeitstempel zurückgesendet).
     ts_r: u32,
     /// Letzter von der Gegenstelle bestätigter eigener Zeitstempel.
     cts_r: u32,
+    /// Index der nächsten eigenen Datennachricht.
+    data_tx: u32,
+    /// Nächster erwarteter Datenindex der Gegenstelle.
+    data_rx: u32,
+    /// Von der Gegenstelle quittiert: alle eigenen Daten vor diesem Index.
+    data_acked: u32,
     /// Zeitpunkt der letzten gültigen Nachricht der Gegenstelle.
     last_rx: u32,
     /// Zeitpunkt der letzten gesendeten Nachricht.
     last_tx: u32,
-    /// Unquittierte gesendete Nachrichten (für Wiederholungen).
+    /// Unquittierte gesendete Datennachrichten (für Wiederholungen).
     sent: Ring<SEND_BUFFER>,
     /// Zu sendende PDUs.
     out: Ring<QUEUE>,
@@ -335,6 +357,14 @@ pub struct Connection {
     discarded: u32,
     /// Zeitpunkt der letzten Wiederholanforderung.
     retr_requested_at: u32,
+    /// Zeitpunkt und quittierter Index der letzten Wiederholung (begrenzt Wiederholungen).
+    retransmitted: Option<(u32, u32)>,
+}
+
+/// Liegt `a` (zyklisch) vor `b`?
+const fn before(a: u32, b: u32) -> bool {
+    let d = b.wrapping_sub(a);
+    d != 0 && d <= u32::MAX / 2
 }
 
 impl Connection {
@@ -345,15 +375,18 @@ impl Connection {
             state: State::Closed,
             sn_t: cfg.initial_sn,
             sn_r: 0,
-            cs_r: 0,
             ts_r: 0,
             cts_r: 0,
+            data_tx: 0,
+            data_rx: 0,
+            data_acked: 0,
             last_rx: 0,
             last_tx: 0,
             sent: Ring::new(),
             out: Ring::new(),
             discarded: 0,
             retr_requested_at: 0,
+            retransmitted: None,
         }
     }
 
@@ -394,9 +427,12 @@ impl Connection {
     fn reset(&mut self) {
         self.sn_t = self.cfg.initial_sn;
         self.sn_r = 0;
-        self.cs_r = self.cfg.initial_sn.wrapping_sub(1);
         self.ts_r = 0;
         self.cts_r = 0;
+        self.data_tx = 0;
+        self.data_rx = 0;
+        self.data_acked = 0;
+        self.retransmitted = None;
         self.sent.clear();
     }
 
@@ -412,23 +448,31 @@ impl Connection {
         if data.len() > MAX_PAYLOAD || self.sent.len >= SEND_BUFFER {
             return Err(Fault::Overflow);
         }
-        let mut payload = [0u8; MAX_PAYLOAD + 2];
+        let mut payload = [0u8; MAX_PAYLOAD + DATA_HEADER_LEN];
         let len = u16::try_from(data.len()).map_err(|_| Fault::Overflow)?;
-        let n = data.len().checked_add(2).ok_or(Fault::Overflow)?;
+        let n = data
+            .len()
+            .checked_add(DATA_HEADER_LEN)
+            .ok_or(Fault::Overflow)?;
         payload
             .get_mut(..2)
             .ok_or(Fault::Overflow)?
             .copy_from_slice(&len.to_le_bytes());
         payload
-            .get_mut(2..n)
+            .get_mut(2..DATA_HEADER_LEN)
+            .ok_or(Fault::Overflow)?
+            .copy_from_slice(&self.data_tx.to_le_bytes());
+        payload
+            .get_mut(DATA_HEADER_LEN..n)
             .ok_or(Fault::Overflow)?
             .copy_from_slice(data);
-        let pdu = self.emit(now, Kind::Data, payload.get(..n).unwrap_or(&[]));
-        if let Some(pdu) = pdu
-            && !self.sent.push(&pdu)
-        {
+        let pdu = self
+            .emit(now, Kind::Data, payload.get(..n).unwrap_or(&[]))
+            .ok_or(Fault::Overflow)?;
+        if !self.sent.push(&pdu) {
             return Err(Fault::Overflow);
         }
+        self.data_tx = self.data_tx.wrapping_add(1);
         Ok(())
     }
 
@@ -480,7 +524,7 @@ impl Connection {
         if total > MAX_PDU {
             return None;
         }
-        let fields: [(usize, &[u8]); 9] = [
+        let fields: [(usize, &[u8]); 11] = [
             (0, &u16::try_from(total).ok()?.to_le_bytes()),
             (2, &kind.code().to_le_bytes()),
             (4, &self.cfg.peer.to_le_bytes()),
@@ -489,6 +533,8 @@ impl Connection {
             (16, &self.sn_r.wrapping_sub(1).to_le_bytes()),
             (20, &now.to_le_bytes()),
             (24, &self.ts_r.to_le_bytes()),
+            (28, &self.data_rx.to_le_bytes()),
+            (32, &self.data_tx.to_le_bytes()),
             (HEADER_LEN, payload),
         ];
         for (off, bytes) in fields {
@@ -524,6 +570,8 @@ impl Connection {
             cs: r(16)?,
             ts: r(20)?,
             cts: r(24)?,
+            ca: r(28)?,
+            dt: r(32)?,
         };
         if header.receiver != self.cfg.local || header.sender != self.cfg.peer {
             return Err(Fault::Address);
@@ -561,7 +609,6 @@ impl Connection {
                 }
                 self.sn_r = h.sn.wrapping_add(1);
                 self.ts_r = h.ts;
-                self.cs_r = h.cs;
                 self.cts_r = h.cts;
                 self.last_rx = now;
                 self.state = State::Up;
@@ -569,6 +616,11 @@ impl Connection {
                 Received::Nothing
             }
             (State::Closed, _) => {
+                self.discarded = self.discarded.saturating_add(1);
+                Received::Discarded(Fault::UnexpectedMessage)
+            }
+            // Der Client wartet nach der Anforderung nur auf die Antwort.
+            (State::Opening, _) if self.cfg.role == Role::Client => {
                 self.discarded = self.discarded.saturating_add(1);
                 Received::Discarded(Fault::UnexpectedMessage)
             }
@@ -584,79 +636,45 @@ impl Connection {
         body: usize,
         deliver: &mut dyn FnMut(&[u8]),
     ) -> Received {
-        // Zeitstempel: Die Gegenstelle bestätigt einen eigenen Zeitstempel; er darf nicht
-        // zurückgehen und nicht älter als t_max sein (Verzögerung).
-        if h.cts.wrapping_sub(self.cts_r) > u32::MAX / 2
-            || now.wrapping_sub(h.cts) > self.cfg.t_max_ms
-        {
+        // Zeitstempel: Die Gegenstelle bestätigt einen eigenen Zeitstempel; er darf nicht älter
+        // als t_max sein (Verzögerung) und keinen künftigen Zeitpunkt bestätigen.
+        if now.wrapping_sub(h.cts) > self.cfg.t_max_ms {
             self.disconnect(now);
             return Received::Disconnected(Fault::Timeliness);
         }
-        // Quittung: nur bereits gesendete Nummern.
-        if h.cs.wrapping_sub(self.cs_r) > u32::MAX / 2
-            || self.sn_t.wrapping_sub(1).wrapping_sub(h.cs) > u32::MAX / 2
-        {
+        // Quittungen: nur bereits gesendete Sequenznummern und Datenindizes.
+        if before(self.sn_t.wrapping_sub(1), h.cs) || before(self.data_tx, h.ca) {
             self.disconnect(now);
             return Received::Disconnected(Fault::Confirmation);
         }
-        // Nach einer Wiederholanforderung zählt nur die Wiederholantwort: Mit ihr beginnt die
-        // Gegenstelle eine neue Zählung, an die die wiederholten Nachrichten lückenlos
-        // anschließen. Verspätete Originale würden sonst doppelt geliefert.
-        if self.state == State::RetransmissionRequested {
-            if h.kind != Kind::RetrResp {
-                self.discarded = self.discarded.saturating_add(1);
-                self.repeat_retransmission_request(now);
-                return Received::Discarded(Fault::Duplicate);
-            }
-            self.sn_r = h.sn;
-        }
-        let delta = h.sn.wrapping_sub(self.sn_r);
-        if delta > u32::MAX / 2 {
-            self.discarded = self.discarded.saturating_add(1);
-            return Received::Discarded(Fault::Duplicate);
-        }
-        if delta > 0 {
-            // Lücke: Wiederholung ab der erwarteten Nummer anfordern (einmal je Lücke).
-            if self.state != State::RetransmissionRequested {
-                self.state = State::RetransmissionRequested;
-                self.retr_requested_at = now;
-                self.emit(now, Kind::RetrReq, &[]);
-            }
-            self.discarded = self.discarded.saturating_add(1);
-            return Received::Discarded(Fault::Duplicate);
-        }
-        // In Reihenfolge: annehmen.
-        self.sn_r = h.sn.wrapping_add(1);
-        self.ts_r = h.ts;
-        self.cts_r = h.cts;
+        // Authentisch und rechtzeitig: Die Gegenstelle lebt. Ihr Zeitstempel wird bestätigt
+        // (nie rückwärts), ihre Quittung übernommen.
         self.last_rx = now;
-        self.acknowledge(h.cs);
+        if !before(h.ts, self.ts_r) {
+            self.ts_r = h.ts;
+        }
+        if !before(h.cts, self.cts_r) {
+            self.cts_r = h.cts;
+        }
+        if !before(h.sn, self.sn_r) {
+            self.sn_r = h.sn.wrapping_add(1);
+        }
+        self.acknowledge(h.ca);
         if self.state == State::Opening {
             self.state = State::Up;
         }
-        if h.kind == Kind::RetrResp {
-            self.state = State::Up;
-        }
         match h.kind {
-            Kind::Data | Kind::RetrData => {
-                let Some(len) = read_u16(pdu, HEADER_LEN).map(usize::from) else {
-                    return Received::Discarded(Fault::Malformed);
-                };
-                let start = HEADER_LEN.saturating_add(2);
-                match start
-                    .checked_add(len)
-                    .filter(|end| *end <= body)
-                    .and_then(|end| pdu.get(start..end))
-                {
-                    Some(data) => {
-                        deliver(data);
-                        Received::Delivered
-                    }
-                    None => Received::Discarded(Fault::Malformed),
-                }
+            Kind::Data | Kind::RetrData => self.receive_data(now, pdu, body, deliver),
+            // Die Gegenstelle hat mehr gesendet, als hier ankam: Lücke ohne folgende Daten.
+            _ if before(self.data_rx, h.dt) && h.kind != Kind::RetrReq => {
+                self.gap(now);
+                Received::Nothing
             }
             Kind::RetrReq => {
-                if self.retransmit(now, h.cs) {
+                if self.retransmit(now, h.ca) {
+                    if before(self.data_rx, h.dt) {
+                        self.gap(now);
+                    }
                     Received::Nothing
                 } else {
                     self.disconnect(now);
@@ -667,63 +685,114 @@ impl Connection {
         }
     }
 
-    /// Wiederholt eine Wiederholanforderung, die verloren gegangen sein kann (alle `t_h`).
+    /// Datennachricht: nur lückenlos in Reihenfolge liefern.
+    fn receive_data(
+        &mut self,
+        now: u32,
+        pdu: &[u8],
+        body: usize,
+        deliver: &mut dyn FnMut(&[u8]),
+    ) -> Received {
+        let (Some(len), Some(index)) = (
+            read_u16(pdu, HEADER_LEN).map(usize::from),
+            read_u32(pdu, HEADER_LEN.saturating_add(2)),
+        ) else {
+            return Received::Discarded(Fault::Malformed);
+        };
+        if index != self.data_rx {
+            self.discarded = self.discarded.saturating_add(1);
+            if before(self.data_rx, index) {
+                self.gap(now);
+            }
+            return Received::Discarded(Fault::Duplicate);
+        }
+        let start = HEADER_LEN.saturating_add(DATA_HEADER_LEN);
+        match start
+            .checked_add(len)
+            .filter(|end| *end <= body)
+            .and_then(|end| pdu.get(start..end))
+        {
+            Some(data) => {
+                self.data_rx = self.data_rx.wrapping_add(1);
+                self.state = State::Up;
+                deliver(data);
+                Received::Delivered
+            }
+            None => Received::Discarded(Fault::Malformed),
+        }
+    }
+
+    /// Lücke erkannt: Wiederholung anfordern (danach alle `t_h / 3`, solange sie besteht).
+    fn gap(&mut self, now: u32) {
+        if self.state == State::RetransmissionRequested {
+            self.repeat_retransmission_request(now);
+        } else {
+            self.state = State::RetransmissionRequested;
+            self.retr_requested_at = now;
+            self.emit(now, Kind::RetrReq, &[]);
+        }
+    }
+
+    /// Wiederholt eine Wiederholanforderung, die verloren gegangen sein kann (alle `t_h / 3`,
+    /// damit eine verlorene Anforderung die Verbindung nicht bis an `t_max` bringt).
     fn repeat_retransmission_request(&mut self, now: u32) {
         if self.state == State::RetransmissionRequested
-            && now.wrapping_sub(self.retr_requested_at) >= self.cfg.t_h_ms
+            && now.wrapping_sub(self.retr_requested_at) >= self.cfg.t_h_ms / 3
         {
             self.retr_requested_at = now;
             self.emit(now, Kind::RetrReq, &[]);
         }
     }
 
-    /// Entfernt quittierte Nachrichten aus dem Wiederholpuffer.
-    fn acknowledge(&mut self, cs: u32) {
-        self.cs_r = cs;
+    /// Datenindex einer gespeicherten Datennachricht.
+    fn index_of(pdu: &Pdu) -> u32 {
+        read_u32(pdu.as_slice(), HEADER_LEN.saturating_add(2)).unwrap_or(0)
+    }
+
+    /// Entfernt quittierte Nachrichten (Index vor `ca`) aus dem Wiederholpuffer.
+    fn acknowledge(&mut self, ca: u32) {
+        if before(self.data_acked, ca) {
+            self.data_acked = ca;
+        }
         while let Some(first) = self.sent.get(0) {
-            let sn = read_u32(first.as_slice(), 12).unwrap_or(0);
-            if cs.wrapping_sub(sn) > u32::MAX / 2 {
+            if !before(Self::index_of(first), self.data_acked) {
                 break;
             }
             self.sent.pop();
         }
     }
 
-    /// Beantwortet eine Wiederholanforderung: Wiederholantwort, dann alle unquittierten
-    /// Nachrichten mit neuen Nummern. Der Wiederholpuffer enthält genau die Nachrichten nach
-    /// der letzten Quittung der Gegenstelle (auch nach einer früheren, verlorenen
-    /// Wiederholung, deren Kopien neue Nummern tragen); `send` nimmt bei vollem Puffer
-    /// nichts mehr an, es geht also nichts verloren.
-    fn retransmit(&mut self, now: u32, cs: u32) -> bool {
-        if let Some(first) = self.sent.get(0) {
-            // Bereits quittierte Nachrichten dürfen nicht im Puffer stehen.
-            let sn = read_u32(first.as_slice(), 12).unwrap_or(0);
-            if cs.wrapping_sub(sn) < u32::MAX / 2 && cs != sn.wrapping_sub(1) {
-                return false;
-            }
+    /// Beantwortet eine Wiederholanforderung: alle unquittierten Datennachrichten mit ihrem
+    /// ursprünglichen Index und neuen Sequenznummern. `false`, wenn die Gegenstelle eine
+    /// Nachricht vermisst, die nicht mehr im Puffer steht (kann nur bei Fehlern der
+    /// Gegenstelle auftreten: quittiert wird erst nach Empfang).
+    fn retransmit(&mut self, now: u32, ca: u32) -> bool {
+        let first = self.sent.get(0).map_or(self.data_tx, Self::index_of);
+        if before(ca, first) {
+            return false;
         }
-        self.emit(now, Kind::RetrResp, &[]);
-        let mut pending: [Option<Pdu>; SEND_BUFFER] = [None; SEND_BUFFER];
-        let mut n = 0usize;
-        while let Some(p) = self.sent.pop() {
-            if let Some(slot) = pending.get_mut(n) {
-                *slot = Some(p);
-                n = n.saturating_add(1);
-            }
+        // Auf wiederholte Anforderungen nicht öfter als alle t_h / 3 antworten.
+        if let Some((at, acked)) = self.retransmitted
+            && acked == ca
+            && now.wrapping_sub(at) < self.cfg.t_h_ms / 3
+        {
+            return true;
         }
-        for p in pending.into_iter().flatten() {
+        self.retransmitted = Some((now, ca));
+        for i in 0..self.sent.len {
+            let Some(p) = self.sent.get(i).copied() else {
+                break;
+            };
             let payload = p
                 .as_slice()
                 .get(HEADER_LEN..p.len.saturating_sub(SAFETY_CODE_LEN))
                 .unwrap_or(&[]);
-            let mut copy = [0u8; MAX_PAYLOAD + 2];
+            let mut copy = [0u8; MAX_PAYLOAD + DATA_HEADER_LEN];
             let len = payload.len().min(copy.len());
             if let (Some(dst), Some(src)) = (copy.get_mut(..len), payload.get(..len)) {
                 dst.copy_from_slice(src);
             }
-            if let Some(again) = self.emit(now, Kind::RetrData, copy.get(..len).unwrap_or(&[])) {
-                self.sent.push(&again);
-            }
+            self.emit(now, Kind::RetrData, copy.get(..len).unwrap_or(&[]));
         }
         true
     }

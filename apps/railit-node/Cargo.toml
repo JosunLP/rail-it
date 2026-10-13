@@ -1,0 +1,31 @@
+[package]
+name = "railit-node"
+description = "Knoten des sicheren Rechners von rail-it auf einem Server: Kern in redundanten Kanälen mit Voter und Watchdog, eigener Takt, RaSTA über UDP zu railitd."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "railit-node"
+path = "src/main.rs"
+
+[dependencies]
+railit-runtime = { workspace = true }
+railit-rules = { workspace = true }
+railit-rasta = { workspace = true }
+clap = { workspace = true }
+
+
+[dev-dependencies]
+railit-import = { workspace = true }
+railit-planning = { workspace = true }
+railit-kernel = { workspace = true, features = ["alloc"] }
+railit-types = { workspace = true }
+railit-sim = { workspace = true }
+
+[lints]
+workspace = true

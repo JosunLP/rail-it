@@ -467,3 +467,35 @@ fn unsupervised_signal_falls_to_stop() {
     h.run(5);
     assert_ne!(h.phase("A-N1"), RoutePhase::Proceed);
 }
+
+/// Zustandsübertragung an einen Spiegel: Alle Teile in einen frischen Speicher eingesetzt
+/// ergeben denselben Zustand; ein Teil außerhalb des Speichers wird abgewiesen.
+#[test]
+fn state_transfer_reproduces_the_state() {
+    let mut h = Harness::new();
+    h.step(&[]);
+    assert!(accepted(&h.set_route("A-N1")));
+    h.step(&[]);
+    h.step(&[]);
+    assert_eq!(h.phase("A-N1"), RoutePhase::Proceed);
+
+    let plan = *h.kernel.plan();
+    let mut mirror = OwnedState::new(&plan);
+    assert_ne!(mirror, h.state);
+    let source = h.state.view();
+    let count = source.part_count();
+    assert!(source.part(count).is_none());
+    {
+        let mut target = mirror.view();
+        for i in 0..count {
+            target.apply(source.part(i).unwrap()).unwrap();
+        }
+    }
+    assert_eq!(mirror, h.state);
+
+    let mut target = mirror.view();
+    assert_eq!(
+        target.apply(StatePart::Point(9999, PointState::default())),
+        Err(SafeStateReason::StateMismatch)
+    );
+}

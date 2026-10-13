@@ -60,7 +60,7 @@ pub use io::{
 pub use kernel::Interlocking;
 pub use state::{
     AUX_SLOTS, AuxSlot, BorderState, Buffers, KernelState, LxState, Meta, PointState, RouteState,
-    SignalState, TvdState,
+    SignalState, StatePart, TvdState,
 };
 #[cfg(feature = "alloc")]
 pub use state::{OwnedState, VecOutputs};

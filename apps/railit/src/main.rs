@@ -377,6 +377,13 @@ enum ScenarioCommand {
         /// Szenarien (TOML).
         #[arg(required = true)]
         files: Vec<PathBuf>,
+        /// Jeden Stellbereich auf einem Knoten des sicheren Rechners rechnen lassen (im
+        /// Gleichschritt, über RaSTA mit Spiegel und Zustandsabgleich).
+        #[arg(long)]
+        node: bool,
+        /// Kanäle je Stellbereich für Szenarien ohne eigene Angabe (1, 2 oder 3).
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=3))]
+        channels: Option<u8>,
     },
 }
 
@@ -607,7 +614,11 @@ fn main() -> ExitCode {
             plan::verify(&plan, key.as_deref(), network.as_deref(), output)
         }
         Command::Plan(PlanCommand::Info { plan }) => plan::info(&plan, output),
-        Command::Scenario(ScenarioCommand::Run { files }) => plan::run_scenarios(&files, output),
+        Command::Scenario(ScenarioCommand::Run {
+            files,
+            node,
+            channels,
+        }) => plan::run_scenarios(&files, node, channels, output),
         Command::Journal(JournalCommand::Verify { file }) => journal::verify(&file, output),
         Command::Journal(JournalCommand::Replay { file, plan }) => {
             journal::replay(&file, &plan, output)

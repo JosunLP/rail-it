@@ -63,6 +63,11 @@
 //! `safety_trip` (eine Sicherheitsschicht ist abgeschaltet), `safety_event` (Liste:
 //! `channel_excluded`, `tripped`), `active_channels` (mitwählende Kanäle des ersten bzw.
 //! einzigen Bereichs, z. B. `[true, true, false]`).
+//!
+//! Sicherer Rechner: `[scenario] node = true` lässt jeden Stellbereich auf einem Knoten
+//! (`railit-embedded`) im Gleichschritt rechnen, angebunden über RaSTA mit Spiegel und
+//! Zustandsabgleich (siehe [`crate::remote`]). Bedingung `node_synced = true`: Die Spiegel
+//! aller Bereiche stimmen mit ihren Knoten überein.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -121,7 +126,22 @@ struct Header {
     ops: bool,
     #[serde(default = "default_channels")]
     channels: usize,
+    #[serde(default)]
+    node: bool,
 }
+
+/// Vorgaben für Szenarien ohne eigene Angabe (z. B. um alle Szenarien auch mit 2-von-3 oder
+/// über Knoten laufen zu lassen).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct RunOptions {
+    /// Redundanz.
+    pub channels: Option<Redundancy>,
+    /// Alle Bereiche auf Knoten im Gleichschritt.
+    pub node: bool,
+}
+
+/// Höchstzahl der Zyklen für den Anlauf der Knoten.
+const NODE_STARTUP_CYCLES: u32 = 200;
 
 const fn default_channels() -> usize {
     1
@@ -495,10 +515,24 @@ pub fn run_file(path: &Path) -> Result<Outcome, ScenarioError> {
 /// # Errors
 /// Wie [`run_file`].
 pub fn run_file_with(path: &Path, channels: Option<Redundancy>) -> Result<Outcome, ScenarioError> {
+    run_file_opts(
+        path,
+        RunOptions {
+            channels,
+            node: false,
+        },
+    )
+}
+
+/// Führt die Szenariodatei `path` mit Vorgaben aus.
+///
+/// # Errors
+/// Wie [`run_file`].
+pub fn run_file_opts(path: &Path, opts: RunOptions) -> Result<Outcome, ScenarioError> {
     let source = std::fs::read_to_string(path)
         .map_err(|e| ScenarioError::Io(format!("{}: {e}", path.display())))?;
     let base = path.parent().unwrap_or_else(|| Path::new("."));
-    run_str_with(&source, base, channels)
+    run_str_with(&source, base, opts)
 }
 
 /// Führt ein Szenario aus; relative Pfade beziehen sich auf `base`.
@@ -506,18 +540,15 @@ pub fn run_file_with(path: &Path, channels: Option<Redundancy>) -> Result<Outcom
 /// # Errors
 /// Wie [`run_file`].
 pub fn run_str(source: &str, base: &Path) -> Result<Outcome, ScenarioError> {
-    run_str_with(source, base, None)
+    run_str_with(source, base, RunOptions::default())
 }
 
-fn run_str_with(
-    source: &str,
-    base: &Path,
-    channels: Option<Redundancy>,
-) -> Result<Outcome, ScenarioError> {
+fn run_str_with(source: &str, base: &Path, opts: RunOptions) -> Result<Outcome, ScenarioError> {
     let file: ScenarioFile =
         toml::from_str(source).map_err(|e| ScenarioError::Syntax(e.to_string()))?;
     let mut header = file.scenario;
-    if let Some(r) = channels
+    header.node |= opts.node;
+    if let Some(r) = opts.channels
         && header.channels == default_channels()
     {
         header.channels = r.channels();
@@ -570,6 +601,9 @@ fn run_with<F: SimulatedField>(
         ..SafetyConfig::default()
     })
     .map_err(ScenarioError::Planning)?;
+    if header.node {
+        rt.use_lockstep_nodes().map_err(ScenarioError::Planning)?;
+    }
     for (name, pos) in &header.points {
         let Some(ElementRef::Point(id)) = rt.field().simulator().topology().lookup(name) else {
             return Err(ScenarioError::Syntax(format!("unbekannte Weiche „{name}“")));
@@ -610,6 +644,19 @@ fn run_with<F: SimulatedField>(
     };
     // Erster Zyklus: Grundstellung (alle Signale Halt, Meldungen übernommen).
     ctx.cycle();
+    if header.node {
+        // Anlauf: RaSTA-Verbindungen und Zustandsabgleich aller Knoten.
+        let mut cycles = 0;
+        while !ctx.rt.nodes_synced() {
+            if cycles >= NODE_STARTUP_CYCLES {
+                return Err(ScenarioError::Planning(
+                    "Knoten: Anlauf ohne Zustandsabgleich".into(),
+                ));
+            }
+            ctx.cycle();
+            cycles += 1;
+        }
+    }
 
     let mut outcomes = Vec::new();
     for (i, step) in steps.iter().enumerate() {

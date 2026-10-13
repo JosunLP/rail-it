@@ -563,8 +563,43 @@ Plan-Image wird ohne Kopie gelesen. Ein- und Ausgaben laufen als Binärtelegramm
 in RaSTA-Nutzdaten: Eingaben und Handlungen an der Sicherheitsschicht vom Host, je Zyklus
 vollständige Ausgaben (`Begin` … `End` mit Anzahlen) vom Knoten. Bricht die Verbindung ab,
 rechnet der Knoten weiter und nimmt mangels Meldungen die Fahrt zurück (REQ-EMB-001 … 004).
-Die Gegenstelle `NodeClient` ist Teil des Crates; die Einbindung in `railitd` folgt mit der
-Wahl der Hardware (Abschnitt 19).
+Die Gegenstelle `NodeClient` ist Teil des Crates.
+
+**Stand Phase 7 – Einbindung in den Dienst.** `railitd --node ADRESSE` (bzw. `BEREICH=ADRESSE`)
+lässt den Kern eines Stellbereichs auf einem Knoten rechnen; `railit-node` ist derselbe Knoten
+als Serverprogramm mit eigenem Takt und RaSTA über UDP (Prüfstand, Labor), `--node lockstep`
+rechnet Knoten im Dienst im Gleichschritt (Szenarien, Ausbildung).
+
+```text
+ railitd                                               Knoten (railit-node / Cortex-R)
+ ┌───────────────────────────────┐   Eingaben, Sync   ┌──────────────────────────────┐
+ │ Feld → Eingaben je Bereich ───┼──── RaSTA ───────▶ │ Kanäle A/B(/C) + Voter        │
+ │ Befehle des Knotens → Feld  ◀─┼──── RaSTA ──────── │ Watchdog, eigener Takt        │
+ │ Spiegel (SIL 0): rechnet nach,│  je Zyklus: Befehle,│ Abgleichspeicher: Zustand in  │
+ │ prüft Digest, Abgleich, Stell-│  Ereignisse, Anzahl │ Teilen über mehrere Zyklen    │
+ │ bild; Anzeige, Betrieb, RBC   │  Eingaben, Digest   │                               │
+ └───────────────────────────────┘                     └──────────────────────────────┘
+```
+
+- **Der Knoten ist maßgeblich.** Der Dienst wendet nur seine Stellbefehle an.
+- **Spiegel:** Anzeige, Betriebsführung und RBC brauchen den Kernzustand. Der Dienst rechnet
+  jeden Zyklus des Knotens mit genau den Eingaben nach, die der Knoten verwendet hat (jedes
+  `End` nennt ihre Anzahl), und vergleicht Befehle, Ereignisse und den Zustands-Digest.
+- **Zustandsabgleich:** Nach dem Verbindungsaufbau und bei jeder Abweichung kopiert der
+  Knoten seinen Zustand am Ende eines Zyklus in einen Abgleichspeicher und überträgt ihn in
+  Teilen (`SyncBegin`, `Sync`), während er weiterrechnet. Der Dienst setzt ihn ein, wenn Plan
+  und Digest stimmen, und rechnet die Zyklen seither nach.
+- **Stellbild:** Der Kern sendet Stellbefehle nur bei Änderung. Zyklen ohne Verbindung
+  erreichen das Feld nicht; nach jedem Abgleich gibt der Dienst daher das Stellbild des
+  Kerns aus (Signale, Ersatzsignale, Bahnübergänge – keine Weichen, damit nie eine Weiche
+  unter einem Zug umläuft).
+- **Rückfallebene:** Liefert der Knoten keine Zyklen mehr, stellt der Dienst alle Signale
+  des Bereichs auf Halt; Bedienplätze zeigen den Bereich als gestört.
+
+Der Ausbau deckte eine Schwäche von RaSTA auf: Ein verlorenes Telegramm konnte die
+Verbindung abbauen, und gekreuzte Wiederholanforderungen blockierten sich. Die Wiederholung
+arbeitet jetzt mit einem Datenindex, ist idempotent und hält 20 % Verlust ohne Abbau aus
+(REQ-COM-007); `t_max` und `t_h` folgen den Vorgaben der Norm.
 
 ---
 
@@ -789,6 +824,7 @@ Daraus folgen diese Regeln:
 | **4 – Europa** | ETCS Level 2 (MA-Erzeugung, RBC-Funktion), EULYNX SCI-P/-LS/-TDS/-LX über RaSTA zu simulierten Objektsteuerungen, Import und Export von railML 3 | Mischbetrieb ESTW/ETCS in der Simulation (Szenarien 16 bis 19); Feldanbindung bereit für Prüfstände | ✔ (PlanPro-Import und SCI-ILS offen) |
 | **5 – Sicherheit & Embedded** | Redundante Kanäle, Voter, Watchdog, Cortex-R-Runtime, Kani-Nachweise, Fuzzing, Safety Case, Rückverfolgbarkeit | Kandidat für das Labor mit [Sicherheitsnachweis](safety/safety-case.md) (Szenarien 20, 21) | ✔ (Hardware, Einbindung des sicheren Rechners in `railitd` offen) |
 | **6 – UI** | Spurplan-UI als API-Client mit sicherer Anzeige- und Bestätigungskette | Bedienplatz unter `/ui/` mit automatisch berechnetem Spurplan, Anzeigeüberwachung und Prüfcode (Abschnitt 14.3) | ✔ (ergonomische Prüfung mit Bedienern offen) |
+| **7 – Betriebsreife** | Sicherer Rechner im Dienst (Knoten, Spiegel, Zustandsabgleich), robuste RaSTA-Wiederholung, signiertes Journal, Bedienplatz für Netz und Betrieb, Leistungsmessung | Verteilte Einsatzvariante lauffähig (`railit-node`, `railitd --node`), alle Szenarien über Knoten | in Arbeit |
 
 **Umgesetzte Crates (Stand Phase 6):** `railit-types`, `railit-topology`, `railit-plan`,
 `railit-planning`, `railit-rules`, `railit-kernel`, `railit-safety` (Kanäle, Voter, Watchdog),

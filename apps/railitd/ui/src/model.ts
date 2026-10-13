@@ -10,11 +10,26 @@ export const STALE_AFTER_MS = 2000;
 export type DisplayHealth = 'ok' | 'stale' | 'safe_state';
 
 /**
+ * Stellbereich, dessen Knoten des sicheren Rechners getrennt ist oder dessen Spiegel noch
+ * nicht abgeglichen ist: Sein Zustandsbild ist nicht verlässlich.
+ */
+export function nodeProblem(snapshot: Snapshot): string | undefined {
+  for (const a of snapshot.areas) {
+    const n = a.safety.node;
+    if (!n) continue;
+    if (!n.available) return `${a.name}: Knoten des sicheren Rechners getrennt`;
+    if (!n.synced) return `${a.name}: Spiegel wird mit dem Knoten abgeglichen`;
+  }
+  return undefined;
+}
+
+/**
  * Ist die Anzeige aktuell? `lastAdvance` ist der Zeitpunkt (Uhr des Bedienplatzes), zu dem
- * zuletzt ein Zustandsbild mit fortgeschrittener Zeit ankam.
+ * zuletzt ein Zustandsbild mit fortgeschrittener Zeit ankam. Ein getrennter oder nicht
+ * abgeglichener Knoten macht die Anzeige ebenfalls unzuverlässig.
  */
 export function health(snapshot: Snapshot | undefined, lastAdvance: number, now: number): DisplayHealth {
-  if (!snapshot || now - lastAdvance > STALE_AFTER_MS) {
+  if (!snapshot || now - lastAdvance > STALE_AFTER_MS || nodeProblem(snapshot)) {
     return 'stale';
   }
   return snapshot.safe_state ? 'safe_state' : 'ok';

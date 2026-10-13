@@ -12,6 +12,10 @@
 //! `--allow-unsigned` zulässig. Mit `--journal` schreibt der Dienst ein Betriebsjournal,
 //! das sich mit `railit journal verify|replay` prüfen und abspielen lässt.
 //!
+//! Sicherer Rechner: Mit `--node` rechnet der Kern eines Stellbereichs auf einem Knoten
+//! (`railit-node`, RaSTA über UDP); der Dienst führt einen geprüften Spiegel für Anzeige und
+//! Betrieb (siehe `railit_runtime::remote`).
+//!
 //! Sicherheit (siehe [`auth`], [`tls`]): `--users` mit Rollen und Auditprotokoll
 //! (`--audit`), TLS mit `--tls-cert`/`--tls-key`, gegenseitige Anmeldung mit
 //! `--tls-client-ca`. Ohne Anmeldung lauscht der Dienst nur auf der Loopback-Adresse.
@@ -124,6 +128,11 @@ struct Args {
     /// CA für Client-Zertifikate: verlangt mTLS; der CN identifiziert den Benutzer.
     #[arg(long, requires_all = ["tls_cert", "users"])]
     tls_client_ca: Option<PathBuf>,
+    /// Stellbereich auf einem Knoten des sicheren Rechners (`railit-node`): `ADRESSE` bei
+    /// einem Stellbereich, sonst `BEREICH=ADRESSE` je Bereich; `lockstep` lässt alle Bereiche
+    /// auf Knoten im Dienst rechnen (Gleichschritt, für Prüfung und Ausbildung).
+    #[arg(long = "node", value_name = "[BEREICH=]ADRESSE|lockstep")]
+    nodes: Vec<String>,
 }
 
 /// Anbindung der Feldebene.
@@ -230,6 +239,7 @@ fn load(args: &Args) -> Result<(Topology, Runtime<DynField>), String> {
     if args.channels > 1 {
         tracing::info!(channels = args.channels, "redundante Kanäle mit Voter");
     }
+    attach_nodes(&mut rt, args)?;
     let timetable = match &args.timetable {
         Some(path) => {
             let source =
@@ -244,6 +254,54 @@ fn load(args: &Args) -> Result<(Topology, Runtime<DynField>), String> {
     };
     rt.enable_ops(&net, cfg, timetable)?;
     Ok((net, rt))
+}
+
+/// Bindet Stellbereiche an Knoten des sicheren Rechners an (`--node`).
+fn attach_nodes(rt: &mut Runtime<DynField>, args: &Args) -> Result<(), String> {
+    if args.nodes.is_empty() {
+        return Ok(());
+    }
+    if args.journal.is_some() {
+        return Err("--journal und --node: das Journal gehört auf den Knoten".into());
+    }
+    if args.nodes.iter().any(|n| n == "lockstep") {
+        if args.nodes.len() > 1 {
+            return Err("--node lockstep gilt für alle Stellbereiche".into());
+        }
+        rt.use_lockstep_nodes()?;
+        tracing::info!("Stellbereiche auf Knoten im Gleichschritt");
+        return Ok(());
+    }
+    if args.speed != 1 {
+        return Err("Knoten rechnen in Echtzeit: --node nur mit --speed 1".into());
+    }
+    for spec in &args.nodes {
+        let (area, addr) = match spec.split_once('=') {
+            Some((name, addr)) => (
+                rt.find_area(name)
+                    .ok_or_else(|| format!("--node {spec}: Stellbereich „{name}“ unbekannt"))?,
+                addr,
+            ),
+            None if rt.area_count() == 1 => (0, spec.as_str()),
+            None => {
+                return Err(format!(
+                    "--node {spec}: bei mehreren Stellbereichen BEREICH=ADRESSE angeben"
+                ));
+            }
+        };
+        let addr: SocketAddr = addr
+            .parse()
+            .map_err(|e| format!("--node {spec}: Adresse: {e}"))?;
+        let link =
+            railit_runtime::UdpLink::connect(addr).map_err(|e| format!("--node {spec}: {e}"))?;
+        rt.attach_node(area, Box::new(link))?;
+        tracing::info!(
+            area = rt.area_name(area).unwrap_or("?"),
+            %addr,
+            "Stellbereich auf Knoten des sicheren Rechners"
+        );
+    }
+    Ok(())
 }
 
 /// Startet die Journale: eine Datei bei einem Stellbereich, sonst ein Verzeichnis mit

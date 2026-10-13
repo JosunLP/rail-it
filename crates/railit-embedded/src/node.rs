@@ -5,7 +5,7 @@ use railit_rasta::{Connection, Received};
 use railit_rules::RuleSet;
 use railit_safety::{
     ChannelOutputs, Channels, ConfigError, FixedOutputs, MAX_CHANNELS, SafetyEvent, Status, Trip,
-    Verdict, Watchdog,
+    Verdict, Watchdog, state_digest,
 };
 use railit_types::{Tick, TvdId};
 
@@ -16,6 +16,35 @@ const FILLER: Input = Input::Tvd {
     tvd: TvdId::new(0),
     occupancy: Occupancy::Disturbed,
 };
+
+/// Teile des Zustandsabgleichs je Zyklus (begrenzt die Sendelast).
+pub const SYNC_PARTS_PER_TICK: usize = 24;
+
+/// Laufender Zustandsabgleich.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct SyncCursor {
+    /// `SyncBegin` steht noch aus: Zyklus und Digest.
+    begin: Option<(u64, [u8; 8])>,
+    next: usize,
+    total: usize,
+}
+
+/// Zähler und Digest für `End`.
+#[derive(Copy, Clone, Debug)]
+struct Counts {
+    inputs: u16,
+    dropped: u16,
+    digest: [u8; 8],
+}
+
+/// Erste 8 Bytes eines Digests.
+fn short(digest: &[u8]) -> [u8; 8] {
+    let mut out = [0u8; 8];
+    for (o, d) in out.iter_mut().zip(digest) {
+        *o = *d;
+    }
+    out
+}
 
 /// Parameter eines Knotens.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -73,12 +102,15 @@ pub struct Node<'p, 's, R, const I: usize, const C: usize, const E: usize> {
     out: FixedOutputs<C, E>,
     inputs: [Input; I],
     input_len: usize,
-    inputs_lost: bool,
+    dropped: u16,
     reset: bool,
     reintegrate: Option<u8>,
     link: Connection,
     watchdog: Watchdog,
     stats: NodeStats,
+    sync: Option<KernelState<'s>>,
+    sync_requested: bool,
+    sync_cursor: Option<SyncCursor>,
 }
 
 impl<'p, 's, R: RuleSet, const I: usize, const C: usize, const E: usize> Node<'p, 's, R, I, C, E> {
@@ -99,13 +131,25 @@ impl<'p, 's, R: RuleSet, const I: usize, const C: usize, const E: usize> Node<'p
             out: FixedOutputs::new(),
             inputs: [FILLER; I],
             input_len: 0,
-            inputs_lost: false,
+            dropped: 0,
             reset: false,
             reintegrate: None,
             link: Connection::new(cfg.rasta),
             watchdog: Watchdog::new(cfg.deadline_us, cfg.gap_limit_us),
             stats: NodeStats::default(),
+            sync: None,
+            sync_requested: false,
+            sync_cursor: None,
         })
+    }
+
+    /// Abgleichspeicher (gleiche Größe wie die Kanäle) für [`HostMsg::Sync`] (REQ-EMB-006): Der Zustand wird
+    /// am Ende eines Zyklus hineinkopiert und von dort in Teilen übertragen, während der Kern
+    /// weiterrechnet. Ohne Abgleichspeicher bleibt `Sync` ohne Antwort.
+    #[must_use]
+    pub fn with_sync_buffer(mut self, buffer: KernelState<'s>) -> Self {
+        self.sync = Some(buffer);
+        self
     }
 
     /// Zustand der Sicherheitsschicht.
@@ -134,11 +178,13 @@ impl<'p, 's, R: RuleSet, const I: usize, const C: usize, const E: usize> Node<'p
             channels,
             inputs,
             input_len,
-            inputs_lost,
+            dropped,
             reset,
             reintegrate,
             link,
             stats,
+            sync_requested,
+            sync_cursor,
             ..
         } = self;
         let mut malformed = false;
@@ -152,7 +198,7 @@ impl<'p, 's, R: RuleSet, const I: usize, const C: usize, const E: usize> Node<'p
                         *slot = input;
                         *input_len = input_len.saturating_add(1);
                     } else {
-                        *inputs_lost = true;
+                        *dropped = dropped.saturating_add(1);
                     }
                 }
                 HostMsg::Reset => *reset = true,
@@ -160,6 +206,7 @@ impl<'p, 's, R: RuleSet, const I: usize, const C: usize, const E: usize> Node<'p
                 HostMsg::InjectFault(channel, fault) => {
                     channels.inject(usize::from(channel), fault);
                 }
+                HostMsg::Sync => *sync_requested = true,
             });
             malformed |= decoded.is_err();
         });
@@ -169,6 +216,8 @@ impl<'p, 's, R: RuleSet, const I: usize, const C: usize, const E: usize> Node<'p
             }
             Received::Disconnected(_) => {
                 stats.link_losses = stats.link_losses.saturating_add(1);
+                *sync_requested = false;
+                *sync_cursor = None;
             }
             Received::Nothing | Received::Delivered => {}
         }
@@ -187,6 +236,8 @@ impl<'p, 's, R: RuleSet, const I: usize, const C: usize, const E: usize> Node<'p
         let rasta_ms = u32::try_from(now_ms & u64::from(u32::MAX)).unwrap_or(0);
         if self.link.tick(rasta_ms).is_some() {
             self.stats.link_losses = self.stats.link_losses.saturating_add(1);
+            self.sync_requested = false;
+            self.sync_cursor = None;
         }
         if core::mem::take(&mut self.reset) {
             self.channels.reset();
@@ -197,8 +248,8 @@ impl<'p, 's, R: RuleSet, const I: usize, const C: usize, const E: usize> Node<'p
             let _ = self.channels.reintegrate(usize::from(channel));
         }
 
-        let inputs_lost = core::mem::take(&mut self.inputs_lost);
-        if inputs_lost {
+        let dropped = core::mem::take(&mut self.dropped);
+        if dropped > 0 {
             self.stats.input_overflows = self.stats.input_overflows.saturating_add(1);
         }
         let len = core::mem::take(&mut self.input_len);
@@ -219,14 +270,35 @@ impl<'p, 's, R: RuleSet, const I: usize, const C: usize, const E: usize> Node<'p
             watchdog_trip = Some(trip);
         }
 
+        let digest = self
+            .channels
+            .primary()
+            .map_or([0; 8], |s| short(&state_digest(s).0));
+        if core::mem::take(&mut self.sync_requested)
+            && let (Some(buffer), Some(primary)) = (self.sync.as_mut(), self.channels.primary())
+            && buffer.copy_from(primary).is_ok()
+        {
+            self.sync_cursor = Some(SyncCursor {
+                begin: Some((self.stats.cycles, digest)),
+                next: 0,
+                total: buffer.part_count(),
+            });
+        }
+
+        let counts = Counts {
+            inputs: u16::try_from(len).unwrap_or(u16::MAX),
+            dropped,
+            digest,
+        };
         let sent = self.link.is_up()
             && self
-                .send_outputs(rasta_ms, now_ms, &verdict, watchdog_trip, inputs_lost)
+                .send_outputs(rasta_ms, now_ms, &verdict, watchdog_trip, counts)
                 .is_ok();
         if self.link.is_up() && !sent {
             // Sendepuffer voll: Verbindung abbauen; der Host erkennt den Ausfall.
             self.link.close(rasta_ms);
             self.stats.link_losses = self.stats.link_losses.saturating_add(1);
+            self.sync_cursor = None;
         }
         TickReport { verdict, sent }
     }
@@ -237,13 +309,15 @@ impl<'p, 's, R: RuleSet, const I: usize, const C: usize, const E: usize> Node<'p
         now_ms: u64,
         verdict: &Verdict,
         watchdog_trip: Option<Trip>,
-        inputs_lost: bool,
+        counts: Counts,
     ) -> Result<(), WireError> {
         let Self {
             channels,
             out,
             link,
             stats,
+            sync,
+            sync_cursor,
             ..
         } = self;
         let mut packer = Packer::new();
@@ -279,10 +353,40 @@ impl<'p, 's, R: RuleSet, const I: usize, const C: usize, const E: usize> Node<'p
                 kernel: verdict.kernel.err(),
                 trip: verdict.trip,
                 active: status.active,
-                inputs_lost,
+                channels: u8::try_from(status.redundancy.channels()).unwrap_or(u8::MAX),
+                inputs_lost: counts.dropped > 0,
+                inputs: counts.inputs,
+                dropped: counts.dropped,
+                digest: counts.digest,
             }),
             &mut flush,
         )?;
+        if let (Some(cursor), Some(buffer)) = (sync_cursor.as_mut(), sync.as_ref()) {
+            if let Some((cycle, digest)) = cursor.begin.take() {
+                packer.push(
+                    &NodeMsg::SyncBegin {
+                        cycle,
+                        parts: u32::try_from(cursor.total).unwrap_or(u32::MAX),
+                        digest,
+                        plan: short(&channels.kernel().plan().digest()),
+                    },
+                    &mut flush,
+                )?;
+            }
+            let end = cursor
+                .next
+                .saturating_add(SYNC_PARTS_PER_TICK)
+                .min(cursor.total);
+            while cursor.next < end {
+                if let Some(part) = buffer.part(cursor.next) {
+                    packer.push(&NodeMsg::Sync(part), &mut flush)?;
+                }
+                cursor.next = cursor.next.saturating_add(1);
+            }
+            if cursor.next >= cursor.total {
+                *sync_cursor = None;
+            }
+        }
         packer.flush(&mut flush)
     }
 

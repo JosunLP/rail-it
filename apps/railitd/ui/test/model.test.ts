@@ -6,6 +6,7 @@ import {
   clock,
   findRoute,
   health,
+  nodeProblem,
   operable,
   pointPosition,
   reasonText,
@@ -61,6 +62,35 @@ describe('Anzeigeüberwachung (REQ-UI-002)', () => {
     expect(health(s, 10_000, 10_000)).toBe('ok');
     expect(health(s, 10_000, 10_000 + STALE_AFTER_MS)).toBe('ok');
     expect(health(s, 10_000, 10_001 + STALE_AFTER_MS)).toBe('stale');
+  });
+
+  test('getrennter oder nicht abgeglichener Knoten: Anzeige gestört', () => {
+    const node = {
+      link: 'udp://127.0.0.1:7979',
+      up: true,
+      available: true,
+      synced: true,
+      cycles: 10,
+      syncs: 1,
+      divergences: 0,
+      link_losses: 0,
+      protocol_errors: 0,
+      last_problem: null,
+    };
+    const area = (n: typeof node) => ({
+      name: 'Adorf',
+      safe_state: null,
+      borders: [],
+      safety: { redundancy: 'two_out_of_two', channels: [], trip: null, node: n },
+    });
+    expect(health(snapshot({ areas: [area(node)] }), 0, 0)).toBe('ok');
+    expect(nodeProblem(snapshot({ areas: [area(node)] }))).toBeUndefined();
+    const down = snapshot({ areas: [area({ ...node, available: false })] });
+    expect(health(down, 0, 0)).toBe('stale');
+    expect(nodeProblem(down)).toContain('getrennt');
+    const syncing = snapshot({ areas: [area({ ...node, synced: false })] });
+    expect(health(syncing, 0, 0)).toBe('stale');
+    expect(nodeProblem(syncing)).toContain('abgeglichen');
   });
 
   test('sicherer Zustand wird angezeigt, Bedienung bleibt möglich (der Kern lehnt ab)', () => {

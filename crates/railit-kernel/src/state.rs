@@ -29,6 +29,7 @@ pub const AUX_SLOTS: usize = 8;
 
 /// Zustand einer Weiche.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PointState {
     pub(crate) report: Option<PointReport>,
     pub(crate) reported_at: Tick,
@@ -77,6 +78,7 @@ impl PointState {
 
 /// Zustand eines Gleisfreimeldeabschnitts.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TvdState {
     pub(crate) occupancy: Option<Occupancy>,
     pub(crate) reported_at: Tick,
@@ -117,6 +119,7 @@ impl TvdState {
 
 /// Zustand eines Signals.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SignalState {
     pub(crate) report: Option<SignalReport>,
     pub(crate) reported_at: Tick,
@@ -158,6 +161,7 @@ impl SignalState {
 
 /// Zustand eines Bahnübergangs.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LxState {
     pub(crate) report: Option<LxReport>,
     pub(crate) reported_at: Tick,
@@ -191,6 +195,7 @@ impl LxState {
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 // Die Merkmale sind voneinander unabhängige Protokollzustände.
 #[allow(clippy::struct_excessive_bools)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BorderState {
     /// Dieser Kern hält die Erlaubnis.
     pub(crate) holding: bool,
@@ -251,6 +256,7 @@ impl BorderState {
 
 /// Zustand einer Fahrstraße.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RouteState {
     pub(crate) phase: RoutePhase,
     pub(crate) since: Tick,
@@ -284,6 +290,7 @@ impl RouteState {
 
 /// Offene, noch nicht bestätigte Hilfshandlung.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AuxSlot {
     pub(crate) id: AuxId,
     pub(crate) op: AuxOperation,
@@ -315,6 +322,7 @@ impl AuxSlot {
 
 /// Globaler Zustand des Kerns.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Meta {
     pub(crate) cycle: u64,
     pub(crate) safe_state: Option<SafeStateReason>,
@@ -339,6 +347,35 @@ impl Meta {
     pub const fn aux_counter(&self) -> u64 {
         self.aux_counter
     }
+}
+
+/// Ein Element des Kernzustands für die Zustandsübertragung an einen Spiegel (Host des sicheren
+/// Rechners, `railit-embedded`).
+///
+/// Der Index ist die Position im jeweiligen Speicher. [`KernelState::part`] zählt alle Teile in
+/// fester Reihenfolge auf, [`KernelState::apply`] setzt einen Teil in einen Speicher gleicher
+/// Größe ein. Nach allen Teilen gleichen sich beide Zustände (und ihre Hashes).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum StatePart {
+    /// Weiche.
+    Point(u16, PointState),
+    /// Gleisfreimeldeabschnitt.
+    Tvd(u16, TvdState),
+    /// Signal.
+    Signal(u16, SignalState),
+    /// Fahrstraße.
+    Route(u16, RouteState),
+    /// Bahnübergang.
+    Lx(u16, LxState),
+    /// Grenze.
+    Border(u16, BorderState),
+    /// Platz für eine offene Hilfshandlung.
+    Aux(u16, Option<AuxSlot>),
+    /// Wort der Bitmenge eingestellter Fahrstraßen.
+    Active(u16, u64),
+    /// Globaler Zustand.
+    Meta(Meta),
 }
 
 /// Veränderliche Sicht auf den Zustandsspeicher.
@@ -499,6 +536,88 @@ impl<'s> KernelState<'s> {
         self.active.fill(0);
         *self.meta = Meta::default();
         self.meta.aux_counter = counter;
+    }
+
+    /// Anzahl der Teile für die Zustandsübertragung ([`StatePart`]).
+    pub fn part_count(&self) -> usize {
+        [
+            self.points.len(),
+            self.tvds.len(),
+            self.signals.len(),
+            self.routes.len(),
+            self.lxs.len(),
+            self.borders.len(),
+            self.aux.len(),
+            self.active.len(),
+            1,
+        ]
+        .iter()
+        .fold(0usize, |sum, n| sum.saturating_add(*n))
+    }
+
+    /// Teil `index` (0 … [`Self::part_count`]) für die Zustandsübertragung.
+    pub fn part(&self, index: usize) -> Option<StatePart> {
+        fn take<T: Copy>(slice: &[T], index: &mut usize) -> Option<(u16, T)> {
+            if let Some(item) = slice.get(*index) {
+                return Some((u16::try_from(*index).ok()?, *item));
+            }
+            *index = index.checked_sub(slice.len())?;
+            None
+        }
+        let mut i = index;
+        if let Some((k, v)) = take(self.points, &mut i) {
+            return Some(StatePart::Point(k, v));
+        }
+        if let Some((k, v)) = take(self.tvds, &mut i) {
+            return Some(StatePart::Tvd(k, v));
+        }
+        if let Some((k, v)) = take(self.signals, &mut i) {
+            return Some(StatePart::Signal(k, v));
+        }
+        if let Some((k, v)) = take(self.routes, &mut i) {
+            return Some(StatePart::Route(k, v));
+        }
+        if let Some((k, v)) = take(self.lxs, &mut i) {
+            return Some(StatePart::Lx(k, v));
+        }
+        if let Some((k, v)) = take(self.borders, &mut i) {
+            return Some(StatePart::Border(k, v));
+        }
+        if let Some((k, v)) = take(self.aux, &mut i) {
+            return Some(StatePart::Aux(k, v));
+        }
+        if let Some((k, v)) = take(self.active, &mut i) {
+            return Some(StatePart::Active(k, v));
+        }
+        (i == 0).then_some(StatePart::Meta(*self.meta))
+    }
+
+    /// Setzt einen Teil der Zustandsübertragung ein.
+    ///
+    /// # Errors
+    /// [`SafeStateReason::StateMismatch`], wenn der Index außerhalb des Speichers liegt.
+    pub fn apply(&mut self, part: StatePart) -> Result<(), SafeStateReason> {
+        fn put<T>(slice: &mut [T], index: u16, value: T) -> Result<(), SafeStateReason> {
+            let slot = slice
+                .get_mut(usize::from(index))
+                .ok_or(SafeStateReason::StateMismatch)?;
+            *slot = value;
+            Ok(())
+        }
+        match part {
+            StatePart::Point(i, v) => put(self.points, i, v),
+            StatePart::Tvd(i, v) => put(self.tvds, i, v),
+            StatePart::Signal(i, v) => put(self.signals, i, v),
+            StatePart::Route(i, v) => put(self.routes, i, v),
+            StatePart::Lx(i, v) => put(self.lxs, i, v),
+            StatePart::Border(i, v) => put(self.borders, i, v),
+            StatePart::Aux(i, v) => put(self.aux, i, v),
+            StatePart::Active(i, v) => put(self.active, i, v),
+            StatePart::Meta(m) => {
+                *self.meta = m;
+                Ok(())
+            }
+        }
     }
 
     /// Weichenzustände, Index = `PointId`.

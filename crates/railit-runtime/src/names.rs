@@ -472,6 +472,8 @@ pub struct SafetySnapshot {
     pub channels: Vec<ChannelSnapshot>,
     /// Grund der Abschaltung, falls die Schicht im sicheren Zustand ist.
     pub trip: Option<railit_safety::Trip>,
+    /// Anbindung des sicheren Rechners, falls der Bereich auf einem Knoten rechnet.
+    pub node: Option<crate::remote::NodeSnapshot>,
 }
 
 /// Zustand eines Kanals.
@@ -499,6 +501,7 @@ impl SafetySnapshot {
                 })
                 .collect(),
             trip: status.trip,
+            node: None,
         }
     }
 }

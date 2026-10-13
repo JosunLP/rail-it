@@ -74,6 +74,6 @@ mod proofs;
 pub mod wire;
 
 #[cfg(feature = "host")]
-pub use host::{NodeClient, NodeCycle};
+pub use host::{NodeClient, NodeCycle, NodeEvent, NodeSync};
 pub use memory::ChannelMemory;
-pub use node::{Node, NodeConfig, NodeError, NodeStats, TickReport};
+pub use node::{Node, NodeConfig, NodeError, NodeStats, SYNC_PARTS_PER_TICK, TickReport};

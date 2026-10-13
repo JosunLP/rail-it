@@ -6,7 +6,7 @@
 import { bool, component, safeHtml } from '@bquery/bquery/component';
 import { computed, signal } from '@bquery/bquery/reactive';
 import { type SanitizedHtml, trusted } from '@bquery/bquery/security';
-import { auxText, clock, type DisplayHealth } from './model';
+import { auxText, clock, type DisplayHealth, nodeProblem } from './model';
 import type { PendingAux, Snapshot } from './types';
 
 /** Aktuelles Zustandsbild (undefiniert bis zum ersten Abruf). */
@@ -49,19 +49,33 @@ component('rit-status', {
   signals: { status },
   render: ({ signals }) => {
     const { snap, health } = signals.status.value;
+    const problem = snap ? nodeProblem(snap) : undefined;
     const areas = (snap?.areas ?? []).map((a) => {
       const active = a.safety.channels.filter((c) => c.active).length;
       const total = a.safety.channels.length;
       const tripped = a.safety.trip !== null && a.safety.trip !== undefined;
       const cls = tripped ? 'badge error' : active < total ? 'badge warn' : 'badge';
       const text = tripped ? 'abgeschaltet' : `${active}/${total} Kanäle`;
-      return safeHtml`<span class="${cls}" title="Sicherheitsschicht">${a.name}: ${text}</span>`;
+      const n = a.safety.node;
+      const node = !n
+        ? ''
+        : !n.available
+          ? ' · Knoten getrennt'
+          : !n.synced
+            ? ' · Abgleich'
+            : ' · Knoten';
+      const nodeCls = n && (!n.available || !n.synced) ? 'badge error' : cls;
+      const title = n
+        ? `Sicherer Rechner ${n.link}: ${n.cycles} Zyklen, ${n.syncs} Abgleiche, ${n.divergences} Abweichungen, ${n.link_losses} Abbrüche`
+        : 'Sicherheitsschicht';
+      return safeHtml`<span class="${nodeCls}" title="${title}" data-node="${n ? (n.available && n.synced ? 'ok' : 'down') : ''}">${a.name}: ${text}${node}</span>`;
     });
     return safeHtml`
       <span class="network">${snap?.network ?? '…'}</span>
       <span class="clock">${snap ? clock(snap.time_ms) : '–'}</span>
       <span class="cycle">Zyklus ${snap?.cycle ?? '–'}</span>
       <span class="badge health-${health}" data-health="${health}">${HEALTH_TEXT[health]}</span>
+      ${trusted(problem ? safeHtml`<span class="node-problem">${problem}</span>` : safeHtml``)}
       ${join(areas)}
     `;
   },

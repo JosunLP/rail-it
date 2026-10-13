@@ -13,6 +13,7 @@
 //! | [`rasta`] | RaSTA-Verbindung nach dem Aufbau unter beliebigen PDUs |
 //! | [`sci`] | EULYNX-SCI-Telegramme (Rundreise) |
 //! | [`node_wire`] | Binärprotokoll und Knoten des sicheren Rechners |
+//! | [`mirror_state`] | Spiegel: beliebige übertragene Zustandsteile, danach Kernzyklen |
 
 use railit_kernel::{
     Input, Interlocking, LxReport, Occupancy, OwnedState, PointReport, Request, RequestId,
@@ -122,8 +123,12 @@ fn read_all(plan: &PlanView<'_>) {
 
 /// Einige Zyklen Kern auf dem Plan; Meldungen und Anforderungen aus den Bytes.
 fn run_kernel(plan: &PlanView<'_>, data: &[u8]) {
+    run_kernel_on(plan, OwnedState::new(plan), data);
+}
+
+/// Wie [`run_kernel`], aber ab einem gegebenen Zustand.
+fn run_kernel_on(plan: &PlanView<'_>, mut state: OwnedState, data: &[u8]) {
     let kernel = Interlocking::new(*plan, GenericRules::default());
-    let mut state = OwnedState::new(plan);
     let mut out = VecOutputs::default();
     let mut bytes = data.iter().copied().cycle();
     let mut next = move || bytes.next().unwrap_or(0);
@@ -274,4 +279,30 @@ pub fn node_wire(data: &[u8]) {
     use railit_embedded::wire::{HostMsg, NodeMsg, decode};
     let _ = decode::<HostMsg>(data, &mut |_| {});
     let _ = decode::<NodeMsg>(data, &mut |_| {});
+}
+
+/// Spiegel des Hosts: beliebige Zustandsteile (postcard) in einen Zustand der Beispielstadt
+/// einsetzen, dann Kernzyklen darauf rechnen. Der Kern darf auch mit beliebigem Zustand in
+/// keinen Panikpfad laufen (er geht höchstens in den sicheren Zustand).
+pub fn mirror_state(data: &[u8]) {
+    use std::sync::OnceLock;
+    static PLAN: OnceLock<Option<PlanView<'static>>> = OnceLock::new();
+    let plan = PLAN.get_or_init(|| {
+        let net =
+            railit_import::toml_format::parse(include_str!("../../../examples/beispielstadt.toml"))
+                .ok()?
+                .topology;
+        let image = railit_planning::compile(&net, None).ok()?.image;
+        PlanView::parse(Box::leak(image.into_boxed_slice())).ok()
+    });
+    let Some(plan) = plan else {
+        return;
+    };
+    let mut state = OwnedState::new(plan);
+    let mut rest = data;
+    while let Ok((part, tail)) = postcard::take_from_bytes::<railit_kernel::StatePart>(rest) {
+        let _ = state.view().apply(part);
+        rest = tail;
+    }
+    run_kernel_on(plan, state, rest);
 }

@@ -30,6 +30,7 @@ use railit_types::{BorderId, Duration, LxId, PointId, RouteId, SignalId, Tick, T
 use crate::directory::Directory;
 use crate::field::FieldAdapter;
 use crate::names::{NamedAux, NamedEvent, SafetySnapshot, Snapshot};
+use crate::remote::{LockstepLink, NodeLink, NodeSetup, Remote};
 
 /// Ereignis eines Kerns mit seinem Bereich.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -252,6 +253,8 @@ struct Area {
     inputs: Vec<Input>,
     journal: Option<JournalWriter<Box<dyn Write + Send>>>,
     journal_error: Option<String>,
+    /// Kern auf einem sicheren Rechner; `channels` ist dann der Spiegel.
+    remote: Option<Box<Remote>>,
 }
 
 impl Area {
@@ -267,6 +270,7 @@ impl Area {
             inputs: Vec::new(),
             journal: None,
             journal_error: None,
+            remote: None,
         }
     }
 
@@ -283,6 +287,25 @@ impl Area {
         self.channels
             .primary()
             .unwrap_or_else(|| unreachable!("Stellbereich ohne Kanal"))
+    }
+
+    /// Ein Zyklus des Bereichs: lokal in den Kanälen oder auf dem Knoten (dann mit Spiegel).
+    /// Liefert den Grund eines sicheren Zustands, die Meldungen der Sicherheitsschicht und ob der
+    /// Watchdog des Dienstes den Zyklus überwacht (nur lokal und nicht abgeschaltet).
+    fn step(&mut self, now: Tick) -> (Option<SafeStateReason>, Vec<SafetyEvent>, bool) {
+        if let Some(remote) = &mut self.remote {
+            let got = remote.cycle(now, &self.inputs, &mut self.channels);
+            self.out.commands = got.commands;
+            self.out.events = got.events;
+            return (got.safe_state, got.safety, false);
+        }
+        let verdict = self.channels.step(now, &self.inputs, &mut self.out);
+        let reason = match (verdict.trip, verdict.kernel) {
+            (Some(_), _) => Some(SafeStateReason::SafetyLayer),
+            (None, Err(reason)) => Some(reason),
+            (None, Ok(())) => None,
+        };
+        (reason, verdict.events().collect(), verdict.trip.is_none())
     }
 
     /// Hält eine Meldung des Voters im Journal fest.
@@ -468,6 +491,9 @@ impl<F: FieldAdapter> Runtime<F> {
         if self.now != Tick::ZERO {
             return Err("Redundanz nur vor dem ersten Zyklus änderbar".into());
         }
+        if self.areas.iter().any(|a| a.remote.is_some()) {
+            return Err("Redundanz vor dem Anbinden der Knoten festlegen".into());
+        }
         for area in &mut self.areas {
             area.channels = build_channels(*area.plan(), *area.rules(), &cfg);
             area.watchdog = cfg
@@ -483,9 +509,76 @@ impl<F: FieldAdapter> Runtime<F> {
         self.safety
     }
 
-    /// Zustand der Sicherheitsschicht eines Bereichs.
+    /// Zustand der Sicherheitsschicht eines Bereichs (beim Knoten laut letztem Zyklus).
     pub fn safety_status(&self, area: usize) -> Option<Status> {
-        self.areas.get(area).map(|a| a.channels.status())
+        self.areas.get(area).map(|a| {
+            a.remote
+                .as_ref()
+                .map_or_else(|| a.channels.status(), |r| r.status())
+        })
+    }
+
+    /// Lässt den Kern eines Bereichs auf einem sicheren Rechner rechnen (vor dem ersten
+    /// Zyklus). Der Dienst behält einen Spiegel für Anzeige, Betriebsführung und RBC; die
+    /// Redundanz legt der Knoten fest.
+    ///
+    /// # Errors
+    /// Unbekannter Bereich, schon gelaufene Zyklen oder laufendes Journal.
+    pub fn attach_node(&mut self, area: usize, link: Box<dyn NodeLink>) -> Result<(), String> {
+        if self.now != Tick::ZERO {
+            return Err("Knoten nur vor dem ersten Zyklus anbinden".into());
+        }
+        let redundancy = self.safety.redundancy;
+        let a = self.area_mut(area)?;
+        if a.journal.is_some() {
+            return Err("Journal und Knoten: das Journal schreibt der Knoten".into());
+        }
+        let plan = *a.plan();
+        let rules = *a.rules();
+        a.channels = build_channels(plan, rules, &SafetyConfig::default());
+        a.watchdog = None;
+        a.remote = Some(Box::new(Remote::new(link, &plan, redundancy)));
+        Ok(())
+    }
+
+    /// Lässt alle Bereiche auf Knoten im Gleichschritt rechnen (Szenarien, Tests): das
+    /// vollständige Protokoll mit RaSTA, Binärtelegrammen und Zustandsabgleich, aber
+    /// deterministisch in der Simulationszeit.
+    ///
+    /// # Errors
+    /// Siehe [`Self::attach_node`].
+    pub fn use_lockstep_nodes(&mut self) -> Result<(), String> {
+        let cycle_us = self.cycle.as_millis().saturating_mul(1000);
+        let (deadline_us, gap_limit_us) = self
+            .safety
+            .watchdog
+            .unwrap_or((1_000_000, cycle_us.saturating_mul(10).max(1_000_000)));
+        let setup = NodeSetup {
+            redundancy: self.safety.redundancy,
+            deadline_us,
+            gap_limit_us,
+        };
+        for area in 0..self.areas.len() {
+            let a = self.areas.get(area).ok_or("Bereich")?;
+            let link = LockstepLink::spawn(*a.plan(), *a.rules(), setup)?;
+            self.attach_node(area, Box::new(link))?;
+        }
+        Ok(())
+    }
+
+    /// Alle Knoten sind verbunden und ihre Spiegel abgeglichen (ohne Knoten: `true`).
+    pub fn nodes_synced(&self) -> bool {
+        self.areas
+            .iter()
+            .filter_map(|a| a.remote.as_ref())
+            .all(|r| r.snapshot().synced)
+    }
+
+    /// Bereiche, die auf einem Knoten rechnen.
+    pub fn remote_areas(&self) -> Vec<usize> {
+        (0..self.areas.len())
+            .filter(|i| self.areas.get(*i).is_some_and(|a| a.remote.is_some()))
+            .collect()
     }
 
     fn area_mut(&mut self, area: usize) -> Result<&mut Area, String> {
@@ -504,7 +597,14 @@ impl<F: FieldAdapter> Runtime<F> {
         channel: usize,
         fault: Fault,
     ) -> Result<(), String> {
-        if self.area_mut(area)?.channels.inject(channel, fault) {
+        let a = self.area_mut(area)?;
+        if let Some(remote) = &mut a.remote {
+            let msg = crate::remote::fault_msg(channel, fault)
+                .ok_or_else(|| format!("Kanal {channel} gibt es nicht"))?;
+            remote.safety_action(msg);
+            return Ok(());
+        }
+        if a.channels.inject(channel, fault) {
             Ok(())
         } else {
             Err(format!("Kanal {channel} gibt es nicht"))
@@ -518,6 +618,11 @@ impl<F: FieldAdapter> Runtime<F> {
     pub fn reintegrate_channel(&mut self, area: usize, channel: usize) -> Result<(), String> {
         let now = self.now;
         let a = self.area_mut(area)?;
+        if let Some(remote) = &mut a.remote {
+            let channel = u8::try_from(channel).map_err(|_| format!("Kanal {channel}"))?;
+            remote.safety_action(railit_embedded::wire::HostMsg::Reintegrate(channel));
+            return Ok(());
+        }
         a.channels
             .reintegrate(channel)
             .map_err(|e| format!("Kanal {channel} nicht aufgenommen: {e}"))?;
@@ -533,6 +638,11 @@ impl<F: FieldAdapter> Runtime<F> {
     pub fn reset_safety(&mut self, area: usize) -> Result<(), String> {
         let now = self.now;
         let a = self.area_mut(area)?;
+        if let Some(remote) = &mut a.remote {
+            remote.safety_action(railit_embedded::wire::HostMsg::Reset);
+            a.journal_safety(now, SafetyKind::Reset, "");
+            return Ok(());
+        }
         a.channels.reset();
         if let Some(w) = &mut a.watchdog {
             w.restart();
@@ -707,6 +817,11 @@ impl<F: FieldAdapter> Runtime<F> {
             .areas
             .get_mut(area)
             .ok_or_else(|| std::io::Error::other("unbekannter Stellbereich"))?;
+        if a.remote.is_some() {
+            return Err(std::io::Error::other(
+                "Journal und Knoten: das Journal schreibt der Knoten",
+            ));
+        }
         let header = Header::new(a.plan(), a.rules(), cycle, checkpoint_every);
         let mut journal = JournalWriter::new(out, header)?;
         journal.flush()?;
@@ -765,17 +880,12 @@ impl<F: FieldAdapter> Runtime<F> {
         let micros = || u64::try_from(clock.elapsed().as_micros()).unwrap_or(u64::MAX);
         for (index, area) in self.areas.iter_mut().enumerate() {
             let started = micros();
-            let verdict = area.channels.step(now, &area.inputs, &mut area.out);
+            let (reason, layer_events, watched) = area.step(now);
             let finished = micros();
-            let reason = match (verdict.trip, verdict.kernel) {
-                (Some(_), _) => Some(SafeStateReason::SafetyLayer),
-                (None, Err(reason)) => Some(reason),
-                (None, Ok(())) => None,
-            };
             if let (Some(reason), None) = (reason, safe_state) {
                 safe_state = Some((index, reason));
             }
-            for event in verdict.events() {
+            for event in layer_events {
                 area.journal_safety_event(now, event);
                 safety.push(AreaSafetyEvent { area: index, event });
             }
@@ -813,7 +923,7 @@ impl<F: FieldAdapter> Runtime<F> {
                     area.journal = None;
                 }
             }
-            if verdict.trip.is_none()
+            if watched
                 && let Some(Err(trip)) = area.watchdog.as_mut().map(|w| w.check(started, finished))
             {
                 area.channels.trip(trip);
@@ -1047,7 +1157,12 @@ impl<F: FieldAdapter> Runtime<F> {
             .collect();
         let mut snap = Snapshot::network(&self.network, self.now, &areas);
         for (area, snapshot) in self.areas.iter().zip(&mut snap.areas) {
-            snapshot.safety = SafetySnapshot::new(&area.channels.status());
+            if let Some(remote) = &area.remote {
+                snapshot.safety = SafetySnapshot::new(&remote.status());
+                snapshot.safety.node = Some(remote.snapshot());
+            } else {
+                snapshot.safety = SafetySnapshot::new(&area.channels.status());
+            }
         }
         snap.ops = self.ops.as_ref().map(Ops::snapshot);
         snap.etcs = self.etcs_snapshot();

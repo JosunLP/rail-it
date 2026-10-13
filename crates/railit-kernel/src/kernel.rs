@@ -186,6 +186,37 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
         &self.rules
     }
 
+    /// Stellbild: die Befehle, die dem gegenwärtig befohlenen Zustand entsprechen – Signal-
+    /// begriffe, Ersatzsignale und Bahnübergänge. Der Kern sendet Stellbefehle nur bei
+    /// Änderung; ging ein Zyklus verloren (Knoten des sicheren Rechners ohne Verbindung), stellt
+    /// das Stellbild das Feld wieder auf den Stand des Kerns (REQ-EMB-006).
+    ///
+    /// Weichen gehören nicht dazu: Ein wiederholter Umstellbefehl könnte eine Weiche bewegen,
+    /// die ihre Lage verloren hat und unter einem Zug liegt. Ein verlorener Umstellbefehl führt
+    /// zum Abbruch der Einstellung (REQ-IXL-010).
+    pub fn command_image<O: Outputs>(&self, st: &KernelState<'_>, out: &mut O) {
+        for (index, lx) in st.level_crossings().iter().enumerate() {
+            if let Some(id) = LxId::from_index(index) {
+                out.command(Command::SetLevelCrossing {
+                    lx: id,
+                    close: lx.closed_commanded,
+                });
+            }
+        }
+        for (index, s) in st.signals().iter().enumerate() {
+            if let Some(id) = SignalId::from_index(index) {
+                out.command(Command::SetSignal {
+                    signal: id,
+                    aspect: s.commanded,
+                });
+                out.command(Command::SetSubstitute {
+                    signal: id,
+                    on: s.substitute,
+                });
+            }
+        }
+    }
+
     /// Führt einen Zyklus aus.
     ///
     /// Reihenfolge: Meldungen übernehmen → Anforderungen bearbeiten → Hilfshandlungen

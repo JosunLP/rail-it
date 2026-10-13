@@ -163,6 +163,23 @@ Mit Benutzerdatei oder Token fragt er nach dem Zugangstoken (nur in der Sitzung 
 - **Sicherheitsköpfe:** `Content-Security-Policy` ohne Inline-Skripte und fremde Quellen,
   `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`.
 
+## Sicherer Rechner
+
+Mit `railitd --node` rechnet der Kern eines Stellbereichs auf einem Knoten (`railit-node`,
+RaSTA über UDP; `--node lockstep` im Dienst). Das Zustandsbild zeigt die Anbindung unter
+`areas[].safety.node`:
+
+```json
+{"link": "udp://127.0.0.1:7979", "up": true, "available": true, "synced": true,
+ "cycles": 1834, "syncs": 1, "divergences": 0, "link_losses": 0, "protocol_errors": 0,
+ "last_problem": null}
+```
+
+`available = false`: Der Knoten liefert keine Zyklen, alle Signale des Bereichs stehen auf
+Halt (Rückfallebene). `synced = false`: Der Spiegel wird gerade abgeglichen; der Zustand des
+Bereichs ist bis dahin nicht verlässlich. Redundanz und Kanäle unter `safety` sind die des
+Knotens; Handlungen an der Sicherheitsschicht (`/v1/safety/…`) gehen an ihn.
+
 ## Zustandsbild
 
 `/v1/state` enthält `network`, `time_ms`, `cycle`, `safe_state` sowie:

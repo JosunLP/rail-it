@@ -148,6 +148,27 @@ fn lost_messages_are_retransmitted_in_order() {
     assert_eq!(s.state(), State::Up);
 }
 
+/// REQ-COM-003: Geht die letzte Nachricht verloren, zeigt das nächste Lebenszeichen die
+/// Lücke (es nennt den nächsten Datenindex des Senders); die Nachricht wird wiederholt.
+#[test]
+fn lost_last_message_is_noticed_by_heartbeat() {
+    let (mut c, mut s) = pair();
+    connect(&mut c, &mut s, 0);
+    c.send(10, b"Weiche links").unwrap();
+    drain(&mut c); // verloren
+    let mut data = Vec::new();
+    for now in (100..1_500).step_by(100) {
+        c.tick(now);
+        s.tick(now);
+        let p = drain(&mut c);
+        data.extend(deliver(&mut s, now, &p).0);
+        let p = drain(&mut s);
+        deliver(&mut c, now, &p);
+    }
+    assert_eq!(data, [b"Weiche links".to_vec()]);
+    assert_eq!((c.state(), s.state()), (State::Up, State::Up));
+}
+
 /// REQ-COM-004: Zu alte Nachrichten bauen die Verbindung ab (Verzögerung).
 #[test]
 fn delayed_messages_break_the_connection() {
@@ -155,8 +176,8 @@ fn delayed_messages_break_the_connection() {
     connect(&mut c, &mut s, 0);
     s.send(10, b"Lage links").unwrap();
     let p = drain(&mut s);
-    // Die Nachricht bestätigt einen Zeitstempel von t = 0; sie trifft nach 2 s ein.
-    let (data, results) = deliver(&mut c, 2_000, &p);
+    // Die Nachricht bestätigt einen Zeitstempel von t = 0; sie trifft nach 2,5 s ein.
+    let (data, results) = deliver(&mut c, 2_500, &p);
     assert!(data.is_empty());
     assert_eq!(results, [Received::Disconnected(Fault::Timeliness)]);
     assert_eq!(c.state(), State::Closed);
@@ -167,14 +188,14 @@ fn delayed_messages_break_the_connection() {
 fn silence_times_out() {
     let (mut c, mut s) = pair();
     connect(&mut c, &mut s, 0);
-    assert_eq!(c.tick(500), None);
-    assert_eq!(c.tick(800), Some(Fault::Timeout));
+    assert_eq!(c.tick(1_500), None);
+    assert_eq!(c.tick(1_900), Some(Fault::Timeout));
     assert_eq!(c.state(), State::Closed);
     // Der Abbau wird gemeldet.
     let p = drain(&mut c);
-    let (_, results) = deliver(&mut s, 801, &p);
+    let (_, results) = deliver(&mut s, 1_901, &p);
     assert!(results.contains(&Received::Disconnected(Fault::PeerDisconnected)));
-    assert!(c.send(900, b"x").is_err());
+    assert!(c.send(2_000, b"x").is_err());
 }
 
 #[derive(Clone, Debug)]
@@ -260,4 +281,93 @@ proptest! {
             }
         }
     }
+}
+
+proptest! {
+    /// REQ-COM-003: Daten in beide Richtungen unter Verlust, Verdopplung und Vertauschung:
+    /// Jede Seite erhält nur Nachrichten der anderen in deren Sendereihenfolge, ohne Lücke und
+    /// ohne Doppel – auch wenn sich Wiederholanforderungen kreuzen oder wiederholt werden.
+    #[test]
+    fn both_directions_deliver_in_order_prefixes(
+        sends in prop::collection::vec((0u8..4, 0u8..4), 1..40),
+        nets in prop::collection::vec(net(), 1..200),
+    ) {
+        let (mut c, mut s) = pair();
+        connect(&mut c, &mut s, 0);
+        let (mut sent_c, mut sent_s) = (Vec::new(), Vec::new());
+        let (mut got_c, mut got_s) = (Vec::new(), Vec::new());
+        let mut net = nets.iter().cycle();
+        let mut now = 0u32;
+        for (i, (bc, bs)) in sends.iter().enumerate() {
+            now += 50;
+            for k in 0..*bc {
+                let msg = vec![b'c', u8::try_from(i % 256).unwrap(), k];
+                if c.send(now, &msg).is_ok() {
+                    sent_c.push(msg);
+                }
+            }
+            for k in 0..*bs {
+                let msg = vec![b's', u8::try_from(i % 256).unwrap(), k];
+                if s.send(now, &msg).is_ok() {
+                    sent_s.push(msg);
+                }
+            }
+            for _ in 0..3 {
+                c.tick(now);
+                s.tick(now);
+                let to_s = manipulate(drain(&mut c), &mut net);
+                got_s.extend(deliver(&mut s, now, &to_s).0);
+                let to_c = manipulate(drain(&mut s), &mut net);
+                got_c.extend(deliver(&mut c, now, &to_c).0);
+                now += 10;
+            }
+            prop_assert_eq!(&got_s[..], &sent_c[..got_s.len()]);
+            prop_assert_eq!(&got_c[..], &sent_s[..got_c.len()]);
+            if !c.is_up() || !s.is_up() {
+                break;
+            }
+        }
+    }
+}
+
+/// REQ-COM-007: Bei 20 % Verlust in beide Richtungen bleibt die Verbindung bestehen und
+/// liefert alle Nachrichten (Wiederholung statt Abbau). Beide Seiten senden je Zyklus, wie
+/// Stellwerk und Objektsteuerung bzw. Dienst und Knoten.
+#[test]
+fn twenty_percent_loss_does_not_break_the_connection() {
+    let (mut c, mut s) = pair();
+    connect(&mut c, &mut s, 0);
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut lose = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % 100 < 20
+    };
+    let (mut sent, mut got) = (0u32, Vec::new());
+    for step in 0..6000u32 {
+        let now = step * 10;
+        if step % 10 == 0 && c.send(now, &sent.to_le_bytes()).is_ok() {
+            sent += 1;
+        }
+        if step % 10 == 5 {
+            let _ = s.send(now, b"Meldung");
+        }
+        assert_eq!(c.tick(now), None, "Client bei {now} ms");
+        assert_eq!(s.tick(now), None, "Server bei {now} ms");
+        let to_s: Vec<_> = drain(&mut c).into_iter().filter(|_| !lose()).collect();
+        got.extend(deliver(&mut s, now, &to_s).0);
+        let to_c: Vec<_> = drain(&mut s).into_iter().filter(|_| !lose()).collect();
+        deliver(&mut c, now, &to_c);
+    }
+    assert!(c.is_up() && s.is_up());
+    let expected: Vec<Vec<u8>> = (0..u32::try_from(got.len()).unwrap())
+        .map(|i| i.to_le_bytes().to_vec())
+        .collect();
+    assert_eq!(got, expected, "lückenlos in Reihenfolge");
+    assert!(
+        got.len() + 20 >= usize::try_from(sent).unwrap(),
+        "{} von {sent}",
+        got.len()
+    );
 }

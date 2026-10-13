@@ -412,11 +412,21 @@ fn print_routes(view: &PlanView<'_>) {
 }
 
 /// Führt Szenarien aus.
-pub(crate) fn run_scenarios(files: &[std::path::PathBuf], output: Output) -> ExitCode {
+pub(crate) fn run_scenarios(
+    files: &[std::path::PathBuf],
+    node: bool,
+    channels: Option<u8>,
+    output: Output,
+) -> ExitCode {
+    let opts = railit_runtime::scenario::RunOptions {
+        channels: channels
+            .and_then(|c| railit_runtime::railit_safety::Redundancy::from_channels(usize::from(c))),
+        node,
+    };
     let mut all_passed = true;
     let mut results = Vec::new();
     for file in files {
-        match railit_runtime::scenario::run_file(file) {
+        match railit_runtime::scenario::run_file_opts(file, opts) {
             Ok(outcome) => {
                 all_passed &= outcome.passed;
                 match output {

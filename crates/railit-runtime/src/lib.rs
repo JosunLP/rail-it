@@ -16,6 +16,7 @@ mod directory;
 mod field;
 pub mod keys;
 mod names;
+pub mod remote;
 mod runtime;
 pub mod scenario;
 
@@ -30,6 +31,7 @@ pub use railit_adapters;
 pub use railit_etcs;
 pub use railit_ops;
 pub use railit_safety;
+pub use remote::{LockstepLink, NodeLink, NodeSetup, NodeSnapshot, UdpLink};
 pub use runtime::{
     Addressed, AreaEvent, AreaSafetyEvent, CycleOutput, OPS_REQUEST_BASE, Runtime, SafetyConfig,
 };
