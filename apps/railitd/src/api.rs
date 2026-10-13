@@ -8,6 +8,9 @@
 //! | GET | `/v1/layout` | Spurplan-Geometrie (automatisch berechnet) |
 //! | GET | `/v1/state` | Zustandsbild aller Stellbereiche |
 //! | GET | `/v1/metrics` | Metriken im Prometheus-Textformat |
+//! | GET | `/v1/journal` | Journaldateien für die Rückschau |
+//! | GET | `/v1/journal/state?at_ms=&area=` | Zustandsbild zu einem Zeitpunkt (aus dem Journal) |
+//! | GET | `/v1/journal/events?from_ms=&to_ms=&area=` | Befehle und Ereignisse eines Zeitfensters |
 //! | GET | `/v1/areas` | Stellbereiche mit Grenzen und Erlaubnissen |
 //! | POST | `/v1/routes/{name}/set` | Fahrstraße einstellen |
 //! | POST | `/v1/routes/{name}/cancel` | Fahrstraße zurücknehmen |
@@ -74,6 +77,8 @@ pub(crate) struct AppState {
     pub(crate) auth: Arc<AuthMode>,
     /// Zähler der Engine für `/v1/metrics`.
     pub(crate) metrics: tokio::sync::watch::Receiver<Arc<crate::metrics::Counters>>,
+    /// Journaldateien für die Rückschau.
+    pub(crate) journals: Arc<Vec<crate::review::JournalFile>>,
 }
 
 /// Name aus dem Client-Zertifikat der Verbindung (mTLS), von der TLS-Schicht gesetzt.
@@ -113,6 +118,9 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/v1/layout", get(layout))
         .route("/v1/state", get(snapshot))
         .route("/v1/metrics", get(metrics))
+        .route("/v1/journal", get(journal_overview))
+        .route("/v1/journal/state", get(journal_state))
+        .route("/v1/journal/events", get(journal_events))
         .route("/v1/areas", get(areas))
         .route("/v1/routes/{name}/set", post(set_route))
         .route("/v1/routes/{name}/cancel", post(cancel_route))
@@ -245,6 +253,58 @@ async fn metrics(State(state): State<AppState>) -> Response {
         text,
     )
         .into_response()
+}
+
+/// Parameter der Rückschau (Millisekunden seit Beginn des Journals).
+#[derive(Deserialize)]
+struct ReviewQuery {
+    area: Option<String>,
+    at_ms: Option<u64>,
+    from_ms: Option<u64>,
+    to_ms: Option<u64>,
+}
+
+async fn journal_overview(State(state): State<AppState>) -> Json<Value> {
+    Json(crate::review::overview(&state.journals))
+}
+
+/// Führt eine Rückschau außerhalb der Ereignisschleife aus (Abspielen kostet Rechenzeit).
+async fn review(
+    state: &AppState,
+    area: Option<String>,
+    f: impl FnOnce(&crate::review::JournalFile) -> Result<Value, String> + Send + 'static,
+) -> ApiResult {
+    let file = crate::review::pick(&state.journals, area.as_deref())
+        .map_err(|e| ApiError(StatusCode::NOT_FOUND, e))?
+        .clone();
+    let result = tokio::task::spawn_blocking(move || f(&file))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    match result {
+        Ok(v) => Ok(Json(v).into_response()),
+        Err(e) => Err(ApiError(StatusCode::UNPROCESSABLE_ENTITY, e)),
+    }
+}
+
+/// Zustandsbild zu einem Zeitpunkt aus dem Journal (REQ-SVC-010).
+async fn journal_state(State(state): State<AppState>, Query(q): Query<ReviewQuery>) -> ApiResult {
+    let at = q
+        .at_ms
+        .ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, "at_ms fehlt".into()))?;
+    review(&state, q.area, move |f| crate::review::state_at(f, at)).await
+}
+
+/// Stellbefehle und Ereignisse eines Zeitfensters aus dem Journal (REQ-SVC-010).
+async fn journal_events(State(state): State<AppState>, Query(q): Query<ReviewQuery>) -> ApiResult {
+    let from = q.from_ms.unwrap_or(0);
+    let to = q.to_ms.unwrap_or(u64::MAX);
+    if to < from {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "to_ms vor from_ms".into(),
+        ));
+    }
+    review(&state, q.area, move |f| crate::review::events(f, from, to)).await
 }
 
 async fn areas(State(state): State<AppState>) -> Json<Value> {

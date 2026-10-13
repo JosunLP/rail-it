@@ -347,6 +347,32 @@ fn aux_operation_and_journal() {
     assert_eq!(answer["aux"]["type"], "aux_executed");
     assert_eq!(answer["aux"]["counter"], 1);
     wait_for(&d, "A-N1", "idle");
+
+    // REQ-SVC-010: Rückschau aus dem eigenen Journal.
+    let (status, overview) = get(&d, "/v1/journal", true);
+    assert_eq!(status, 200);
+    assert_eq!(overview["journals"].as_array().unwrap().len(), 1, "{overview}");
+    let now = get(&d, "/v1/health", false).1["time_ms"].as_u64().unwrap();
+    let (status, past) = get(&d, &format!("/v1/journal/state?at_ms={now}"), true);
+    assert_eq!(status, 200, "{past}");
+    assert_eq!(past["state"]["aux_counter"], 1, "{past}");
+    let (status, events) = get(&d, "/v1/journal/events?from_ms=0", true);
+    assert_eq!(status, 200, "{events}");
+    let all: Vec<&Value> = events["cycles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|c| c["events"].as_array().unwrap())
+        .collect();
+    assert!(all.iter().any(|e| e["type"] == "aux_executed"), "{events}");
+    assert!(
+        all.iter()
+            .any(|e| e["type"] == "route_phase" && e["route"] == "A-N1"),
+        "{events}"
+    );
+    assert_eq!(get(&d, "/v1/journal/state", true).0, 400, "at_ms fehlt");
+    assert_eq!(get(&d, "/v1/journal/state?at_ms=0&area=X", true).0, 404);
+    assert_eq!(get(&d, "/v1/journal/state?at_ms=0", false).0, 401);
     drop(d);
 
     let bytes = std::fs::read(&journal).unwrap();

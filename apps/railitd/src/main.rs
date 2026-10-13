@@ -25,6 +25,7 @@ mod auth;
 mod engine;
 mod grpc;
 mod metrics;
+mod review;
 mod service;
 mod tls;
 mod ui;
@@ -317,22 +318,15 @@ fn start_journals(
     every: u64,
     seal: Option<(&railit_plan::SigningKey, u64)>,
 ) -> Result<(), String> {
-    let files: Vec<(usize, PathBuf)> = if rt.area_count() == 1 {
-        vec![(0, path.to_path_buf())]
-    } else {
+    if rt.area_count() > 1 {
         std::fs::create_dir_all(path).map_err(|e| format!("Journal {}: {e}", path.display()))?;
-        (0..rt.area_count())
-            .map(|i| {
-                let name = rt.area_name(i).unwrap_or("?");
-                (i, path.join(format!("{name}.journal")))
-            })
-            .collect()
-    };
-    for (area, file) in files {
+    }
+    let files = review::files(path, &area_plans(rt));
+    for (area, file) in files.iter().map(|f| &f.path).enumerate() {
         let out = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&file)
+            .open(file)
             .map_err(|e| format!("Journal {}: {e}", file.display()))?;
         let out = Box::new(std::io::BufWriter::new(out));
         match seal {
@@ -345,6 +339,13 @@ fn start_journals(
         tracing::info!(path = %file.display(), "Journal läuft");
     }
     Ok(())
+}
+
+/// Name und Plan je Stellbereich.
+fn area_plans(rt: &Runtime<DynField>) -> Vec<(String, railit_plan::PlanView<'static>)> {
+    (0..rt.area_count())
+        .filter_map(|i| Some((rt.area_name(i)?.to_string(), *rt.plan_of(i)?)))
+        .collect()
 }
 
 /// Startet Engine und API und läuft bis Strg+C.
@@ -362,6 +363,12 @@ async fn serve(
     let (events_tx, _) = broadcast::channel(4096);
     let directory = rt.directory().clone();
     let (metrics_tx, metrics_rx) = watch::channel(Arc::new(metrics::Counters::default()));
+    let journals = Arc::new(
+        args.journal
+            .as_deref()
+            .map(|path| review::files(path, &area_plans(&rt)))
+            .unwrap_or_default(),
+    );
     let channels = engine::Channels {
         rx,
         snapshot: snapshot_tx,
@@ -394,6 +401,7 @@ async fn serve(
         ),
         auth: Arc::new(security.auth),
         metrics: metrics_rx,
+        journals,
     };
     let listener = tokio::net::TcpListener::bind(args.listen)
         .await

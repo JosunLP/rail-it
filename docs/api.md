@@ -47,6 +47,9 @@ Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`; mit
 | GET | `/v1/plan` | Plan: Prüfsumme, Signatur, Elemente, Fahrstraßen mit Weichen, Abschnitten, Geschwindigkeit, Durchrutschweg, Flankenschutz, Bahnübergängen, Feindlichkeiten | JSON |
 | GET | `/v1/state` | Zustandsbild (siehe unten) | JSON |
 | GET | `/v1/metrics` | Metriken für den Betrieb (siehe unten) | Prometheus-Text |
+| GET | `/v1/journal` | Journaldateien je Stellbereich (Rückschau) | JSON |
+| GET | `/v1/journal/state?at_ms=…[&area=…]` | Zustandsbild zu einem Zeitpunkt, aus dem Journal | JSON |
+| GET | `/v1/journal/events?from_ms=…&to_ms=…[&area=…]` | Stellbefehle und Ereignisse eines Zeitfensters (höchstens 5000 Zyklen, `truncated`) | JSON |
 | POST | `/v1/routes/{name}/set` | Fahrstraße einstellen | 200 `accepted` / 409 `rejected` |
 | POST | `/v1/routes/{name}/cancel` | Fahrstraße zurücknehmen | 200 / 409 |
 | POST | `/v1/points/{name}/move` | Weiche umstellen, Body `{"position":"left"\|"right"}` | 200 / 409 |
@@ -258,7 +261,10 @@ Mit `railitd --journal DATEI [--checkpoint-every N]` schreibt der Dienst ein Bet
 Zustand. Alle zehn Minuten Betrieb steht ein Zustandsabzug im Journal; das Replay spielt die
 Abschnitte dazwischen parallel ab. `railit journal state DATEI --plan PLAN.rplan --at SEK` zeigt
 den Zustand zu einem Zeitpunkt, `railit journal events … --from SEK --to SEK` die Stellbefehle
-und Ereignisse eines Zeitfensters. Mit `--node` schreibt der Spiegel das Journal: geprüfte
+und Ereignisse eines Zeitfensters; dieselbe Rückschau liefert der Dienst unter
+`/v1/journal/state` und `/v1/journal/events` (Zeitpunkte in Millisekunden seit Beginn des
+Journals). `railit journal follow DATEI --plan PLAN.rplan` liest ein wachsendes Journal mit und
+rechnet jede neue Zeile sofort nach. Mit `--node` schreibt der Spiegel das Journal: geprüfte
 Zyklen des Knotens und jeden Zustandsabgleich als Übernahme.
 
 ## Metriken
