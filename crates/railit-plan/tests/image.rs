@@ -308,6 +308,13 @@ fn inconsistent_phase2_data_is_rejected() {
     );
     reject(
         |p| {
+            p.routes[0].conflicts.retain(|r| *r != RouteId::new(1));
+            p.routes[1].conflicts.retain(|r| *r != RouteId::new(0));
+        },
+        "Fahrstraßen ab demselben Signal nicht feindlich",
+    );
+    reject(
+        |p| {
             p.routes[0]
                 .overlap_points
                 .push((PointId::new(0), PointPosition::Left));
@@ -409,10 +416,15 @@ fn many_routes_span_multiple_conflict_words() {
     let mut p = sample();
     p.routes.clear();
     p.level_crossings.clear();
+    // Fahrstraßen ab demselben Signal wären feindlich: je Fahrstraße ein eigenes Startsignal.
+    p.signals.truncate(6);
+    for i in 6..130 {
+        p.signals.push(signal(&format!("S{i}"), SignalKind::Main));
+    }
     for i in 0..130u32 {
         p.routes.push(RouteDef {
             name: format!("R{i}"),
-            start: SignalId::new(0),
+            start: SignalId::new(i),
             end: RouteEnd::Boundary,
             points: vec![],
             tvds: vec![TvdId::new(0)],

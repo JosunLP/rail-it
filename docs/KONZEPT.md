@@ -767,9 +767,35 @@ Die Mittel dafür:
 - Arenen mit `u32`-Indizes,
 - Bitsets,
 - Vorberechnung offline,
-- inkrementelle Auswertung über einen Index von Element zu Fahrstraßen,
+- Invarianten in linearer Zeit,
+- Journal mit Änderungen statt vollständiger Eingaben und mit Zustandsabzügen für
+  paralleles Replay,
 - Partitionierung in Stellbereiche,
-- `criterion`-Benchmarks in der CI.
+- Messung mit Budget in der CI.
+
+**Stand Phase 7:** `railit bench` misst die Ziele an einem erzeugten Korridor, bei dem alle
+Elemente in jedem Zyklus melden und laufend Fahrstraßen angefordert und zurückgenommen werden;
+der CI-Job „Leistung“ bricht ab, wenn ein Ziel verfehlt ist (REQ-IXL-024, REQ-JRN-006). Bei
+5004 Elementen auf 4 Kernen: Kernzyklus p99 0,13–0,20 ms, Zulassungsprüfung ≈ 0,6 µs,
+Replay von 24 h hochgerechnet 34–36 s.
+
+Der Weg dorthin war messbar: Die erste Messung zeigte bei 6361 Elementen einen Kernzyklus von
+63 ms (p99). Ursache war die Invariantenprüfung, die für jedes Element alle eingestellten
+Fahrstraßen durchsuchte. Sie prüft jetzt jede Aussage in zwei linearen Richtungen: Jede
+eingestellte Fahrstraße prüft ihre Verschlüsse, exklusive Verschlüsse werden gezählt, geteilte
+**durch Abziehen** (jeder erwartete Halter zieht eins von seinem Zähler ab, danach müssen alle
+null sein, dann wird alles wieder hinzugezählt; modulo 256 umkehrbar, mit Summenvergleich
+exakt). Die alte, direkte Fassung bleibt als Referenz im Test; beide melden auf zufälligen und
+gezielt verfälschten Zuständen dieselben Verletzungen (REQ-IXL-023). Dass Fahrstraßen ab
+demselben Signal feindlich sind, prüft jetzt schon das Laden des Plans (REQ-PLN-020).
+
+Das Replay war durch JSON aller Feldmeldungen je Zyklus begrenzt (116 s für 24 h schon bei
+425 Elementen). Das Journal (Version 4) speichert deshalb nur Änderungen der Eingaben
+(REQ-JRN-005) und alle zehn Minuten einen Zustandsabzug; das Replay spielt die Abschnitte
+parallel ab und prüft an jeder Grenze, dass der abgespielte Zustand genau dem Abzug gleicht
+(REQ-JRN-006). Ein gefälschter Abzug fällt so auf, das Ergebnis gleicht dem Abspielen am
+Stück. Die Messung läuft auf dem Server; auf dem sicheren Rechner (Cortex-R) steht sie noch
+aus.
 
 ---
 

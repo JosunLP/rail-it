@@ -12,8 +12,11 @@ use railit_types::TvdId;
 use crate::wire::{HostMsg, Packer};
 
 /// Der Packer erzeugt nie Nutzdaten über der RaSTA-Grenze und verliert keine Nachricht.
+/// Drei Nachrichten bleiben unter einer Nutzlast; mehr vergrößern den Nachweis über den
+/// Speicher von CBMC hinaus, ohne die Aussage zu ändern (die Aufteilung auf mehrere Nutzlasten
+/// prüfen `roundtrip_across_payloads` und das Fuzz-Ziel `node_wire`).
 #[kani::proof]
-#[kani::unwind(8)]
+#[kani::unwind(5)]
 fn packer_respects_the_payload_limit() {
     let mut packer = Packer::new();
     let mut flushed = 0usize;
@@ -24,7 +27,7 @@ fn packer_respects_the_payload_limit() {
         true
     };
     let n: usize = kani::any();
-    kani::assume(n <= 6);
+    kani::assume(n <= 3);
     for _ in 0..n {
         let msg = HostMsg::Input(Input::Tvd {
             tvd: TvdId::new(kani::any()),

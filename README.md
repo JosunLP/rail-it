@@ -32,7 +32,9 @@ Runtime für den sicheren Rechner auf Cortex-R, formale Nachweise mit Kani, Fuzz
 [Rückverfolgbarkeit](docs/safety/traceability.md)) und Phase 6 (Bedienplatz: automatisch
 berechneter Spurplan, Web-Bedienplatz mit Anzeigeüberwachung und sicherer Anzeige- und
 Bestätigungskette für Hilfshandlungen) sind umgesetzt. Phase 7 (Betriebsreife) ist in Arbeit:
-Der sichere Rechner ist als Knoten im Dienst angebunden (`railit-node`, `railitd --node`).
+Der sichere Rechner ist als Knoten im Dienst angebunden (`railit-node`, `railitd --node`),
+Journal und Auditprotokoll werden gesiegelt, und die Leistungsziele aus dem Konzept werden in
+der CI gemessen (siehe [Leistung](#leistung)).
 
 | Crate | Inhalt | |
 |-------|--------|---|
@@ -48,7 +50,7 @@ Der sichere Rechner ist als Knoten im Dienst angebunden (`railit-node`, `railitd
 | `railit-etcs` | RBC-Funktion für ETCS Level 2: Anmeldung, Fahrerlaubnis über Bereichsgrenzen, Notbremsung | |
 | `railit-rasta` | RaSTA-Sicherheits- und Wiederholschicht nach EN 50159 | `no_std`, ohne Allokator |
 | `railit-adapters` | Feldanbindung über EULYNX SCI-P/-LS/-TDS/-LX und RaSTA zu simulierten Objektsteuerungen | |
-| `railit-journal` | Betriebsjournal mit Hashkette, Prüfpunkten und Replay; Auditprotokoll | |
+| `railit-journal` | Betriebsjournal mit Hashkette, Prüfpunkten, Siegeln, Zustandsabzügen und parallelem Replay; Auditprotokoll | |
 | `railit-sim` | Simulator: Weichen, Signale, Gleisfreimeldung, Bahnübergänge, Züge (auch mit ETCS), Störungen | |
 | `railit-ops` | Zugnummernmeldung, Fahrplan, Zuglenkung, Selbstblock, Disposition | |
 | `railit-runtime` | Zyklus Kerne ↔ Feld für mehrere Stellbereiche, Zustandsbild, Szenarien, Schlüssel | |
@@ -198,6 +200,30 @@ Für den Betrieb mit Benutzern: `railitd … --users users.toml --audit audit.lo
 Exit-Codes der CLI: `0` Erfolg, `1` ungültig oder abgelehnt, `2` Bedien-, Lese- oder
 Verbindungsfehler. Mit `--output json` liefern alle Befehle JSON.
 
+## Leistung
+
+`railit bench` erzeugt einen Korridor beliebiger Größe (`railit net generate`), projektiert
+ihn und misst gegen die Ziele aus dem Konzept (Abschnitt 15). Last: alle Elemente melden in
+jedem Zyklus, dazu laufend Fahrstraßenanforderungen und Rücknahmen. Die CI bricht mit
+`--check` ab, wenn ein Ziel verfehlt ist. Messung auf 4 Kernen bei 5004 Elementen
+(236 Bahnhöfe, 1888 Fahrstraßen):
+
+| Kennzahl | Ziel | gemessen |
+|----------|------|----------|
+| Kernzyklus p99 | < 1 ms | 0,13–0,20 ms |
+| Zulassungsprüfung einer Fahrstraße | < 10 µs | ≈ 0,6 µs |
+| Replay von 24 h Betrieb (hochgerechnet) | < 60 s | 34–36 s |
+
+```sh
+railit bench                      # Voreinstellung: 236 Bahnhöfe, 6000 Zyklen
+railit bench --stations 20 --check --output json
+railit net generate --stations 50 --out korridor.toml
+```
+
+Die Invariantenprüfung nach jedem Zyklus ist linear in der Netzgröße (REQ-IXL-023); das
+Journal speichert die Eingaben als Änderung zum vorigen Zyklus und enthält alle zehn Minuten
+einen Zustandsabzug, so dass das Replay die Abschnitte parallel abspielt (REQ-JRN-005/006).
+
 ## Entwicklung
 
 ```sh
@@ -209,6 +235,7 @@ cargo build --target armv7r-none-eabihf \
       -p railit-movement -p railit-rasta -p railit-safety -p railit-embedded
 cargo deny check
 cargo xtask trace            # Rückverfolgbarkeit prüfen, docs/safety/traceability.md erzeugen
+cargo run --release -p railit -- bench --check   # Leistungsziele (Konzept, Abschnitt 15)
 PROPTEST_CASES=10000 cargo test --release -p railit-kernel --all-features \
       --test invariants --test borders
 PROPTEST_CASES=10000 cargo test --release -p railit-rasta --test rasta

@@ -357,6 +357,8 @@ pub struct Runtime<F> {
     safety: SafetyConfig,
     /// Monotone Uhr für den Watchdog.
     clock: Instant,
+    /// Abstand der Zustandsabzüge in neu begonnenen Journalen (Zyklen, 0 = keine).
+    snapshot_every: Option<u64>,
 }
 
 impl<F: FieldAdapter> Runtime<F> {
@@ -480,7 +482,14 @@ impl<F: FieldAdapter> Runtime<F> {
             rbc: Rbc::new(),
             safety: SafetyConfig::default(),
             clock: Instant::now(),
+            snapshot_every: None,
         }
+    }
+
+    /// Legt den Abstand der Zustandsabzüge für danach begonnene Journale fest (Zyklen,
+    /// 0 = keine). Ohne Angabe: alle zehn Minuten Betrieb.
+    pub const fn set_journal_snapshots(&mut self, every: u64) {
+        self.snapshot_every = Some(every);
     }
 
     /// Legt Redundanz und Watchdog aller Stellbereiche fest (vor dem ersten Zyklus).
@@ -862,7 +871,16 @@ impl<F: FieldAdapter> Runtime<F> {
                 "Journal und Knoten: das Journal schreibt der Knoten",
             ));
         }
-        let header = Header::new(a.plan(), a.rules(), cycle, checkpoint_every);
+        // Zustandsabzüge, ohne Angabe alle zehn Minuten Betrieb: Abschnitte für paralleles
+        // Replay.
+        let snapshot_every = self.snapshot_every.unwrap_or_else(|| {
+            600_000u64
+                .checked_div(cycle.as_millis())
+                .unwrap_or(0)
+                .max(1)
+        });
+        let header = Header::new(a.plan(), a.rules(), cycle, checkpoint_every)
+            .with_snapshots(snapshot_every);
         let mut journal = match sealer {
             Some((key, every)) => JournalWriter::sealed(out, header, key, every)?,
             None => JournalWriter::new(out, header)?,

@@ -10,6 +10,7 @@
 //!
 //! Jeder Importer meldet **alle** Fehler auf einmal, jeweils mit Fundstelle.
 
+pub mod generate;
 pub mod railml;
 pub mod toml_format;
 

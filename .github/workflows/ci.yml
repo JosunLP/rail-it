@@ -96,6 +96,17 @@ jobs:
       - name: Ende-zu-Ende gegen railitd (Beispielstadt)
         run: bun run e2e
 
+  bench:
+    name: Leistung (Ziele aus dem Konzept, Abschnitt 15)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain installieren
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - name: Kernzyklus, Zulassungsprüfung und Replay bei 5000 Elementen
+        run: cargo run --release --locked -p railit -- bench --stations 236 --cycles 6000 --check
+
   no-std:
     name: no_std-Build (Cortex-M, Cortex-R)
     runs-on: ubuntu-latest

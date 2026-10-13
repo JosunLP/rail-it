@@ -74,6 +74,8 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-JRN-002 | H-011, H-007 | `crates/railit-journal/src/lib.rs` | `journal_replays_to_the_same_state`<br>`forged_journal_is_detected_by_replay`<br>`replay_needs_the_recorded_plan`<br>`aux_operation_and_journal`<br>`apps/railit/tests/cli.rs`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-runtime/tests/journal.rs` |
 | REQ-JRN-003 | H-011 | – | `aux_operation_and_journal` |
 | REQ-JRN-004 | H-011 | `crates/railit-journal/src/audit.rs`<br>`crates/railit-journal/src/lib.rs`<br>`crates/railit-journal/src/seal.rs`<br>`crates/railit-runtime/src/runtime.rs` | `sealed_journal_verifies_with_the_station_key`<br>`rewritten_journal_cannot_carry_the_station_seal`<br>`tampered_signature_is_detected`<br>`sealed_audit_log`<br>`foreign_seals_block_reopening`<br>`sealed_journal_and_audit_log`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-journal/tests/seal.rs` |
+| REQ-JRN-005 | H-011 | `crates/railit-journal/src/lib.rs` | `deltas_reconstruct_every_input_list`<br>`malformed_deltas_are_rejected`<br>`forged_journal_is_detected_by_replay` |
+| REQ-JRN-006 | H-011 | `apps/railit/src/bench.rs`<br>`crates/railit-journal/src/lib.rs` | `snapshots_split_the_replay`<br>`forged_snapshot_is_detected_by_replay`<br>`journal_covers_trip_and_reset_of_the_safety_layer` |
 
 ## [kern.md](../requirements/kern.md)
 
@@ -94,13 +96,15 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-IXL-013 | H-001 | `crates/railit-kernel/src/kernel.rs`<br>`crates/railit-kernel/src/lib.rs` | `flank_signals_are_held_at_stop`<br>`crates/railit-kernel/tests/phase2.rs`<br>Szenario 08 |
 | REQ-IXL-014 | H-006 | `crates/railit-kernel/src/kernel.rs`<br>`crates/railit-kernel/src/lib.rs` | `aux_needs_a_second_operator_in_time`<br>`aux_release_of_occupied_route`<br>`aux_reset_tvd`<br>`aux_force_point`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-kernel/tests/borders.rs`<br>`crates/railit-kernel/tests/phase2.rs`<br>Szenario 10<br>Szenario 12 |
 | REQ-IXL-015 | H-001, H-009 | `crates/railit-kernel/src/kernel.rs`<br>`crates/railit-kernel/src/lib.rs` | `substitute_signal_lets_train_pass`<br>`substitute_signal_times_out_and_drops`<br>`cancel_with_substitute_uses_time_lock`<br>`substitute_only_when_justified`<br>`crates/railit-kernel/tests/phase2.rs`<br>Szenario 10 |
-| REQ-IXL-016 | H-010 | `crates/railit-kernel/src/kernel.rs`<br>`crates/railit-kernel/src/lib.rs` | `level_crossing_must_be_closed_before_proceed`<br>`level_crossing_opens_after_train_has_left`<br>`level_crossings_match_routes`<br>`crates/railit-kernel/tests/phase2.rs`<br>Szenario 09 |
-| REQ-IXL-017 | H-012 | `crates/railit-kernel/src/invariants.rs`<br>`crates/railit-kernel/src/kernel/border.rs` | `never_both_sides_hold_permission`<br>`designated_side_takes_permission_after_settle_time`<br>`only_newer_offers_are_taken`<br>`take_back_permission_by_aux_operation`<br>`permission_conflict_is_alarmed`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-kernel/tests/borders.rs` |
+| REQ-IXL-016 | H-010 | `crates/railit-kernel/src/kernel.rs`<br>`crates/railit-kernel/src/lib.rs` | `level_crossing_must_be_closed_before_proceed`<br>`level_crossing_opens_after_train_has_left`<br>`shared_locks_match_routes`<br>`crates/railit-kernel/tests/phase2.rs`<br>Szenario 09 |
+| REQ-IXL-017 | H-012 | `crates/railit-kernel/src/invariants.rs`<br>`crates/railit-kernel/src/invariants/reference.rs`<br>`crates/railit-kernel/src/kernel/border.rs` | `never_both_sides_hold_permission`<br>`designated_side_takes_permission_after_settle_time`<br>`only_newer_offers_are_taken`<br>`take_back_permission_by_aux_operation`<br>`permission_conflict_is_alarmed`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-kernel/tests/borders.rs` |
 | REQ-IXL-018 | H-012 | `crates/railit-kernel/src/kernel/border.rs` | `permission_is_given_only_when_safe`<br>`crates/railit-kernel/tests/borders.rs` |
 | REQ-IXL-019 | H-001, H-012 | `crates/railit-kernel/src/kernel/border.rs` | `incoming_trains_are_authorized_only_without_permission`<br>`borders_are_consistent`<br>`crates/railit-kernel/tests/borders.rs` |
-| REQ-IXL-020 | H-001, H-012 | `crates/railit-kernel/src/invariants.rs`<br>`crates/railit-kernel/src/kernel/border.rs` | `exit_needs_permission_and_clear_neighbour`<br>`lost_neighbour_drops_exit_signal`<br>`proceed_only_when_safe`<br>`crates/railit-kernel/tests/borders.rs` |
+| REQ-IXL-020 | H-001, H-012 | `crates/railit-kernel/src/invariants.rs`<br>`crates/railit-kernel/src/invariants/reference.rs`<br>`crates/railit-kernel/src/kernel/border.rs` | `exit_needs_permission_and_clear_neighbour`<br>`lost_neighbour_drops_exit_signal`<br>`proceed_only_when_safe`<br>`crates/railit-kernel/tests/borders.rs` |
 | REQ-IXL-021 | H-012 | `crates/railit-kernel/src/kernel/border.rs` | `never_two_stations_feed_the_single_track`<br>`single_track_direction_changes_in_order`<br>`crates/railit-kernel/tests/borders.rs`<br>Szenario 13 |
 | REQ-IXL-022 | H-006, H-016 | `apps/railitd/src/service.rs`<br>`crates/railit-kernel/src/io.rs` | `confirmation_must_restate_the_operation`<br>`apps/railitd/tests/api.rs`<br>`apps/railitd/ui/e2e/bedienplatz.test.ts`<br>`crates/railit-kernel/tests/phase2.rs`<br>Szenario 12 |
+| REQ-IXL-023 | H-007 | `crates/railit-kernel/src/invariants.rs` | `linear_check_agrees_with_reference`<br>`kernel_never_becomes_unsafe` |
+| REQ-IXL-024 | H-015 | `apps/railit/src/bench.rs` | `bench_measures_a_small_corridor` |
 
 ## [kommunikation.md](../requirements/kommunikation.md)
 
@@ -124,7 +128,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-PLN-004 | H-008 | `crates/railit-plan/src/lib.rs`<br>`crates/railit-plan/src/model.rs`<br>`crates/railit-plan/src/view.rs`<br>`crates/railit-planning/src/lib.rs`<br>`crates/railit-runtime/src/lib.rs` | `signatures_are_checked`<br>`unsigned_or_foreign_plans_are_refused`<br>`keygen_compile_verify_info`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-plan/tests/image.rs` |
 | REQ-PLN-010 | H-001, H-005 | `crates/railit-planning/src/error.rs`<br>`crates/railit-planning/src/generate.rs` | `signals_must_stand_at_tvd_boundaries`<br>`crates/railit-planning/tests/planning.rs` |
 | REQ-PLN-011 | H-001, H-002 | `crates/railit-planning/src/error.rs`<br>`crates/railit-planning/src/lib.rs` | `example_routes_are_generated`<br>`ladder_stations_plan_and_verify` |
-| REQ-PLN-012 | H-001 | `crates/railit-planning/src/generate.rs`<br>`crates/railit-planning/src/lib.rs` | `example_routes_are_generated`<br>`example_phase2_data`<br>`ladder_stations_plan_and_verify`<br>`crates/railit-planning/tests/planning.rs` |
+| REQ-PLN-012 | H-001 | `crates/railit-plan/src/view.rs`<br>`crates/railit-planning/src/generate.rs`<br>`crates/railit-planning/src/lib.rs` | `example_routes_are_generated`<br>`example_phase2_data`<br>`ladder_stations_plan_and_verify`<br>`crates/railit-planning/tests/planning.rs` |
 | REQ-PLN-013 | H-004 | `crates/railit-planning/src/error.rs`<br>`crates/railit-planning/src/lib.rs`<br>`crates/railit-planning/src/verify.rs` | `verification_detects_tampering`<br>`crates/railit-planning/tests/planning.rs` |
 | REQ-PLN-014 | H-004 | `crates/railit-planning/src/error.rs` | `loops_without_signal_are_rejected`<br>`crates/railit-planning/tests/planning.rs` |
 | REQ-PLN-015 | H-001, H-009 | `crates/railit-planning/src/generate.rs`<br>`crates/railit-planning/src/lib.rs` | `example_phase2_data`<br>`crates/railit-planning/tests/planning.rs` |
@@ -132,6 +136,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-PLN-017 | H-009 | `crates/railit-planning/src/error.rs`<br>`crates/railit-planning/src/generate.rs`<br>`crates/railit-planning/src/lib.rs` | `distant_signals_need_a_unique_main_signal`<br>`crates/railit-planning/tests/planning.rs` |
 | REQ-PLN-018 | H-010, H-002 | `crates/railit-planning/src/lib.rs` | `example_phase2_data`<br>`level_crossing_within_long_overlap`<br>`crates/railit-planning/tests/planning.rs` |
 | REQ-PLN-019 | H-001, H-012 | `crates/railit-planning/src/error.rs`<br>`crates/railit-planning/src/generate.rs`<br>`crates/railit-planning/src/lib.rs` | `nordbahn_compiles_per_area`<br>`borders_need_an_entry_signal`<br>`inconsistent_border_data_is_rejected`<br>`crates/railit-planning/tests/planning.rs` |
+| REQ-PLN-020 | H-007 | `crates/railit-plan/src/view.rs` | `inconsistent_phase2_data_is_rejected` |
 
 ## [sicherheit.md](../requirements/sicherheit.md)
 
@@ -176,4 +181,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-103 Anforderungen, davon 103 mit Nachweis.
+108 Anforderungen, davon 108 mit Nachweis.

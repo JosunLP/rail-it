@@ -11,6 +11,16 @@
 //! - Danach folgt je Zyklus ein Eintrag mit Eingaben, Zeitpunkt und dem Hash der Ausgaben
 //!   (Stellbefehle und Ereignisse). Alle `checkpoint_every` Zyklen kommt ein Hash des
 //!   Kernzustands dazu (**Prüfpunkt**).
+//! - Die Feldelemente melden in jedem Zyklus, meist unverändert. Ab Version 4 steht deshalb
+//!   nur die **Änderung** der Eingaben gegenüber dem vorigen Zyklus im Journal
+//!   ([`InputDelta`], REQ-JRN-005); an Prüfpunkten stehen sie vollständig. Beim Lesen werden die
+//!   Eingaben wieder vollständig zusammengesetzt.
+//! - Ist im Kopf `snapshot_every` gesetzt, folgt alle so vielen Zyklen (an einem Prüfpunkt,
+//!   außerhalb des sicheren Zustands der Sicherheitsschicht) ein **Zustandsabzug**
+//!   ([`Snapshot`], REQ-JRN-006). [`replay`] spielt die Abschnitte zwischen den Abzügen parallel ab und
+//!   prüft am Ende jedes Abschnitts, dass der abgespielte Zustand genau dem nächsten Abzug
+//!   gleicht – das Ergebnis ist dasselbe wie beim Abspielen am Stück (Konzept, Abschnitt 15:
+//!   Replay von 24 h Betrieb in weniger als einer Minute).
 //! - `hash = SHA-256(prev ‖ JSON(entry))`, `prev` ist der Hash der Vorgängerzeile (beim Kopf
 //!   32 Nullbytes). Wird eine Zeile verändert, entfernt oder eingefügt, bricht die Kette
 //!   (REQ-JRN-001).
@@ -43,8 +53,9 @@ use sha2::{Digest, Sha256};
 
 /// Kennung des Formats im Kopf.
 pub const FORMAT: &str = "railit-journal";
-/// Version des Formats (3: Siegel). Gelesen werden auch Journale der Version 2.
-pub const VERSION: u32 = 3;
+/// Version des Formats (3: Siegel, 4: Eingaben als Änderung). Gelesen werden auch Journale
+/// der Versionen 2 und 3.
+pub const VERSION: u32 = 4;
 
 type Hash32 = [u8; 32];
 
@@ -140,6 +151,14 @@ pub struct Header {
     pub rules: Rules,
     /// Abstand der Prüfpunkte in Zyklen (0 = keine).
     pub checkpoint_every: u64,
+    /// Abstand der Zustandsabzüge in Zyklen (0 = keine; ab Version 4).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub snapshot_every: u64,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl Header {
@@ -158,8 +177,25 @@ impl Header {
             cycle_ms: cycle.as_millis(),
             rules: rules.into(),
             checkpoint_every,
+            snapshot_every: 0,
         }
     }
+
+    /// Mit Zustandsabzügen alle `every` Zyklen (für paralleles Replay).
+    #[must_use]
+    pub const fn with_snapshots(mut self, every: u64) -> Self {
+        self.snapshot_every = every;
+        self
+    }
+}
+
+/// Zustandsabzug des Kerns nach einem Zyklus.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snapshot {
+    /// Zyklusnummer; der Abzug folgt unmittelbar auf den Eintrag dieses Zyklus.
+    pub cycle: u64,
+    /// Gesamter Zustand des Kerns.
+    pub state: OwnedState,
 }
 
 /// Eintrag eines Zyklus.
@@ -169,13 +205,68 @@ pub struct Cycle {
     pub cycle: u64,
     /// Zeitpunkt in Millisekunden.
     pub now_ms: u64,
-    /// Eingaben des Kerns.
+    /// Eingaben des Kerns. Im Journal leer, wenn [`Self::delta`] sie als Änderung zum vorigen
+    /// Zyklus angibt; gelesene Zyklen enthalten sie immer vollständig.
+    #[serde(default)]
     pub inputs: Vec<Input>,
+    /// Eingaben als Änderung gegenüber dem vorigen Zyklus (nur im Journal, Version 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta: Option<InputDelta>,
     /// SHA-256 der Ausgaben (Hex), siehe [`outputs_digest`].
     pub outputs: String,
     /// Hash des Kernzustands nach dem Zyklus (nur an Prüfpunkten), siehe [`state_digest`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
+}
+
+/// Eingaben eines Zyklus als Änderung gegenüber denen des vorigen Zyklus.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputDelta {
+    /// Anzahl der Eingaben.
+    pub len: u32,
+    /// Eingaben, die sich gegenüber dem vorigen Zyklus an ihrer Position geändert haben oder
+    /// neu hinzukommen, aufsteigend nach Position.
+    pub set: Vec<(u32, Input)>,
+}
+
+impl InputDelta {
+    /// Änderung von `prev` nach `next`; `None`, wenn sich mehr als die Hälfte ändert (dann
+    /// ist die vollständige Liste kürzer).
+    fn between(prev: &[Input], next: &[Input]) -> Option<Self> {
+        let len = u32::try_from(next.len()).ok()?;
+        let mut set = Vec::new();
+        for (i, input) in next.iter().enumerate() {
+            if prev.get(i) != Some(input) {
+                set.push((u32::try_from(i).ok()?, *input));
+            }
+        }
+        (set.len().saturating_mul(2) < next.len()).then_some(Self { len, set })
+    }
+
+    /// Wendet die Änderung auf die Eingaben des vorigen Zyklus an.
+    fn apply(&self, inputs: &mut Vec<Input>) -> Result<(), String> {
+        let len = usize::try_from(self.len).map_err(|e| e.to_string())?;
+        inputs.truncate(len);
+        let mut last = None;
+        for (pos, input) in &self.set {
+            let i = usize::try_from(*pos).map_err(|e| e.to_string())?;
+            if last.is_some_and(|l| l >= i) || i >= len {
+                return Err(format!("Änderung an Position {i} ungültig"));
+            }
+            last = Some(i);
+            if let Some(slot) = inputs.get_mut(i) {
+                *slot = *input;
+            } else if i == inputs.len() {
+                inputs.push(*input);
+            } else {
+                return Err(format!("Eingabe {i} fehlt"));
+            }
+        }
+        if inputs.len() != len {
+            return Err(format!("{} statt {len} Eingaben", inputs.len()));
+        }
+        Ok(())
+    }
 }
 
 /// Inhalt einer Journalzeile.
@@ -190,6 +281,8 @@ pub enum Entry {
     Safety(SafetyRecord),
     /// Siegel über alle vorhergehenden Zeilen.
     Seal(Seal),
+    /// Zustandsabzug (ab Version 4).
+    Snapshot(Box<Snapshot>),
 }
 
 /// Art einer Meldung der Sicherheitsschicht.
@@ -218,20 +311,22 @@ pub struct SafetyRecord {
     pub detail: String,
 }
 
-#[derive(Serialize, Deserialize)]
+/// Gelesene Zeile: Der Eintrag bleibt als Text erhalten. Gehasht wird genau dieser Text; er
+/// gleicht der Kodierung beim Schreiben, ein anders formatierter Eintrag bricht die Kette.
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Line {
-    entry: Entry,
-    prev: String,
-    hash: String,
+struct RawLine<'a> {
+    #[serde(borrow)]
+    entry: &'a serde_json::value::RawValue,
+    prev: &'a str,
+    hash: &'a str,
 }
 
-fn chain(prev: &Hash32, entry: &Entry) -> io::Result<Hash32> {
-    let json = serde_json::to_vec(entry).map_err(io::Error::other)?;
+fn chain(prev: &Hash32, json: &[u8]) -> Hash32 {
     let mut h = Sha256::new();
     h.update(prev);
-    h.update(&json);
-    Ok(h.finalize().into())
+    h.update(json);
+    h.finalize().into()
 }
 
 /// SHA-256 über Stellbefehle und Ereignisse eines Zyklus (Hex).
@@ -276,6 +371,12 @@ pub struct JournalWriter<W: Write> {
     sealer: Option<Sealer>,
     /// Die letzte Zeile ist ein Siegel.
     sealed: bool,
+    /// Eingaben des zuletzt geschriebenen Zyklus.
+    last_inputs: Vec<Input>,
+    /// Abstand der Zustandsabzüge.
+    snapshot_every: u64,
+    /// Die Sicherheitsschicht ist im sicheren Zustand (keine Abzüge).
+    tripped: bool,
 }
 
 impl<W: Write> JournalWriter<W> {
@@ -285,12 +386,16 @@ impl<W: Write> JournalWriter<W> {
     /// Schreibfehler.
     pub fn new(out: W, header: Header) -> io::Result<Self> {
         let checkpoint_every = header.checkpoint_every;
+        let snapshot_every = header.snapshot_every;
         let mut w = Self {
             out,
             prev: [0; 32],
             checkpoint_every,
             sealer: None,
             sealed: false,
+            last_inputs: Vec::new(),
+            snapshot_every,
+            tripped: false,
         };
         w.write(&Entry::Header(header))?;
         Ok(w)
@@ -339,18 +444,29 @@ impl<W: Write> JournalWriter<W> {
     /// # Errors
     /// Schreibfehler.
     pub fn append(&mut self, entry: &Entry) -> io::Result<()> {
+        if let Entry::Cycle(c) = entry {
+            match &c.delta {
+                Some(d) => d.apply(&mut self.last_inputs).map_err(io::Error::other)?,
+                None => self.last_inputs.clone_from(&c.inputs),
+            }
+        }
         self.write(entry)
     }
 
+    /// Schreibt `{"entry":…,"prev":"…","hash":"…"}` – den Eintrag genau einmal kodiert;
+    /// gehasht wird derselbe Text, den die Zeile enthält.
     fn write(&mut self, entry: &Entry) -> io::Result<()> {
-        let hash = chain(&self.prev, entry)?;
-        let line = Line {
-            entry: entry.clone(),
-            prev: to_hex(&self.prev),
-            hash: to_hex(&hash),
-        };
-        serde_json::to_writer(&mut self.out, &line).map_err(io::Error::other)?;
-        self.out.write_all(b"\n")?;
+        let json = serde_json::to_vec(entry).map_err(io::Error::other)?;
+        let hash = chain(&self.prev, &json);
+        let mut line = Vec::with_capacity(json.len().saturating_add(160));
+        line.extend_from_slice(b"{\"entry\":");
+        line.extend_from_slice(&json);
+        line.extend_from_slice(b",\"prev\":\"");
+        line.extend_from_slice(to_hex(&self.prev).as_bytes());
+        line.extend_from_slice(b"\",\"hash\":\"");
+        line.extend_from_slice(to_hex(&hash).as_bytes());
+        line.extend_from_slice(b"\"}\n");
+        self.out.write_all(&line)?;
         self.prev = hash;
         self.sealed = false;
         Ok(())
@@ -369,14 +485,36 @@ impl<W: Write> JournalWriter<W> {
         state: &OwnedState,
     ) -> io::Result<()> {
         let cycle = state.meta().cycle();
-        let checkpoint = self.checkpoint_every > 0 && cycle.is_multiple_of(self.checkpoint_every);
+        let snapshot =
+            self.snapshot_every > 0 && !self.tripped && cycle.is_multiple_of(self.snapshot_every);
+        let checkpoint =
+            snapshot || (self.checkpoint_every > 0 && cycle.is_multiple_of(self.checkpoint_every));
+        // An Prüfpunkten vollständig, sonst als Änderung, wenn das kürzer ist.
+        let delta = if checkpoint {
+            None
+        } else {
+            InputDelta::between(&self.last_inputs, inputs)
+        };
+        self.last_inputs.clear();
+        self.last_inputs.extend_from_slice(inputs);
         self.write(&Entry::Cycle(Cycle {
             cycle,
             now_ms: now.as_millis(),
-            inputs: inputs.to_vec(),
+            inputs: if delta.is_some() {
+                Vec::new()
+            } else {
+                inputs.to_vec()
+            },
+            delta,
             outputs: outputs_digest(&out.commands, &out.events),
             state: checkpoint.then(|| state_digest(state)),
         }))?;
+        if snapshot {
+            self.write(&Entry::Snapshot(Box::new(Snapshot {
+                cycle,
+                state: state.clone(),
+            })))?;
+        }
         let due = self.sealer.as_mut().is_some_and(|s| {
             s.since = s.since.saturating_add(1);
             s.since >= s.every
@@ -392,6 +530,11 @@ impl<W: Write> JournalWriter<W> {
     /// # Errors
     /// Schreibfehler.
     pub fn record_safety(&mut self, now: Tick, kind: SafetyKind, detail: &str) -> io::Result<()> {
+        match kind {
+            SafetyKind::Tripped => self.tripped = true,
+            SafetyKind::Reset => self.tripped = false,
+            SafetyKind::Excluded | SafetyKind::Reintegrated => {}
+        }
         self.write(&Entry::Safety(SafetyRecord {
             now_ms: now.as_millis(),
             kind,
@@ -482,6 +625,8 @@ pub struct Summary {
     pub cycles: u64,
     /// Anzahl der Prüfpunkte.
     pub checkpoints: u64,
+    /// Anzahl der Zustandsabzüge.
+    pub snapshots: u64,
     /// Zeitpunkt des letzten Zyklus in Millisekunden.
     pub last_ms: u64,
     /// Hash der letzten vollständigen Zeile (Hex).
@@ -498,24 +643,56 @@ pub struct Summary {
     pub unsealed: u64,
 }
 
-/// Liest ein Journal und prüft dabei die Hashkette. `on_cycle` erhält jeden Zyklus.
+/// Empfänger der gelesenen Einträge.
+trait Visit {
+    fn header(&mut self, _header: &Header) -> Result<(), JournalError> {
+        Ok(())
+    }
+
+    /// Ein Zyklus mit vollständigen Eingaben; `delta` ist die Änderung, wie sie im Journal
+    /// steht (falls so geschrieben).
+    fn cycle(&mut self, _cycle: &Cycle, _delta: Option<&InputDelta>) -> Result<(), JournalError> {
+        Ok(())
+    }
+
+    fn safety(&mut self, _record: &SafetyRecord) -> Result<(), JournalError> {
+        Ok(())
+    }
+
+    fn snapshot(&mut self, _snapshot: Box<Snapshot>) -> Result<(), JournalError> {
+        Ok(())
+    }
+}
+
+/// Nur prüfen.
+struct Check;
+
+impl Visit for Check {}
+
+/// Liest ein Journal und prüft dabei die Hashkette; `visit` erhält die Einträge.
+#[allow(clippy::too_many_lines)]
 fn read<R: BufRead>(
     reader: R,
     trusted: Option<&VerifyingKey>,
-    mut on_header: impl FnMut(&Header) -> Result<(), JournalError>,
-    mut on_cycle: impl FnMut(&Cycle) -> Result<(), JournalError>,
-    mut on_safety: impl FnMut(&SafetyRecord),
+    visit: &mut impl Visit,
 ) -> Result<Summary, JournalError> {
     let mut safety = Vec::new();
     let mut prev: Hash32 = [0; 32];
     let mut header = None;
     let mut cycles = 0u64;
     let mut checkpoints = 0u64;
+    let mut snapshots = 0u64;
     let mut last_ms = 0u64;
     let mut truncated = false;
     let mut seals = 0u64;
     let mut seal_key = None;
     let mut unsealed = 0u64;
+    // Eingaben des vorigen Zyklus, Grundlage für die nächste Änderung.
+    let mut last_inputs: Vec<Input> = Vec::new();
+    // Ein Abzug darf nur unmittelbar auf einen Zyklus mit vollständigen Eingaben folgen,
+    // außerhalb des sicheren Zustands der Sicherheitsschicht.
+    let mut snapshot_after: Option<u64> = None;
+    let mut tripped = false;
     let mut lines = reader.lines().enumerate().peekable();
     while let Some((index, line)) = lines.next() {
         let number = index.saturating_add(1);
@@ -523,7 +700,7 @@ fn read<R: BufRead>(
         if text.trim().is_empty() {
             continue;
         }
-        let parsed: Line = match serde_json::from_str(&text) {
+        let parsed: RawLine<'_> = match serde_json::from_str(&text) {
             Ok(l) => l,
             // Eine unvollständige letzte Zeile ohne Zeilenende entsteht, wenn der Dienst
             // beim Schreiben abbricht. Sie trägt keinen gültigen Hash und wird ignoriert.
@@ -538,15 +715,21 @@ fn read<R: BufRead>(
                 });
             }
         };
-        let hash = chain(&prev, &parsed.entry).map_err(|e| JournalError::Io(e.to_string()))?;
-        if from_hex32(&parsed.prev) != Some(prev) || from_hex32(&parsed.hash) != Some(hash) {
+        let hash = chain(&prev, parsed.entry.get().as_bytes());
+        if from_hex32(parsed.prev) != Some(prev) || from_hex32(parsed.hash) != Some(hash) {
             return Err(JournalError::Chain { line: number });
         }
+        let entry: Entry =
+            serde_json::from_str(parsed.entry.get()).map_err(|e| JournalError::Syntax {
+                line: number,
+                message: e.to_string(),
+            })?;
         let before = prev;
         prev = hash;
-        match (&parsed.entry, &header) {
+        let follows = snapshot_after.take();
+        match (entry, &header) {
             (Entry::Seal(s), Some(_)) => {
-                seal::check(seal::SealKind::Journal, s, &before, trusted, &mut seal_key).map_err(
+                seal::check(seal::SealKind::Journal, &s, &before, trusted, &mut seal_key).map_err(
                     |message| JournalError::Seal {
                         line: number,
                         message,
@@ -562,25 +745,53 @@ fn read<R: BufRead>(
                         h.format, h.version
                     )));
                 }
-                on_header(h)?;
-                header = Some(h.clone());
+                visit.header(&h)?;
+                header = Some(h);
             }
             (Entry::Header(_), Some(_)) => {
                 return Err(JournalError::Format(format!(
                     "Zeile {number}: zweiter Kopf"
                 )));
             }
-            (Entry::Cycle(_) | Entry::Safety(_) | Entry::Seal(_), None) => {
+            (Entry::Cycle(_) | Entry::Safety(_) | Entry::Seal(_) | Entry::Snapshot(_), None) => {
                 return Err(JournalError::Format("Kopf fehlt".into()));
             }
             (Entry::Safety(r), Some(_)) => {
                 unsealed = unsealed.saturating_add(1);
-                on_safety(r);
-                safety.push(r.clone());
+                match r.kind {
+                    SafetyKind::Tripped => tripped = true,
+                    SafetyKind::Reset => tripped = false,
+                    SafetyKind::Excluded | SafetyKind::Reintegrated => {}
+                }
+                visit.safety(&r)?;
+                safety.push(r);
             }
-            (Entry::Cycle(c), Some(_)) => {
+            (Entry::Snapshot(snap), Some(_)) => {
                 unsealed = unsealed.saturating_add(1);
-                on_cycle(c)?;
+                if follows != Some(snap.cycle) || tripped {
+                    return Err(JournalError::Format(format!(
+                        "Zeile {number}: Zustandsabzug ohne vollständigen Zyklus davor"
+                    )));
+                }
+                snapshots = snapshots.saturating_add(1);
+                visit.snapshot(snap)?;
+            }
+            (Entry::Cycle(mut c), Some(_)) => {
+                unsealed = unsealed.saturating_add(1);
+                let delta = c.delta.take();
+                if let Some(delta) = &delta {
+                    delta
+                        .apply(&mut last_inputs)
+                        .map_err(|message| JournalError::Syntax {
+                            line: number,
+                            message,
+                        })?;
+                    c.inputs = std::mem::take(&mut last_inputs);
+                } else {
+                    snapshot_after = Some(c.cycle);
+                }
+                visit.cycle(&c, delta.as_ref())?;
+                last_inputs = c.inputs;
                 cycles = cycles.saturating_add(1);
                 checkpoints = checkpoints.saturating_add(u64::from(c.state.is_some()));
                 last_ms = c.now_ms;
@@ -592,6 +803,7 @@ fn read<R: BufRead>(
         header,
         cycles,
         checkpoints,
+        snapshots,
         last_ms,
         head: to_hex(&prev),
         truncated,
@@ -602,12 +814,48 @@ fn read<R: BufRead>(
     })
 }
 
+/// Liest alle Einträge außer den Siegeln, Zyklen mit vollständigen Eingaben, und prüft
+/// dabei die Hashkette (für Werkzeuge, die Journale umschreiben, siehe
+/// [`JournalWriter::append`]).
+///
+/// # Errors
+/// [`JournalError`] bei Lese-, Format- oder Kettenfehlern.
+pub fn entries<R: BufRead>(reader: R) -> Result<Vec<Entry>, JournalError> {
+    struct Collect(Vec<Entry>);
+
+    impl Visit for Collect {
+        fn header(&mut self, header: &Header) -> Result<(), JournalError> {
+            self.0.push(Entry::Header(header.clone()));
+            Ok(())
+        }
+
+        fn cycle(&mut self, cycle: &Cycle, _: Option<&InputDelta>) -> Result<(), JournalError> {
+            self.0.push(Entry::Cycle(cycle.clone()));
+            Ok(())
+        }
+
+        fn safety(&mut self, record: &SafetyRecord) -> Result<(), JournalError> {
+            self.0.push(Entry::Safety(record.clone()));
+            Ok(())
+        }
+
+        fn snapshot(&mut self, snapshot: Box<Snapshot>) -> Result<(), JournalError> {
+            self.0.push(Entry::Snapshot(snapshot));
+            Ok(())
+        }
+    }
+
+    let mut out = Collect(Vec::new());
+    read(reader, None, &mut out)?;
+    Ok(out.0)
+}
+
 /// Prüft die Hashkette eines Journals (REQ-JRN-001).
 ///
 /// # Errors
 /// [`JournalError`] bei Lese-, Format- oder Kettenfehlern.
 pub fn verify<R: BufRead>(reader: R) -> Result<Summary, JournalError> {
-    read(reader, None, |_| Ok(()), |_| Ok(()), |_| {})
+    read(reader, None, &mut Check)
 }
 
 /// Prüft Hashkette und Siegel eines Journals; jedes Siegel muss mit `key` erstellt sein
@@ -617,11 +865,196 @@ pub fn verify<R: BufRead>(reader: R) -> Result<Summary, JournalError> {
 /// # Errors
 /// [`JournalError`] bei Lese-, Format-, Ketten- oder Siegelfehlern.
 pub fn verify_sealed<R: BufRead>(reader: R, key: &VerifyingKey) -> Result<Summary, JournalError> {
-    read(reader, Some(key), |_| Ok(()), |_| Ok(()), |_| {})
+    read(reader, Some(key), &mut Check)
+}
+
+/// Eintrag eines Abschnitts beim parallelen Replay.
+enum Item {
+    /// Zyklus; Eingaben vollständig oder als Änderung.
+    Cycle(Cycle),
+    Safety(SafetyKind),
+    /// Zustandsabzug am Ende des Abschnitts.
+    End(Box<Snapshot>),
+}
+
+/// Spielt einen Abschnitt ab: ab `start` (oder dem Anfangszustand), mit `inputs` als
+/// Eingaben des Zyklus davor. Endet der Abschnitt mit einem Abzug, muss der abgespielte
+/// Zustand ihm gleichen.
+fn replay_segment(
+    plan: &PlanView<'_>,
+    rules: GenericRules,
+    start: Option<OwnedState>,
+    mut inputs: Vec<Input>,
+    items: &std::sync::mpsc::Receiver<Item>,
+) -> Result<OwnedState, JournalError> {
+    let kernel = Interlocking::new(*plan, rules);
+    let mut state = start.unwrap_or_else(|| OwnedState::new(plan));
+    let mut out = VecOutputs::default();
+    // Abgeschaltete Sicherheitsschicht: Die Ausgaben stammen nicht vom Kern. Abschnitte
+    // beginnen nie im abgeschalteten Zustand (Abzüge nur außerhalb).
+    let mut tripped = false;
+    for item in items {
+        match item {
+            Item::Safety(SafetyKind::Tripped) => tripped = true,
+            Item::Safety(SafetyKind::Reset) => {
+                tripped = false;
+                state.view().reset();
+            }
+            Item::Safety(SafetyKind::Excluded | SafetyKind::Reintegrated) => {}
+            Item::Cycle(c) => {
+                match &c.delta {
+                    Some(d) => d.apply(&mut inputs).map_err(JournalError::Format)?,
+                    None => inputs = c.inputs,
+                }
+                if tripped {
+                    continue;
+                }
+                out.clear();
+                // Der sichere Zustand ist ein reguläres, aufgezeichnetes Ergebnis.
+                let _ = kernel.step(
+                    &mut state.view(),
+                    Tick::from_millis(c.now_ms),
+                    &inputs,
+                    &mut out,
+                );
+                let diverged = |what: &str| JournalError::Divergence {
+                    cycle: c.cycle,
+                    what: what.into(),
+                };
+                if state.meta().cycle() != c.cycle {
+                    return Err(diverged("cycle"));
+                }
+                if outputs_digest(&out.commands, &out.events) != c.outputs {
+                    return Err(diverged("outputs"));
+                }
+                if c.state.as_ref().is_some_and(|s| *s != state_digest(&state)) {
+                    return Err(diverged("state"));
+                }
+            }
+            Item::End(snapshot) => {
+                if snapshot.state != state {
+                    return Err(JournalError::Divergence {
+                        cycle: snapshot.cycle,
+                        what: "snapshot".into(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(state)
+}
+
+/// Verteilt die Abschnitte eines Journals auf Arbeitsfäden.
+struct Parallel<'scope, 'env, 'p> {
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+    plan: &'scope PlanView<'p>,
+    digest: String,
+    rules: Option<GenericRules>,
+    workers: usize,
+    /// Laufende Abschnitte und die Meldungen fertiger Abschnitte.
+    running: usize,
+    done: (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>),
+    /// Zuführung zum laufenden Abschnitt.
+    current: Option<std::sync::mpsc::SyncSender<Item>>,
+    /// Eingaben des letzten Zyklus mit vollständigen Eingaben (Beginn des nächsten Abschnitts).
+    last_full: Vec<Input>,
+    /// Ergebnisse je Abschnitt in Reihenfolge.
+    results: Vec<std::thread::ScopedJoinHandle<'scope, Result<OwnedState, JournalError>>>,
+}
+
+impl<'scope, 'p: 'scope> Parallel<'scope, '_, 'p> {
+    /// Beginnt einen Abschnitt ab `start`. Laufen schon so viele Abschnitte, wie es
+    /// Arbeitsfäden gibt, wird zuerst gewartet, bis einer fertig ist; alle laufenden
+    /// Abschnitte sind dann vollständig zugeführt, das Warten endet also.
+    fn begin(&mut self, start: Option<OwnedState>) -> Result<(), JournalError> {
+        let rules = self
+            .rules
+            .ok_or_else(|| JournalError::Format("Kopf fehlt".into()))?;
+        while self.running >= self.workers {
+            self.done
+                .1
+                .recv()
+                .map_err(|_| JournalError::Format("Replay abgebrochen".into()))?;
+            self.running = self.running.saturating_sub(1);
+        }
+        let (tx, rx) = std::sync::mpsc::sync_channel(4096);
+        let plan = self.plan;
+        let inputs = std::mem::take(&mut self.last_full);
+        let done = self.done.0.clone();
+        self.running = self.running.saturating_add(1);
+        self.results.push(self.scope.spawn(move || {
+            let result = replay_segment(plan, rules, start, inputs, &rx);
+            let _ = done.send(());
+            result
+        }));
+        self.current = Some(tx);
+        Ok(())
+    }
+
+    fn send(&self, item: Item) {
+        // Ein Abschnitt, der schon abgebrochen hat, nimmt nichts mehr an; sein Fehler kommt
+        // über das Ergebnis.
+        if let Some(tx) = &self.current {
+            let _ = tx.send(item);
+        }
+    }
+}
+
+impl Visit for Parallel<'_, '_, '_> {
+    fn header(&mut self, h: &Header) -> Result<(), JournalError> {
+        if h.plan_digest != self.digest {
+            return Err(JournalError::Plan(format!(
+                "Journal gehört zu Plan {}, geladen ist {}",
+                h.plan_digest, self.digest
+            )));
+        }
+        self.rules = Some(h.rules.into());
+        self.begin(None)
+    }
+
+    fn cycle(&mut self, c: &Cycle, delta: Option<&InputDelta>) -> Result<(), JournalError> {
+        let inputs = if delta.is_some() {
+            Vec::new()
+        } else {
+            self.last_full.clone_from(&c.inputs);
+            c.inputs.clone()
+        };
+        self.send(Item::Cycle(Cycle {
+            cycle: c.cycle,
+            now_ms: c.now_ms,
+            inputs,
+            delta: delta.cloned(),
+            outputs: c.outputs.clone(),
+            state: c.state.clone(),
+        }));
+        Ok(())
+    }
+
+    fn safety(&mut self, record: &SafetyRecord) -> Result<(), JournalError> {
+        self.send(Item::Safety(record.kind));
+        Ok(())
+    }
+
+    fn snapshot(&mut self, snapshot: Box<Snapshot>) -> Result<(), JournalError> {
+        if !snapshot.state.fits(self.plan) {
+            return Err(JournalError::Format(format!(
+                "Zustandsabzug nach Zyklus {} passt nicht zum Plan",
+                snapshot.cycle
+            )));
+        }
+        let start = snapshot.state.clone();
+        self.send(Item::End(snapshot));
+        self.current = None;
+        self.begin(Some(start))
+    }
 }
 
 /// Spielt ein Journal gegen `plan` erneut ab und vergleicht Ausgaben und Prüfpunkte
 /// (REQ-JRN-002). Liefert den rekonstruierten Endzustand.
+///
+/// Die Abschnitte zwischen Zustandsabzügen laufen parallel (so viele Arbeitsfäden wie
+/// Prozessorkerne); jeder Abschnitt muss genau im nächsten Abzug enden. Gemeldet wird wie
+/// beim Abspielen am Stück die früheste Abweichung.
 ///
 /// # Errors
 /// [`JournalError`] bei Kettenfehlern, unpassendem Plan oder Abweichungen.
@@ -629,65 +1062,124 @@ pub fn replay<R: BufRead>(
     reader: R,
     plan: &PlanView<'_>,
 ) -> Result<(Summary, OwnedState), JournalError> {
-    let state = std::cell::RefCell::new(OwnedState::new(plan));
-    // Abgeschaltete Sicherheitsschicht: Die Ausgaben stammen nicht vom Kern.
-    let tripped = std::cell::Cell::new(false);
-    let mut out = VecOutputs::default();
-    let kernel: std::cell::OnceCell<Interlocking<'_, GenericRules>> = std::cell::OnceCell::new();
-    let digest = to_hex(&plan.digest());
-    let summary = read(
-        reader,
-        None,
-        |h| {
-            if h.plan_digest != digest {
-                return Err(JournalError::Plan(format!(
-                    "Journal gehört zu Plan {}, geladen ist {digest}",
-                    h.plan_digest
-                )));
+    let workers = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    std::thread::scope(|scope| {
+        let mut parallel = Parallel {
+            scope,
+            plan,
+            digest: to_hex(&plan.digest()),
+            rules: None,
+            workers,
+            running: 0,
+            done: std::sync::mpsc::channel(),
+            current: None,
+            last_full: Vec::new(),
+            results: Vec::new(),
+        };
+        let read_result = read(reader, None, &mut parallel);
+        parallel.current = None;
+        // Die früheste Abweichung zählt; ein Lesefehler liegt hinter allen zugeführten
+        // Zyklen.
+        let mut last = None;
+        for handle in parallel.results {
+            let state = handle
+                .join()
+                .map_err(|_| JournalError::Format("Replay abgebrochen".into()))??;
+            last = Some(state);
+        }
+        let summary = read_result?;
+        let state = last.ok_or_else(|| JournalError::Format("leeres Journal".into()))?;
+        Ok((summary, state))
+    })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+    use railit_kernel::{Occupancy, PointReport, Request, RequestId};
+    use railit_types::{PointId, RouteId, TvdId};
+
+    fn tvd(i: u32, occupied: bool) -> Input {
+        Input::Tvd {
+            tvd: TvdId::new(i),
+            occupancy: if occupied {
+                Occupancy::Occupied
+            } else {
+                Occupancy::Clear
+            },
+        }
+    }
+
+    /// Jede Folge von Eingabelisten übersteht Kodieren und Anwenden unverändert, ob als
+    /// Änderung oder vollständig.
+    #[test]
+    fn deltas_reconstruct_every_input_list() {
+        let mut rng = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move |n: u64| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng % n
+        };
+        let mut prev: Vec<Input> = Vec::new();
+        let mut resolved: Vec<Input> = Vec::new();
+        let mut deltas = 0;
+        for _ in 0..2000 {
+            let len = 40 + next(3);
+            let mut list: Vec<Input> = (0..len)
+                .map(|i| tvd(u32::try_from(i).unwrap(), next(20) == 0))
+                .collect();
+            if next(3) == 0 {
+                list.push(Input::Request {
+                    id: RequestId(next(1000)),
+                    request: Request::SetRoute(RouteId::new(1)),
+                });
             }
-            kernel
-                .set(Interlocking::new(*plan, h.rules.into()))
-                .map_err(|_| JournalError::Format("zweiter Kopf".into()))
-        },
-        |c| {
-            let Some(k) = kernel.get() else {
-                return Err(JournalError::Format("Kopf fehlt".into()));
-            };
-            if tripped.get() {
-                return Ok(());
+            if next(5) == 0 {
+                list.insert(
+                    0,
+                    Input::Point {
+                        point: PointId::new(0),
+                        report: PointReport::Left,
+                    },
+                );
             }
-            let mut state = state.borrow_mut();
-            out.clear();
-            // Der sichere Zustand ist ein reguläres, aufgezeichnetes Ergebnis.
-            let _ = k.step(
-                &mut state.view(),
-                Tick::from_millis(c.now_ms),
-                &c.inputs,
-                &mut out,
-            );
-            let diverged = |what: &str| JournalError::Divergence {
-                cycle: c.cycle,
-                what: what.into(),
-            };
-            if state.meta().cycle() != c.cycle {
-                return Err(diverged("cycle"));
+            match InputDelta::between(&prev, &list) {
+                Some(d) => {
+                    deltas += 1;
+                    d.apply(&mut resolved).unwrap();
+                }
+                None => resolved.clone_from(&list),
             }
-            if outputs_digest(&out.commands, &out.events) != c.outputs {
-                return Err(diverged("outputs"));
-            }
-            if c.state.as_ref().is_some_and(|s| *s != state_digest(&state)) {
-                return Err(diverged("state"));
-            }
-            Ok(())
-        },
-        |r| match r.kind {
-            SafetyKind::Tripped => tripped.set(true),
-            SafetyKind::Reset => {
-                tripped.set(false);
-                state.borrow_mut().view().reset();
-            }
-            SafetyKind::Excluded | SafetyKind::Reintegrated => {}
-        },
-    )?;
-    Ok((summary, state.into_inner()))
+            assert_eq!(resolved, list);
+            prev = list;
+        }
+        assert!(deltas > 1000);
+    }
+
+    #[test]
+    fn malformed_deltas_are_rejected() {
+        let base = vec![tvd(0, false), tvd(1, false)];
+        let bad = [
+            // Neue Eingabe mit Lücke.
+            InputDelta {
+                len: 4,
+                set: vec![(3, tvd(3, false))],
+            },
+            // Nicht aufsteigend.
+            InputDelta {
+                len: 2,
+                set: vec![(1, tvd(1, true)), (0, tvd(0, true))],
+            },
+            // Position außerhalb.
+            InputDelta {
+                len: 1,
+                set: vec![(1, tvd(1, true))],
+            },
+        ];
+        for d in bad {
+            assert!(d.apply(&mut base.clone()).is_err(), "{d:?}");
+        }
+    }
 }

@@ -15,6 +15,7 @@ fn header() -> Header {
         cycle_ms: 100,
         rules: Rules::from(&railit_rules::GenericRules::default()),
         checkpoint_every: 0,
+        snapshot_every: 0,
     }
 }
 
@@ -23,6 +24,7 @@ fn cycle(n: u64) -> Entry {
         cycle: n,
         now_ms: n * 100,
         inputs: Vec::new(),
+        delta: None,
         outputs: "00".repeat(32),
         state: None,
     })
@@ -89,12 +91,22 @@ fn tampered_signature_is_detected() {
         &sig[1..]
     );
     last["entry"]["signature"] = flipped.into();
-    let prev = railit_journal_test_hash(&last["prev"], &last["entry"]);
-    last["hash"] = prev.into();
-    let forged: String = lines
-        .iter()
-        .map(|l| serde_json::to_string(l).unwrap() + "\n")
-        .collect();
+    let hash = railit_journal_test_hash(&last["prev"], &last["entry"]);
+    last["hash"] = hash.into();
+    // Zeilen wie beim Schreiben zusammensetzen (Feldreihenfolge des Eintrags).
+    let mut forged = String::new();
+    for l in &lines {
+        use std::fmt::Write as _;
+        let entry: Entry = serde_json::from_value(l["entry"].clone()).unwrap();
+        writeln!(
+            forged,
+            "{{\"entry\":{},\"prev\":{},\"hash\":{}}}",
+            serde_json::to_string(&entry).unwrap(),
+            l["prev"],
+            l["hash"]
+        )
+        .unwrap();
+    }
     let err = verify(forged.as_bytes()).unwrap_err();
     assert!(
         matches!(&err, JournalError::Seal { message, .. } if message.contains("Signatur")),

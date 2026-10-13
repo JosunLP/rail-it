@@ -675,6 +675,7 @@ mod owned {
 
     /// Zustandsspeicher auf dem Heap (Server).
     #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     pub struct OwnedState {
         points: Vec<PointState>,
         tvds: Vec<TvdState>,
@@ -701,6 +702,18 @@ mod owned {
                 active: vec![0; plan.route_set_words()],
                 meta: Meta::default(),
             }
+        }
+
+        /// Passt der Speicher zu `plan` (etwa nach dem Einlesen eines Zustandsabzugs)?
+        pub fn fits(&self, plan: &PlanView<'_>) -> bool {
+            self.points.len() == plan.point_count()
+                && self.tvds.len() == plan.tvd_count()
+                && self.signals.len() == plan.signal_count()
+                && self.routes.len() == plan.route_count()
+                && self.lxs.len() == plan.lx_count()
+                && self.borders.len() == plan.border_count()
+                && self.aux.len() == AUX_SLOTS
+                && self.active.len() == plan.route_set_words()
         }
 
         /// Veränderliche Sicht für einen Zyklus.

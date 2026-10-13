@@ -27,6 +27,10 @@ impl Write for Shared {
 }
 
 fn run() -> (Runtime<Simulator>, Vec<u8>) {
+    run_with_snapshots(None)
+}
+
+fn run_with_snapshots(every: Option<u64>) -> (Runtime<Simulator>, Vec<u8>) {
     let net = railit_import::toml_format::parse(EXAMPLE).unwrap().topology;
     let compiled = railit_planning::compile(&net, None).unwrap();
     let plan = railit_runtime::load_plan(compiled.image, None).unwrap();
@@ -38,6 +42,9 @@ fn run() -> (Runtime<Simulator>, Vec<u8>) {
         Duration::from_millis(100),
     );
     let buf = Shared::default();
+    if let Some(every) = every {
+        rt.set_journal_snapshots(every);
+    }
     rt.start_journal(0, Box::new(buf.clone()), 50).unwrap();
 
     let a = plan.find_signal("A").unwrap();
@@ -128,14 +135,7 @@ fn forged_journal_is_detected_by_replay() {
     use railit_kernel::{Input, Occupancy};
 
     let (rt, bytes) = run();
-    let text = String::from_utf8(bytes).unwrap();
-    let entries: Vec<Entry> = text
-        .lines()
-        .map(|l| {
-            let v: serde_json::Value = serde_json::from_str(l).unwrap();
-            serde_json::from_value(v["entry"].clone()).unwrap()
-        })
-        .collect();
+    let entries: Vec<Entry> = railit_journal::entries(bytes.as_slice()).unwrap();
     let Entry::Header(header) = entries[0].clone() else {
         panic!("Kopf erwartet")
     };
@@ -244,6 +244,8 @@ fn journal_covers_trip_and_reset_of_the_safety_layer() {
     })
     .unwrap();
     let buf = Shared::default();
+    // Abzüge vor dem Abschalten und nach dem Rücksetzen; keine im abgeschalteten Zustand.
+    rt.set_journal_snapshots(7);
     rt.start_journal(0, Box::new(buf.clone()), 10).unwrap();
     let a_n1 = plan.find_route("A-N1").unwrap();
     rt.cycle(&[(RequestId(1), Request::SetRoute(a_n1))]);
@@ -272,6 +274,7 @@ fn journal_covers_trip_and_reset_of_the_safety_layer() {
 
     let bytes = buf.0.lock().unwrap().clone();
     let (summary, state) = replay(bytes.as_slice(), &plan).unwrap();
+    assert!(summary.snapshots >= 6, "{} Abzüge", summary.snapshots);
     let kinds: Vec<_> = summary.safety.iter().map(|r| r.kind).collect();
     assert_eq!(
         kinds,
@@ -284,4 +287,77 @@ fn journal_covers_trip_and_reset_of_the_safety_layer() {
         ]
     );
     assert_eq!(&state, rt.state(), "Endzustand nach dem Rücksetzen");
+}
+
+/// Konzept, Abschnitt 15: Mit Zustandsabzügen spielt das Replay die Abschnitte parallel ab
+/// und kommt zum selben Ergebnis wie am Stück.
+#[test]
+fn snapshots_split_the_replay() {
+    let (rt, plain) = run();
+    let (_, bytes) = run_with_snapshots(Some(50));
+    let summary = verify(bytes.as_slice()).unwrap();
+    assert_eq!(summary.cycles, 624);
+    assert_eq!(summary.snapshots, 12);
+    let (replayed, state) = replay(bytes.as_slice(), rt.plan()).unwrap();
+    assert_eq!(replayed, summary);
+    assert_eq!(&state, rt.state());
+    assert_eq!(replay(plain.as_slice(), rt.plan()).unwrap().1, state);
+}
+
+/// Ein Abschnitt muss genau im nächsten Abzug enden: Ein ausgetauschter Abzug fällt beim
+/// Replay auf, obwohl die Kette neu berechnet wurde.
+#[test]
+fn forged_snapshot_is_detected_by_replay() {
+    use railit_journal::{Entry, JournalWriter};
+
+    let (rt, bytes) = run_with_snapshots(Some(50));
+    let mut entries = railit_journal::entries(bytes.as_slice()).unwrap();
+    let snapshots: Vec<usize> = (0..entries.len())
+        .filter(|i| matches!(entries[*i], Entry::Snapshot(_)))
+        .collect();
+    let (Entry::Snapshot(third), Entry::Snapshot(fourth)) =
+        (entries[snapshots[2]].clone(), entries[snapshots[3]].clone())
+    else {
+        panic!("Abzüge erwartet")
+    };
+    // Der dritte Abzug trägt den Zustand des vierten.
+    entries[snapshots[2]] = Entry::Snapshot(Box::new(railit_journal::Snapshot {
+        cycle: third.cycle,
+        state: fourth.state,
+    }));
+    let Entry::Header(header) = entries[0].clone() else {
+        panic!("Kopf erwartet")
+    };
+    let mut w = JournalWriter::new(Vec::new(), header).unwrap();
+    for e in &entries[1..] {
+        w.append(e).unwrap();
+    }
+    let forged = w.into_inner();
+    verify(forged.as_slice()).unwrap();
+    let err = replay(forged.as_slice(), rt.plan()).unwrap_err();
+    assert_eq!(
+        err,
+        JournalError::Divergence {
+            cycle: third.cycle,
+            what: "snapshot".into()
+        }
+    );
+
+    // Ein Abzug, der nicht zum Zyklus davor gehört, ist ein Formatfehler.
+    entries[snapshots[2]] = Entry::Snapshot(Box::new(railit_journal::Snapshot {
+        cycle: third.cycle + 1,
+        state: third.state.clone(),
+    }));
+    let Entry::Header(header) = entries[0].clone() else {
+        panic!("Kopf erwartet")
+    };
+    let mut w = JournalWriter::new(Vec::new(), header).unwrap();
+    for e in &entries[1..] {
+        w.append(e).unwrap();
+    }
+    let misplaced = w.into_inner();
+    assert!(matches!(
+        verify(misplaced.as_slice()),
+        Err(JournalError::Format(_))
+    ));
 }

@@ -38,6 +38,7 @@ fn report(result: Result<Summary, JournalError>, what: &str, output: Output) -> 
                 "plan_digest": s.header.plan_digest,
                 "cycles": s.cycles,
                 "checkpoints": s.checkpoints,
+                "snapshots": s.snapshots,
                 "last_ms": s.last_ms,
                 "head": s.head,
                 "truncated": s.truncated,
@@ -51,8 +52,8 @@ fn report(result: Result<Summary, JournalError>, what: &str, output: Output) -> 
             #[allow(clippy::cast_precision_loss)]
             let t = s.last_ms as f64 / 1000.0;
             println!(
-                "✔ {what}: Netz „{}“, {} Zyklen bis t = {t:.1} s, {} Prüfpunkte",
-                s.header.network, s.cycles, s.checkpoints
+                "✔ {what}: Netz „{}“, {} Zyklen bis t = {t:.1} s, {} Prüfpunkte, {} Zustandsabzüge",
+                s.header.network, s.cycles, s.checkpoints, s.snapshots
             );
             println!("  Kopf der Kette: {}", s.head);
             match &s.seal_key {

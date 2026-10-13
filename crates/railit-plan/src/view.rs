@@ -620,6 +620,11 @@ impl<'a> PlanView<'a> {
         )
     }
 
+    fn route_start(&self, index: usize) -> Option<u32> {
+        let base = self.route_off.checked_add(index.checked_mul(ROUTE_LEN)?)?;
+        read_word(self.bytes, base, r::START)
+    }
+
     fn conflict_bit(&self, a: usize, b: usize) -> Option<bool> {
         let word = self.conflict_word(a, b.checked_div(WORD_BITS)?)?;
         let bit = u32::try_from(b.checked_rem(WORD_BITS)?).ok()?;
@@ -642,6 +647,7 @@ impl<'a> PlanView<'a> {
             if self.conflict_bit(a, a) != Some(false) {
                 return Err(PlanError::ConflictMatrix(a));
             }
+            let start = self.route_start(a).ok_or(PlanError::ConflictMatrix(a))?;
             for b in a.saturating_add(1)..self.routes {
                 let ab = self
                     .conflict_bit(a, b)
@@ -650,6 +656,11 @@ impl<'a> PlanView<'a> {
                     .conflict_bit(b, a)
                     .ok_or(PlanError::ConflictMatrix(b))?;
                 if ab != ba {
+                    return Err(PlanError::ConflictMatrix(a));
+                }
+                // Fahrstraßen ab demselben Signal sind feindlich (REQ-PLN-012); darauf stützt
+                // sich die lineare Invariantenprüfung des Kerns (REQ-PLN-020).
+                if !ab && self.route_start(b) == Some(start) {
                     return Err(PlanError::ConflictMatrix(a));
                 }
             }
@@ -683,7 +694,15 @@ impl<'a> PlanView<'a> {
             return None;
         }
         let base = self.route_off.checked_add(index.checked_mul(ROUTE_LEN)?)?;
-        let w = |i| read_word(self.bytes, base, i);
+        // Der Eintrag wird einmal als Ganzes geholt; die Wortzugriffe darin sind dann ohne
+        // weitere Bereichsprüfung möglich (feste Länge, feste Indizes).
+        let record: &[u8; ROUTE_LEN] = self
+            .bytes
+            .get(base..base.checked_add(ROUTE_LEN)?)?
+            .try_into()
+            .ok()?;
+        let (words, _) = record.as_chunks::<4>();
+        let w = |i: usize| words.get(i).map(|b| u32::from_le_bytes(*b));
         let range = |i: usize| -> Option<Range> {
             Some(Range {
                 start: usize::try_from(w(i)?).ok()?,

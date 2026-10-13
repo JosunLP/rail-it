@@ -22,6 +22,8 @@ railit-planning = { workspace = true }
 railit-runtime = { workspace = true }
 railit-journal = { workspace = true }
 railit-types = { workspace = true }
+railit-kernel = { workspace = true, features = ["alloc"] }
+railit-rules = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
 ureq = { workspace = true, features = ["rustls-no-provider"] }

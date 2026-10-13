@@ -58,6 +58,7 @@ Kontext: nur Simulation, Ausbildung, Prüfstände (Teil 1); Anwendungsbedingunge
 |-----------|--------|
 | Sicherheitsprinzipien im Kern: nur positiv bestätigte Zustände, Fahrt nur bei erfüllten Bedingungen, Verschlüsse, Durchrutschwege, Flankenschutz, Bahnübergänge, Zeitverschluss | REQ-IXL-002 … 016 |
 | Invarianten nach jedem Zyklus mit unabhängiger Neuberechnung; Verletzung ⇒ sicherer Zustand | REQ-IXL-008, `invariants.rs` |
+| Invariantenprüfung in linearer Zeit, gleichwertig zur direkten Fassung (Vergleich auf zufälligen und verfälschten Zuständen), Zustand danach bitgleich; Leistungsziele in der CI gemessen | REQ-IXL-023/024, REQ-PLN-020, `linear_check_agrees_with_reference` |
 | Prüfung gegen ein vom Kern unabhängiges Modell unter beliebigen Bedienungen und Meldungen | Property-Tests `invariants`, `borders` (5 000 Fälle in der CI) |
 | Robustheit gegen jeden strukturell gültigen Plan | Fuzz-Ziel `plan_image` (Kern, Signalbilder, Fahrerlaubnis auf veränderten Plänen), REQ-SAF-007 |
 | Signalisierung folgt nur dem Kern | REQ-MOV-001 … 004, REQ-ETCS-002/003 |
@@ -118,6 +119,7 @@ einer Fehlbedienung, sie sind keine Sicherheitsfunktion.
 |-----------|--------|
 | Journal aller Eingaben mit Hashkette, deterministisches Abspielen, auch über Abschaltung und Rücksetzen der Sicherheitsschicht | REQ-JRN-001 … 003, `journal_covers_trip_and_reset_of_the_safety_layer` |
 | Siegel des Stellwerks über Journal und Auditprotokoll: Eine neu geschriebene Kette ist erkennbar | REQ-JRN-004, `rewritten_journal_cannot_carry_the_station_seal` |
+| Eingaben als Änderung, Zustandsabzüge und paralleles Replay mit Gleichheitsprüfung an jeder Abschnittsgrenze; ein gefälschter Abzug fällt auf | REQ-JRN-005/006, `forged_snapshot_is_detected_by_replay` |
 
 ## Teil 5 – Verwandte Sicherheitsnachweise
 

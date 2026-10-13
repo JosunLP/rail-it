@@ -18,7 +18,7 @@ serde = { workspace = true, optional = true }
 [features]
 default = []
 # Zustandsspeicher und Ausgabepuffer auf Basis von Vec (Server).
-alloc = []
+alloc = ["serde?/alloc"]
 serde = ["dep:serde", "railit-types/serde"]
 
 [dev-dependencies]

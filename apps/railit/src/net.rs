@@ -416,3 +416,16 @@ fn print_areas_and_stations(net: &Topology) {
         }
     }
 }
+
+/// `railit net generate`
+pub(crate) fn generate(stations: usize, lx_every: usize, out: Option<&Path>) -> ExitCode {
+    let source = railit_import::generate::corridor(stations, lx_every);
+    let Some(path) = out else {
+        print!("{source}");
+        return ExitCode::SUCCESS;
+    };
+    match std::fs::write(path, source) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => fail_usage(&format!("{}: {e}", path.display())),
+    }
+}

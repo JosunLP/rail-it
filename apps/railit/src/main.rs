@@ -41,6 +41,7 @@
 //! Verbindungsfehler.
 
 mod admin;
+mod bench;
 mod journal;
 mod net;
 mod online;
@@ -111,6 +112,18 @@ enum Command {
     /// Betriebsszenarien ausführen.
     #[command(subcommand)]
     Scenario(ScenarioCommand),
+    /// Leistungsmessung: Kernzyklus, Zulassungsprüfung und Replay gegen die Ziele.
+    Bench {
+        /// Bahnhöfe des erzeugten Korridors (236 ≈ 5000 Elemente, Bezugsgröße des Konzepts).
+        #[arg(long, default_value_t = 236)]
+        stations: usize,
+        /// Gemessene Zyklen.
+        #[arg(long, default_value_t = 6000)]
+        cycles: usize,
+        /// Exit-Code 1, wenn ein Ziel verfehlt ist.
+        #[arg(long)]
+        check: bool,
+    },
     /// Betriebsjournal prüfen und abspielen.
     #[command(subcommand)]
     Journal(JournalCommand),
@@ -325,6 +338,18 @@ enum NetCommand {
     Layout {
         /// Netzbeschreibung: rail-it-TOML oder railML 3.
         file: PathBuf,
+        /// Zieldatei; ohne Angabe Standardausgabe.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Erzeugt einen Korridor mit vielen Bahnhöfen (Leistungsmessung, Lasttests).
+    Generate {
+        /// Anzahl der Bahnhöfe.
+        #[arg(long, default_value_t = 10)]
+        stations: usize,
+        /// Jeder wievielte Streckenabschnitt einen Bahnübergang hat (0 = keiner).
+        #[arg(long, default_value_t = 5)]
+        lx_every: usize,
         /// Zieldatei; ohne Angabe Standardausgabe.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -615,6 +640,16 @@ fn main() -> ExitCode {
         Command::Net(NetCommand::Validate { file }) => net::validate(&file, output),
         Command::Net(NetCommand::Info { file }) => net::info(&file, output),
         Command::Net(NetCommand::Export { file, out }) => net::export(&file, out.as_deref()),
+        Command::Net(NetCommand::Generate {
+            stations,
+            lx_every,
+            out,
+        }) => net::generate(stations, lx_every, out.as_deref()),
+        Command::Bench {
+            stations,
+            cycles,
+            check,
+        } => bench::bench(stations, cycles, check, output),
         Command::Net(NetCommand::Layout { file, out }) => {
             net::layout(&file, out.as_deref(), output)
         }
@@ -748,6 +783,7 @@ fn run_online(
         Command::Net(_)
         | Command::Plan(_)
         | Command::Scenario(_)
+        | Command::Bench { .. }
         | Command::Journal(_)
         | Command::Audit(AuditCommand::Verify { .. })
         | Command::Auth(_) => Ok(ExitCode::SUCCESS),
