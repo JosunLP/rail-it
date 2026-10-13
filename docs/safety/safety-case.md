@@ -1,6 +1,6 @@
 # Sicherheitsnachweis (Safety Case)
 
-> Stand: Phase 5 · Gliederung nach EN 50129, Abschnitt 5 · lebendes Dokument
+> Stand: Phase 6 · Gliederung nach EN 50129, Abschnitt 5 · lebendes Dokument
 >
 > **Geltungsbereich:** rail-it als **Kandidat für den Laborbetrieb** – Simulation, Ausbildung,
 > Prüfstände. rail-it ist **nicht zugelassen** für den realen Bahnbetrieb. Dieser Nachweis
@@ -12,14 +12,14 @@
 
 | | |
 |---|---|
-| Gegenstand | Engine für Netz- und Stellwerkmanagement: Fahrwegsicherung (Kern), Signalisierung (Ks, H/V, ETCS Level 2), Betriebsführung, Dienst mit API und CLI |
+| Gegenstand | Engine für Netz- und Stellwerkmanagement: Fahrwegsicherung (Kern), Signalisierung (Ks, H/V, ETCS Level 2), Betriebsführung, Dienst mit API, CLI und Bedienplatz |
 | Beschreibung | [Konzept](../KONZEPT.md), Abschnitte 1 bis 15 |
 | Sicherheitsrelevante Teile (SIL 4 angestrebt) | `railit-types`, `railit-plan`, `railit-rules`, `railit-kernel`, `railit-movement`, `railit-safety`, `railit-rasta`, `railit-embedded` – alle `no_std`, ohne `unsafe`, ohne Panikpfade |
-| Nicht sicherheitsrelevant (SIL 0) | Import, Projektierungswerkzeug (abgesichert durch unabhängige Gegenprüfung und Signatur), Simulator, Betriebsführung, Dienst, CLI |
+| Nicht sicherheitsrelevant (SIL 0) | Import, Projektierungswerkzeug (abgesichert durch unabhängige Gegenprüfung und Signatur), Simulator, Betriebsführung, Dienst, CLI, Bedienplatz und Spurplan-Geometrie |
 | Einsatzvarianten | 1. alles auf dem Server (`railitd` mit 1, 2 oder 3 Kanälen je Stellbereich); 2. verteilt: Kern und Sicherheitsschicht auf einem sicheren Rechner (`railit-embedded`, Cortex-R), Anbindung über RaSTA |
-| Schnittstellen | Plan-Image (signiert), Feld über EULYNX SCI-P/-LS/-TDS/-LX auf RaSTA, Nachbarstellwerke über Grenzmeldungen, ETCS-Fahrzeuge über die RBC-Funktion, Bedienung über REST/gRPC |
-| Gefährdungen | [Gefährdungsliste](hazard-log.md), H-001 bis H-015 |
-| Anforderungen | [Anforderungen](../requirements/README.md), 94 Anforderungen mit stabilen IDs |
+| Schnittstellen | Plan-Image (signiert), Feld über EULYNX SCI-P/-LS/-TDS/-LX auf RaSTA, Nachbarstellwerke über Grenzmeldungen, ETCS-Fahrzeuge über die RBC-Funktion, Bedienung über REST/gRPC und den Bedienplatz (`/ui/`) |
+| Gefährdungen | [Gefährdungsliste](hazard-log.md), H-001 bis H-016 |
+| Anforderungen | [Anforderungen](../requirements/README.md), 98 Anforderungen mit stabilen IDs |
 
 ## Teil 2 – Qualitätsmanagementbericht
 
@@ -98,6 +98,16 @@ Kontext: nur Simulation, Ausbildung, Prüfstände (Teil 1); Anwendungsbedingunge
 | Bedienung stellt nur Anforderungen; Stellbefehle erzeugt nur der Kern | REQ-SVC-002 |
 | Anmeldung, Rollen, Zuständigkeit je Stellbereich, Auditprotokoll | REQ-SEC-001 … 005 |
 | Hilfshandlungen nur mit zweitem Bediener, Frist und Zählwerk | REQ-IXL-014, REQ-SVC-006 |
+| Bestätigung wiederholt die Hilfshandlung; Abweichung ⇒ nichts ausgeführt, Hilfshandlung verfällt (SIL-4-Kern) | REQ-IXL-022, `confirmation_must_restate_the_operation` |
+| Prüfcode der Anzeige: Der bestätigende Bedienplatz erkennt eine verfälschte Anzeige, der Dienst einen abweichenden Code | REQ-UI-003, `check_code_vectors`, E2E-Tests des Bedienplatzes |
+| Veraltete Anzeige wird erkannt und sperrt die Bedienung | REQ-UI-002 |
+| Spurplan aus der Topologie berechnet, nicht von Hand gezeichnet | REQ-UI-001 |
+
+Der Bedienplatz selbst bleibt SIL 0. Das Argument stützt sich nicht auf seine Richtigkeit:
+Eine falsche Anzeige kann den Bediener täuschen, aber der Kern führt eine Hilfshandlung nur
+aus, wenn die Bestätigung genau die angeforderte wiederholt, und jede Regelbedienung prüft er
+ohnehin selbst. Die Anzeigeüberwachung und der Prüfcode verringern die Wahrscheinlichkeit
+einer Fehlbedienung, sie sind keine Sicherheitsfunktion.
 | Rücksetzen der Sicherheitsschicht nur durch die Instandhaltung, protokolliert | REQ-SAF-004 |
 
 ### G6 – Jeder Hergang ist nachvollziehbar
@@ -132,6 +142,9 @@ rail-it ist als **generisches Produkt** angelegt. Für einen Einsatz sind zusät
 6. Rücksetzen der Sicherheitsschicht nur nach Klärung der Ursache; danach gelten alle
    Elemente als unbekannt, Fahrstraßen sind neu einzustellen.
 7. Journal und Auditprotokoll außerhalb des Stellwerksrechners sichern.
+8. Hilfshandlungen am Bedienplatz bestätigen; wer bestätigt, liest die Hilfshandlung aus der
+   eigenen Anzeige und gibt das Element selbst ein, ohne es vom anfordernden Bediener zu
+   übernehmen. Zeigt der Bedienplatz „Anzeige gestört“, wird nicht bedient.
 
 ## Teil 7 – Offene Punkte bis zu einer Zulassung
 
@@ -147,11 +160,12 @@ rail-it ist als **generisches Produkt** angelegt. Für einen Einsatz sind zusät
 | Regelwerke `de-estw` und `etcs` mit den Regeln eines Betreibers | Teil 5 |
 | Import aus PlanPro, SCI-ILS zwischen Stellwerksrechnern | Konzept 18 |
 | Prüfung gegen reale EULYNX-Objektsteuerungen und ETCS-Fahrzeuggeräte | H-010, H-014 |
+| Ergonomische Prüfung des Bedienplatzes mit Bedienern; ggf. zweikanalige sichere Anzeige | H-016 |
 
 ## Teil 8 – Schlussfolgerung
 
 Für den Geltungsbereich – Simulation, Ausbildung und Prüfstände – sind die identifizierten
-Gefährdungen H-001 bis H-015 durch Anforderungen beherrscht, deren Umsetzung durch Tests,
+Gefährdungen H-001 bis H-016 durch Anforderungen beherrscht, deren Umsetzung durch Tests,
 Szenarien, Eigenschaftstests, formale Nachweise und Fuzzing belegt und lückenlos
 rückverfolgbar ist. Für den realen Bahnbetrieb reicht das nicht: Die Punkte aus Teil 7,
 insbesondere unabhängige Begutachtung, qualifizierte Toolchain und Hardware, sind

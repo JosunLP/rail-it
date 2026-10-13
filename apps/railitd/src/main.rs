@@ -22,6 +22,7 @@ mod engine;
 mod grpc;
 mod service;
 mod tls;
+mod ui;
 
 use std::io::Write;
 use std::net::SocketAddr;

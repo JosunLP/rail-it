@@ -6,6 +6,14 @@
 Je Anforderung: Gefährdungen, Code, der die ID nennt, und Nachweise (Tests und
 Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
+## [bedienplatz.md](../requirements/bedienplatz.md)
+
+| ID | Gefährdung | Code | Nachweis |
+|----|------------|------|----------|
+| REQ-UI-001 | H-016 | `apps/railitd/ui/src/plan.ts`<br>`crates/railit-layout/src/lib.rs` | `beispielstadt_is_a_station_with_two_tracks`<br>`nordbahn_has_three_areas_from_west_to_east`<br>`railml_branch_and_svg`<br>`operator_desk_is_static_and_locked_down`<br>`apps/railitd/tests/api.rs`<br>`apps/railitd/tests/security.rs`<br>`apps/railitd/ui/e2e/bedienplatz.test.ts`<br>`crates/railit-layout/tests/layout.rs` |
+| REQ-UI-002 | H-016 | `apps/railitd/ui/src/main.ts`<br>`apps/railitd/ui/src/model.ts` | `operator_desk_is_static_and_locked_down`<br>`apps/railitd/tests/security.rs`<br>`apps/railitd/ui/e2e/bedienplatz.test.ts`<br>`apps/railitd/ui/test/model.test.ts` |
+| REQ-UI-003 | H-006, H-016 | `apps/railitd/src/service.rs`<br>`apps/railitd/ui/src/check.ts`<br>`apps/railitd/ui/src/main.ts`<br>`crates/railit-runtime/src/names.rs` | `check_code_vectors`<br>`aux_operation_and_journal`<br>`apps/railitd/tests/api.rs`<br>`apps/railitd/ui/e2e/bedienplatz.test.ts`<br>`apps/railitd/ui/test/check.test.ts` |
+
 ## [betrieb.md](../requirements/betrieb.md)
 
 | ID | Gefährdung | Code | Nachweis |
@@ -88,6 +96,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-IXL-019 | H-001, H-012 | `crates/railit-kernel/src/kernel/border.rs` | `incoming_trains_are_authorized_only_without_permission`<br>`borders_are_consistent`<br>`crates/railit-kernel/tests/borders.rs` |
 | REQ-IXL-020 | H-001, H-012 | `crates/railit-kernel/src/invariants.rs`<br>`crates/railit-kernel/src/kernel/border.rs` | `exit_needs_permission_and_clear_neighbour`<br>`lost_neighbour_drops_exit_signal`<br>`proceed_only_when_safe`<br>`crates/railit-kernel/tests/borders.rs` |
 | REQ-IXL-021 | H-012 | `crates/railit-kernel/src/kernel/border.rs` | `never_two_stations_feed_the_single_track`<br>`single_track_direction_changes_in_order`<br>`crates/railit-kernel/tests/borders.rs`<br>Szenario 13 |
+| REQ-IXL-022 | H-006, H-016 | `apps/railitd/src/service.rs`<br>`crates/railit-kernel/src/io.rs` | `confirmation_must_restate_the_operation`<br>`apps/railitd/tests/api.rs`<br>`apps/railitd/ui/e2e/bedienplatz.test.ts`<br>`crates/railit-kernel/tests/phase2.rs`<br>Szenario 12 |
 
 ## [kommunikation.md](../requirements/kommunikation.md)
 
@@ -162,4 +171,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-94 Anforderungen, davon 94 mit Nachweis.
+98 Anforderungen, davon 98 mit Nachweis.

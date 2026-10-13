@@ -288,6 +288,73 @@ fn roles_areas_and_audit_with_tokens() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("Auditprotokoll"));
 }
 
+/// REQ-UI-001, REQ-UI-002: Der Bedienplatz ist ohne Anmeldung erreichbar, enthält aber keine
+/// Daten; jede Antwort trägt eine strenge Content-Security-Policy. Die Daten selbst bleiben
+/// hinter der Anmeldung.
+#[test]
+fn operator_desk_is_static_and_locked_down() {
+    let plan = plan(BEISPIELSTADT, "sec-ui");
+    let d = start(&[
+        "--network",
+        BEISPIELSTADT,
+        "--plan",
+        plan.to_str().unwrap(),
+        "--listen",
+        "127.0.0.1:0",
+        "--token",
+        "geheim",
+    ]);
+    let agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .build()
+        .new_agent();
+
+    let resp = agent.get(format!("{}/", d.url)).call().unwrap();
+    assert_eq!(resp.status().as_u16(), 303);
+    assert_eq!(resp.headers()["location"], "/ui/");
+
+    for (path, kind) in [
+        ("/ui/", "text/html"),
+        ("/ui/app.js", "text/javascript"),
+        ("/ui/style.css", "text/css"),
+    ] {
+        let mut resp = agent.get(format!("{}{path}", d.url)).call().unwrap();
+        assert_eq!(resp.status().as_u16(), 200, "{path}");
+        let headers = resp.headers().clone();
+        let header = |name: &str| headers[name].to_str().unwrap().to_string();
+        assert!(header("content-type").starts_with(kind), "{path}");
+        let csp = header("content-security-policy");
+        assert!(csp.contains("script-src 'self'"), "{csp}");
+        assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+        assert!(
+            !csp.contains("unsafe-inline") && !csp.contains("unsafe-eval"),
+            "{csp}"
+        );
+        assert_eq!(header("x-frame-options"), "DENY");
+        assert_eq!(header("x-content-type-options"), "nosniff");
+        assert_eq!(header("cache-control"), "no-store");
+        let body = resp.body_mut().read_to_string().unwrap();
+        assert!(!body.is_empty(), "{path}");
+        if path == "/ui/" {
+            assert!(body.contains("<rit-aux"), "Bedienplatz mit Hilfshandlungen");
+            assert!(!body.contains("<script>"), "keine Inline-Skripte");
+        }
+    }
+
+    // Die Seite ist öffentlich, die Daten nicht.
+    for path in ["/v1/layout", "/v1/state"] {
+        let resp = agent.get(format!("{}{path}", d.url)).call().unwrap();
+        assert_eq!(resp.status().as_u16(), 401, "{path}");
+    }
+    let resp = agent
+        .get(format!("{}/v1/layout", d.url))
+        .header("Authorization", "Bearer geheim")
+        .call()
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+}
+
 /// Ohne Anmeldung lauscht der Dienst nur lokal.
 #[test]
 fn open_mode_only_on_loopback() {

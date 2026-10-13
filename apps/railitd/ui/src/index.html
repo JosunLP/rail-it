@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>rail-it · Bedienplatz</title>
+    <link rel="stylesheet" href="style.css" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body class="stale">
+    <header>
+      <span class="brand">rail-it</span>
+      <rit-status id="status"></rit-status>
+      <label class="operator">Bediener <input id="operator" type="number" min="1" max="65535" /></label>
+    </header>
+
+    <main>
+      <section class="plan-wrap">
+        <div id="plan" class="plan-box"></div>
+        <div class="stale-banner" role="alert">ANZEIGE GESTÖRT – Spurplan nicht aktuell, keine Bedienung</div>
+        <p class="hint">
+          Fahrstraße: Start- und Zielsignal anklicken · Rechtsklick: Rücknahme, Weichen, Erlaubnisse,
+          Hilfshandlungen · Esc: Auswahl aufheben
+        </p>
+      </section>
+      <aside>
+        <rit-aux id="aux" class="panel"></rit-aux>
+        <rit-trains id="trains" class="panel"></rit-trains>
+        <rit-log id="log" class="panel"></rit-log>
+      </aside>
+    </main>
+
+    <div id="menu" class="menu" role="menu"></div>
+
+    <dialog id="confirm">
+      <form id="confirm-form" method="dialog">
+        <h2>Hilfshandlung bestätigen</h2>
+        <p id="confirm-text" class="confirm-text"></p>
+        <p id="confirm-meta" class="confirm-meta"></p>
+        <p class="confirm-code-line">Prüfcode der Anzeige: <code id="confirm-code"></code></p>
+        <p id="confirm-warning" class="confirm-warning" role="alert"></p>
+        <label>
+          Element zur Bestätigung selbst eingeben
+          <input id="confirm-element" type="text" autocomplete="off" spellcheck="false" required />
+        </label>
+        <p class="confirm-note">
+          Die Bestätigung wird nur ausgeführt, wenn das eingegebene Element der angeforderten
+          Hilfshandlung entspricht. Sonst verfällt sie und muss neu angefordert werden.
+        </p>
+        <div class="buttons">
+          <button id="confirm-cancel" type="button">Abbrechen</button>
+          <button id="confirm-ok" type="submit" data-command>Bestätigen</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="login">
+      <form id="login-form" method="dialog">
+        <h2>Anmeldung</h2>
+        <p id="login-message"></p>
+        <label>Zugangstoken <input id="login-token" type="password" autocomplete="off" /></label>
+        <div class="buttons"><button type="submit">Anmelden</button></div>
+      </form>
+    </dialog>
+  </body>
+</html>

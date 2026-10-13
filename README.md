@@ -29,7 +29,9 @@ RBC-Funktion und Mischbetrieb, Feldanbindung über EULYNX SCI und RaSTA, Import 
 railML 3) und Phase 5 (Sicherheit und Embedded: redundante Kanäle mit Voter und Watchdog,
 Runtime für den sicheren Rechner auf Cortex-R, formale Nachweise mit Kani, Fuzzing,
 [Sicherheitsnachweis](docs/safety/safety-case.md) und automatische
-[Rückverfolgbarkeit](docs/safety/traceability.md)) sind umgesetzt.
+[Rückverfolgbarkeit](docs/safety/traceability.md)) und Phase 6 (Bedienplatz: automatisch
+berechneter Spurplan, Web-Bedienplatz mit Anzeigeüberwachung und sicherer Anzeige- und
+Bestätigungskette für Hilfshandlungen) sind umgesetzt.
 
 | Crate | Inhalt | |
 |-------|--------|---|
@@ -50,8 +52,10 @@ Runtime für den sicheren Rechner auf Cortex-R, formale Nachweise mit Kani, Fuzz
 | `railit-ops` | Zugnummernmeldung, Fahrplan, Zuglenkung, Selbstblock, Disposition | |
 | `railit-runtime` | Zyklus Kerne ↔ Feld für mehrere Stellbereiche, Zustandsbild, Szenarien, Schlüssel | |
 | `railit-import` | rail-it-TOML, railML 3 (Import und Export) | |
+| `railit-layout` | Spurplan: schematische Geometrie aus der Topologie, SVG-Export | |
 | `railit-fuzz` | Fuzz-Ziele für alle Eingangsschnittstellen (mit `fuzz/` für cargo-fuzz) | |
-| `railitd` | Dienst mit REST/JSON-API, gRPC (`proto/railit/v1`), Ereignisstrom, Rollen, TLS/mTLS, Audit | |
+| `railitd` | Dienst mit REST/JSON-API, gRPC (`proto/railit/v1`), Ereignisstrom, Rollen, TLS/mTLS, Audit, Bedienplatz unter `/ui/` | |
+| `apps/railitd/ui` | Bedienplatz: Spurplan-UI in TypeScript mit bQuery, gebaut mit Bun | SIL 0, reiner API-Client |
 | `railit` | Kommandozeile (offline und online) | |
 
 ## Schnellstart
@@ -79,14 +83,41 @@ railit route set A-N1
 railit watch            # Ereignisse fortlaufend, Strg+C beendet
 railit state            # Signalbilder, Verschlüsse, Bahnübergänge, Hilfshandlungen
 
-# Hilfshandlung: Bediener 1 fordert an, Bediener 2 bestätigt
+# Hilfshandlung: Bediener 1 fordert an, Bediener 2 bestätigt und nennt sie dabei selbst
 railit aux request release-route A-N1 --operator 1
-railit aux confirm 0 --operator 2
+railit aux confirm 0 release-route A-N1 --operator 2
+
+# Spurplan als SVG (für Dokumentation und Projektierung)
+railit net layout examples/beispielstadt.toml --out beispielstadt.svg
 
 # Journal prüfen und abspielen
 railit journal verify betrieb.journal
 railit journal replay betrieb.journal --plan beispielstadt.rplan
 ```
+
+### Bedienplatz
+
+`railitd` liefert einen Web-Bedienplatz aus: <http://127.0.0.1:7878/> öffnen (bei
+`--speed 10` wie oben). Der Spurplan wird aus der Topologie berechnet (`/v1/layout`).
+
+- Fahrstraße: Start- und Zielsignal anklicken; Rechtsklick auf Signal, Weiche, Abschnitt oder
+  Grenze für Rücknahme, Umstellen, Erlaubnisse und Hilfshandlungen.
+- Hilfshandlungen bestätigt ein zweiter Bediener (eigene Bedienernummer oben rechts, eigener
+  Browser-Tab) im Dialog: Er gibt das Element selbst ein, der Bedienplatz prüft den Prüfcode
+  seiner Anzeige gegen den des Stellwerks, der Kern führt nur eine unverändert wiederholte
+  Hilfshandlung aus.
+- Kommt 2 s lang kein aktuelles Zustandsbild, deckt der Bedienplatz den Spurplan ab und sperrt
+  jede Bedienung.
+
+![Bedienplatz: Fahrstraße A-N2 eingestellt, RE 7 in Gleis 2, Hilfshandlung offen](docs/img/bedienplatz.png)
+
+![Bestätigung einer Hilfshandlung durch den zweiten Bediener](docs/img/bestaetigung.png)
+
+Entwicklung des Bedienplatzes (Bun ≥ 1.4): `cd apps/railitd/ui && bun install && bun run
+build`; Prüfungen mit `bun run check`, `bun run test` und `bun run e2e` (Playwright gegen
+einen echten `railitd`, vorher `cargo build -p railit -p railitd`). Das gebaute Bundle
+`apps/railitd/ui/dist` ist eingecheckt, damit `cargo build` ohne Bun auskommt; die CI prüft,
+dass es zum Quelltext passt.
 
 ### Netz mit mehreren Bahnhöfen: Nordbahn
 

@@ -1,4 +1,5 @@
-//! Spurplan: schematische Geometrie eines Netzes für Bedienplätze (Konzept, Abschnitt 14.3).
+//! Spurplan: schematische Geometrie eines Netzes für Bedienplätze (Konzept, Abschnitt 14.3;
+//! REQ-UI-001).
 //!
 //! Das Netzmodell kennt keine Koordinaten. Der Spurplan wird daraus berechnet:
 //!

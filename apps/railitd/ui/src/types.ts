@@ -1,0 +1,107 @@
+// Antworten der API von railitd (siehe docs/api.md). Nur die Felder, die der Bedienplatz
+// verwendet.
+
+export type Pos = [number, number];
+
+export interface Layout {
+  network: string;
+  width: number;
+  height: number;
+  tracks: { name: string; tvd: string | null; area: string | null; line: Pos[] }[];
+  points: {
+    name: string;
+    tvd: string | null;
+    area: string | null;
+    tip: Pos;
+    fork: Pos;
+    left: Pos;
+    right: Pos;
+  }[];
+  terminals: { name: string; kind: 'boundary' | 'buffer_stop' | 'border'; at: Pos; opens: 'left' | 'right' }[];
+  signals: { name: string; kind: string; system: string; at: Pos; facing: 'left' | 'right'; track: string }[];
+  level_crossings: { name: string; at: Pos }[];
+  borders: { left: string; right: string; at: Pos }[];
+  areas: { name: string; x0: number; x1: number }[];
+  stations: { name: string; at: Pos }[];
+}
+
+export type Occupancy = 'clear' | 'occupied' | 'disturbed';
+export type RoutePhase =
+  | 'idle'
+  | 'setting'
+  | 'locked'
+  | 'proceed'
+  | 'occupied'
+  | 'arrived'
+  | 'cancelling'
+  | 'halted';
+
+export interface NamedAux {
+  kind: AuxKind;
+  element: string;
+  position?: 'left' | 'right';
+}
+
+export type AuxKind = 'release_route' | 'reset_tvd' | 'substitute' | 'force_point' | 'take_permission';
+
+export interface PendingAux {
+  area: string;
+  aux: number;
+  op: NamedAux;
+  operator: number;
+  since_ms: number;
+  check: string;
+}
+
+export interface BorderState {
+  name: string;
+  holding: boolean;
+  requested: boolean;
+  offering: boolean;
+  approach_locked: boolean;
+  peer_holding: boolean | null;
+}
+
+export interface Snapshot {
+  network: string;
+  time_ms: number;
+  cycle: number;
+  safe_state: string | null;
+  areas: {
+    name: string;
+    safe_state: string | null;
+    borders: BorderState[];
+    safety: { redundancy: string; channels: { channel: number; active: boolean }[]; trip: unknown };
+  }[];
+  points: {
+    area: string;
+    name: string;
+    report: string;
+    commanded: string | null;
+    locked_by: string | null;
+    holds: number;
+  }[];
+  signals: {
+    area: string;
+    name: string;
+    commanded: 'stop' | 'proceed';
+    report: string;
+    substitute: boolean;
+    picture: string;
+  }[];
+  tvds: { area: string; name: string; occupancy: Occupancy; locked_by: string | null; overlap_of: string | null }[];
+  routes: { area: string; name: string; start: string; end: string; phase: RoutePhase }[];
+  level_crossings: { name: string; report: string; close_commanded: boolean }[];
+  pending_aux: PendingAux[];
+  aux_counter: number;
+  ops?: { ars: boolean; trains: { number: string; berth: string | null; left: boolean; delay_s: number }[] };
+}
+
+/// Antwort auf eine Anforderung (`accepted` oder `rejected`).
+export interface Answer {
+  type: 'accepted' | 'rejected';
+  reason?: string;
+  element?: string | null;
+  area?: string;
+  aux?: { type: string; aux?: number; counter?: number };
+}

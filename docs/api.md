@@ -41,6 +41,8 @@ Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`). TLS:
 | Methode | Pfad | Zweck | Antwort |
 |---------|------|-------|---------|
 | GET | `/v1/health` | Lebenszeichen | `{"status":"ok"\|"safe_state", "network", "cycle", "time_ms", "safe_state"}` |
+| GET | `/`, `/ui/` | Bedienplatz (Spurplan-UI, siehe unten); ohne Anmeldung, enthält keine Daten | HTML / JS / CSS |
+| GET | `/v1/layout` | Spurplan-Geometrie, aus der Topologie berechnet: Gleise, Weichen, Signale, Bahnübergänge, Grenzen, Stellbereiche, Betriebsstellen | JSON |
 | GET | `/v1/plan` | Plan: Prüfsumme, Signatur, Elemente, Fahrstraßen mit Weichen, Abschnitten, Geschwindigkeit, Durchrutschweg, Flankenschutz, Bahnübergängen, Feindlichkeiten | JSON |
 | GET | `/v1/state` | Zustandsbild (siehe unten) | JSON |
 | POST | `/v1/routes/{name}/set` | Fahrstraße einstellen | 200 `accepted` / 409 `rejected` |
@@ -49,9 +51,9 @@ Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`). TLS:
 | GET | `/v1/areas` | Stellbereiche mit Grenzen und Erlaubnissen | JSON-Liste |
 | POST | `/v1/borders/{Bereich>Nachbar}/request` | Erlaubnis anfordern | 200 / 409 |
 | POST | `/v1/borders/{Bereich>Nachbar}/withdraw` | Anforderung zurückziehen | 200 / 409 |
-| GET | `/v1/aux` | Offene Hilfshandlungen und Zählwerk | `{"pending": […], "counter"}` |
+| GET | `/v1/aux` | Offene Hilfshandlungen mit Prüfcode (`check`) und Zählwerk | `{"pending": […], "counter"}` |
 | POST | `/v1/aux` | Hilfshandlung anfordern, Body `{"kind","element","position"?}`; ohne Benutzerverwaltung Kopf `X-Railit-Operator` | 200 / 409 / 400 |
-| POST | `/v1/aux/{id}/confirm` | Hilfshandlung bestätigen (anderer Bediener), `?area=` bei mehreren Bereichen | 200 / 409 / 400 |
+| POST | `/v1/aux/{id}/confirm` | Hilfshandlung bestätigen (anderer Bediener), Body `{"kind","element","position"?,"check"}` (wiederholte Hilfshandlung und Prüfcode der Anzeige), `?area=` bei mehreren Bereichen | 200 / 409 / 400 |
 | GET | `/v1/ops` | Betriebsführung: Fahrplan, Zuglenkung, Züge mit Zugnummer, Halt, Verspätung | JSON |
 | POST | `/v1/ops/ars` | Zuglenkung ein/aus, Body `{"on":true}` | 200 |
 | POST | `/v1/ops/trains/{zug}/describe` | Zugnummer eintragen, Body `{"signal"}` | 200 / 400 |
@@ -95,7 +97,9 @@ synchron:
 Ablehnungsgründe: `conflict`, `tvd_not_clear`, `point_locked`, `point_not_operable`,
 `route_active`, `route_not_active`, `train_in_route`, `safe_state`, `unknown_element`,
 `signal_held`, `aux_busy`, `aux_unknown`, `aux_expired`, `same_operator`,
-`aux_not_applicable`, `no_permission` (Ausfahrt über eine Grenze ohne Erlaubnis).
+`aux_mismatch` (Bestätigung weicht ab, Hilfshandlung verfallen), `check_mismatch` (Prüfcode
+der Anzeige weicht ab, vom Dienst), `aux_not_applicable`, `no_permission` (Ausfahrt über eine
+Grenze ohne Erlaubnis).
 
 ## Hilfshandlungen
 
@@ -116,10 +120,48 @@ curl -s -X POST -H "Authorization: Bearer $RAILIT_TOKEN" -H "X-Railit-Operator: 
      -H "Content-Type: application/json" \
      -d '{"kind":"release_route","element":"A-N1"}' http://127.0.0.1:7878/v1/aux
 # {"type":"accepted","request":7,"aux":{"type":"aux_pending","aux":0,"op":{…},"operator":1}}
+curl -s -H "Authorization: Bearer $RAILIT_TOKEN" http://127.0.0.1:7878/v1/aux
+# {"pending":[{"area":"Beispielstadt","aux":0,"op":{"kind":"release_route","element":"A-N1"},
+#              "operator":1,"since_ms":…,"check":"63CC78"}],"counter":0}
 curl -s -X POST -H "Authorization: Bearer $RAILIT_TOKEN" -H "X-Railit-Operator: 2" \
+     -H "Content-Type: application/json" \
+     -d '{"kind":"release_route","element":"A-N1","check":"63CC78"}' \
      http://127.0.0.1:7878/v1/aux/0/confirm
 # {"type":"accepted","request":8,"aux":{"type":"aux_executed","aux":0,"op":{…},"counter":1}}
 ```
+
+**Sichere Anzeige- und Bestätigungskette** (REQ-UI-003, REQ-IXL-022): Die Bestätigung
+wiederholt die Hilfshandlung so, wie der zweite Bediener sie liest und eingibt, und trägt den
+Prüfcode, den sein Bedienplatz aus der Anzeige berechnet hat. Der Prüfcode sind die ersten
+drei Bytes von SHA-256 über
+
+```text
+railit-aux-v1\n{Stellbereich}\n{Nummer}\n{kind}\n{element}\n{position oder leer}
+```
+
+als sechs Hexziffern in Großbuchstaben. Weicht er vom Code der offenen Hilfshandlung ab,
+weist der Dienst die Bestätigung mit `check_mismatch` ab (409, nichts geändert: Die Anzeige
+ist gestört). Weicht die wiederholte Hilfshandlung von der offenen ab, lehnt der Kern mit
+`aux_mismatch` ab; die Hilfshandlung **verfällt** und muss neu angefordert werden.
+`railit aux confirm 0 release-route A-N1 --operator 2` berechnet den Code aus der Anzeige
+von `/v1/aux`.
+
+## Bedienplatz
+
+`railitd` liefert unter `/ui/` einen Bedienplatz aus (TypeScript mit
+[bQuery](https://www.npmjs.com/package/@bquery/bquery), gebaut mit Bun aus `apps/railitd/ui`;
+das Bundle ist eingebettet). Er ist ein gewöhnlicher Client dieser API: `/v1/layout` einmal,
+`/v1/state` alle 300 ms, `/v1/events` für Meldungen, Bedienungen über die Pfade oben.
+Mit Benutzerdatei oder Token fragt er nach dem Zugangstoken (nur in der Sitzung gespeichert).
+
+- **Fahrstraße:** Start- und Zielsignal anklicken. **Rechtsklick** auf Signal, Weiche,
+  Abschnitt oder Grenze: Rücknahme, Umstellen, Erlaubnis, Hilfshandlungen.
+- **Hilfshandlungen:** Liste mit „Bestätigen …“; der Dialog zeigt Hilfshandlung, Bediener und
+  Prüfcode, das Element ist selbst einzugeben.
+- **Anzeigeüberwachung** (REQ-UI-002): Kommt 2 s lang kein Zustandsbild mit fortgeschrittener
+  Zeit, wird der Spurplan abgedeckt („ANZEIGE GESTÖRT“) und jede Bedienung gesperrt.
+- **Sicherheitsköpfe:** `Content-Security-Policy` ohne Inline-Skripte und fremde Quellen,
+  `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`.
 
 ## Zustandsbild
 
@@ -217,6 +259,7 @@ Vertrag: [`proto/railit/v1/railit.proto`](../proto/railit/v1/railit.proto). Dien
 | `railit.v1.Etcs` | `GetTrains` |
 | `railit.v1.Safety` | `GetSafety`, `InjectFault`, `Reintegrate`, `Reset` |
 | `railit.v1.Diagnostics` | `WhoAmI`, `GetPlan`, `GetAudit` |
+| `railit.v1.Infrastructure` | `GetLayout` (Spurplan-Geometrie als JSON) |
 
 gRPC läuft über HTTP/2 auf dem Port der REST-API (ohne TLS als h2c, mit TLS per ALPN).
 Anmeldung als Metadaten `authorization: Bearer <token>` oder per Client-Zertifikat. Eine

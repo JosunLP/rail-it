@@ -3,7 +3,9 @@
 //! | Methode | Pfad | Zweck |
 //! |---------|------|-------|
 //! | GET | `/v1/health` | Lebenszeichen (ohne Anmeldung) |
+//! | GET | `/ui/` | Bedienplatz (Spurplan-UI, ohne Anmeldung; siehe [`crate::ui`]) |
 //! | GET | `/v1/plan` | Netz, Stellbereiche, Fahrstraßen, Elemente, Prüfsummen |
+//! | GET | `/v1/layout` | Spurplan-Geometrie (automatisch berechnet) |
 //! | GET | `/v1/state` | Zustandsbild aller Stellbereiche |
 //! | GET | `/v1/areas` | Stellbereiche mit Grenzen und Erlaubnissen |
 //! | POST | `/v1/routes/{name}/set` | Fahrstraße einstellen |
@@ -143,6 +145,7 @@ pub(crate) fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/health", get(health))
         .with_state(state)
+        .merge(crate::ui::router())
         .merge(protected)
 }
 

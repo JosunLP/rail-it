@@ -16,6 +16,7 @@ Anforderung → Code → Test (Konzept, Abschnitt 16).
 | [embedded.md](embedded.md) | `REQ-EMB`: sicherer Rechner (Cortex-R) |
 | [journal.md](journal.md) | `REQ-JRN`: Betriebsjournal und Replay |
 | [dienst.md](dienst.md) | `REQ-SVC`: Dienst, API und Bedienung |
+| [bedienplatz.md](bedienplatz.md) | `REQ-UI`: Bedienplatz (Spurplan, Anzeigeüberwachung, Bestätigungskette) |
 | [betrieb.md](betrieb.md) | `REQ-OPS`: Betriebsführung (Zugnummern, Fahrplan, Zuglenkung, Disposition) |
 | [sicherheit.md](sicherheit.md) | `REQ-SEC`: Benutzer, Rollen, TLS, Auditprotokoll |
 

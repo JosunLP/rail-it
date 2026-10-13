@@ -1,6 +1,6 @@
 # rail-it – Konzept einer Engine für Netz- und Stellwerkmanagement
 
-> Status: **v0.7** (Phasen 0 bis 5 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
+> Status: **v0.8** (Phasen 0 bis 6 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
 >
 > v0.2 arbeitet die Grundsatzentscheidungen aus Abschnitt 2 ein: vollständiger Netz- und
 > Bahnbetrieb, deutsches ESTW **und** europäisches System (ETCS/EULYNX), Server **und**
@@ -160,6 +160,7 @@ rail-it/
 │   ├── railit-runtime/         # Zyklussteuerung (std und Embedded-Variante)    SIL 4
 │   ├── railit-planning/        # Fahrstraßengenerator, Validierung, Signierung  SIL 0 (+ unabh. Prüfer)
 │   ├── railit-import/          # railML 3, PlanPro, rail-it-TOML                SIL 0
+│   ├── railit-layout/          # Spurplan-Geometrie aus der Topologie, SVG      SIL 0
 │   ├── railit-journal/         # Event-Log, Hash-Kette, Snapshots, Replay       SIL 0 (Diagnose)
 │   ├── railit-adapters/        # eulynx/, rasta/, sim/                          SIL 4 (RaSTA) / 0
 │   ├── railit-ops/             # Fahrplan, Disposition, ARS, Zugnummern         SIL 0
@@ -168,6 +169,7 @@ rail-it/
 │   └── railit-api/             # gRPC/REST-Server, AuthN/Z, Audit               SIL 0
 ├── apps/
 │   ├── railitd/                # Dienst
+│   │   └── ui/                 # Bedienplatz (TypeScript, bQuery, Bun)          SIL 0
 │   └── railit/                 # CLI
 ├── examples/                   # Beispielnetze (TOML)
 ├── tests/scenarios/            # Deklarative Betriebsszenarien
@@ -632,11 +634,53 @@ railit sim train add --number ICE577 --at A --speed 80
 Alle Ausgaben gibt es wahlweise als Text oder mit `--output json`, damit sich die CLI in
 Skripten verwenden lässt.
 
-### 14.3 Später: UI
+### 14.3 Bedienplatz (Phase 6)
 
-Die UI ist ein weiterer API-Client, etwa eine Web-Spurplandarstellung. Ein Punkt braucht
-dabei Sorgfalt: Hilfshandlungen verlangen eine **sichere Anzeige- und Bestätigungskette**, zum
-Beispiel durch Rückmeldung mit Prüfcode. Die API ist darauf von Beginn an ausgelegt.
+Der Bedienplatz ist ein weiterer API-Client: eine Web-Spurplandarstellung, die `railitd`
+unter `/ui/` ausliefert. Er ist SIL 0; die Sicherheit hängt nicht an seiner Richtigkeit.
+
+**Spurplan.** Das Netzmodell kennt keine Koordinaten. `railit-layout` berechnet daraus eine
+schematische Geometrie (`/v1/layout`, gRPC `Infrastructure.GetLayout`, `railit net layout`
+als SVG): Eine Breitensuche legt die Richtung West → Ost fest, die Spur wird entlang der
+Gleise weitergereicht und der abzweigende Strang einer Weiche erhält eine eigene Spur, die
+x-Lage folgt dem längsten Weg vom Netzanfang. Gleise bleiben auf ihrer Spur, Weichenschenkel enden auf der Spur des
+Nachbarn; Signale stehen an ihrem Gleis in Wirkrichtung. Der Bedienplatz zeichnet nur diese
+Geometrie und kennt das Netz sonst nicht (REQ-UI-001).
+
+**Darstellung.** Freimeldung (frei, Fahrstraße, Durchrutschweg, besetzt, gestört –
+blinkend), Weichenlage (Schenkel in Endlage hervorgehoben, ohne Endlage blinkend),
+Signalbegriffe (Halt, Fahrt, Ersatzsignal, gestört), Zugnummern hinter dem Signal,
+Erlaubnisse an Bereichsgrenzen, Bahnübergänge, Sicherheitsschicht je Stellbereich.
+
+**Anzeigeüberwachung.** Der Bedienplatz fragt das Zustandsbild alle 300 ms ab. Schreitet die
+Zeit des Stellwerks 2 s lang nicht fort (Verbindung, Dienst oder Bedienplatz hängt), wird der
+Spurplan abgedeckt und jede Bedienung gesperrt (REQ-UI-002).
+
+**Sichere Anzeige- und Bestätigungskette.** Für Hilfshandlungen gilt eine zweistufige Kette:
+
+1. Der Dienst liefert zu jeder offenen Hilfshandlung einen Prüfcode: SHA-256 über
+   `railit-aux-v1`, Stellbereich, Nummer, Art, Element und Lage, gekürzt auf sechs
+   Hexziffern. Der bestätigende Bedienplatz berechnet ihn aus seiner Anzeige; weicht er ab,
+   meldet er „Anzeige gestört“ und sperrt die Bestätigung. Der Dienst prüft den mitgesandten
+   Code noch einmal (`check_mismatch`). Das erkennt verfälschte oder verwechselte Anzeigen
+   (REQ-UI-003).
+2. Der zweite Bediener gibt das Element **selbst ein**. Die Bestätigung trägt die so
+   wiederholte Hilfshandlung, und der **Kern** (SIL 4) führt nur aus, wenn sie der offenen
+   gleicht; sonst verfällt die Hilfshandlung (`aux_mismatch`, REQ-IXL-022).
+
+Stufe 2 ist das Sicherheitsargument: Eine falsche Anzeige kann den Bediener täuschen, führt
+aber nie zur Ausführung einer anderen als der angeforderten Hilfshandlung. Stufe 1 und die
+Anzeigeüberwachung senken die Wahrscheinlichkeit einer Fehlbedienung.
+
+**Technik.** TypeScript mit bQuery (Signale, Web-Components im Light DOM, `safeHtml` mit
+Maskierung aller Netznamen; der Spurplan entsteht mit `createElementNS`, nie aus
+HTML-Zeichenketten), gebaut mit Bun zu einem einzelnen Modul. Das Bundle ist eingecheckt und in
+`railitd` eingebettet; die CI baut es neu und vergleicht. Ausgeliefert mit strenger
+Content-Security-Policy (nur eigene Skripte und Stile, keine Inline-Skripte, keine Einbettung
+in fremde Seiten). Tests: Unit-Tests mit `bun test` (Prüfvektoren gleich denen des Dienstes,
+Anzeigemodell) und Ende-zu-Ende-Tests mit Playwright gegen einen echten `railitd`
+(Fahrstraße per Klick, Hilfsauflösung mit zwei Bedienern, abweichende Bestätigung,
+verfälschte Anzeige, Ausfall des Dienstes).
 
 ---
 
@@ -744,17 +788,17 @@ Daraus folgen diese Regeln:
 | **3 – Netz & Betrieb** | Mehrere Stellbereiche, Streckenblock, Zugnummern, Fahrplan, Zuglenkung, Disposition, gRPC-Vertrag, Rollen, mTLS, Audit | Betrieb eines Netzes mit mehreren Bahnhöfen in der Simulation („Nordbahn“, `examples/nordbahn.toml` mit Fahrplan `examples/nordbahn-fahrplan.toml`) | ✔ |
 | **4 – Europa** | ETCS Level 2 (MA-Erzeugung, RBC-Funktion), EULYNX SCI-P/-LS/-TDS/-LX über RaSTA zu simulierten Objektsteuerungen, Import und Export von railML 3 | Mischbetrieb ESTW/ETCS in der Simulation (Szenarien 16 bis 19); Feldanbindung bereit für Prüfstände | ✔ (PlanPro-Import und SCI-ILS offen) |
 | **5 – Sicherheit & Embedded** | Redundante Kanäle, Voter, Watchdog, Cortex-R-Runtime, Kani-Nachweise, Fuzzing, Safety Case, Rückverfolgbarkeit | Kandidat für das Labor mit [Sicherheitsnachweis](safety/safety-case.md) (Szenarien 20, 21) | ✔ (Hardware, Einbindung des sicheren Rechners in `railitd` offen) |
-| **6 – UI** | Spurplan-UI als API-Client mit sicherer Anzeige- und Bestätigungskette | Bedienplatz | offen |
+| **6 – UI** | Spurplan-UI als API-Client mit sicherer Anzeige- und Bestätigungskette | Bedienplatz unter `/ui/` mit automatisch berechnetem Spurplan, Anzeigeüberwachung und Prüfcode (Abschnitt 14.3) | ✔ (ergonomische Prüfung mit Bedienern offen) |
 
-**Umgesetzte Crates (Stand Phase 5):** `railit-types`, `railit-topology`, `railit-plan`,
+**Umgesetzte Crates (Stand Phase 6):** `railit-types`, `railit-topology`, `railit-plan`,
 `railit-planning`, `railit-rules`, `railit-kernel`, `railit-safety` (Kanäle, Voter, Watchdog),
 `railit-embedded` (sicherer Rechner), `railit-movement` (Ks, H/V, ETCS-Fahrerlaubnis),
 `railit-etcs` (RBC-Funktion), `railit-rasta`, `railit-adapters` (EULYNX SCI), `railit-journal`
 (mit Auditprotokoll), `railit-sim`, `railit-ops` (Zugnummernmeldung, Fahrplan, Zuglenkung,
 Disposition), `railit-runtime` (mehrere Stellbereiche, Szenario-Runner,
 Schlüsselverwaltung, redundante Kanäle), `railit-import` (rail-it-TOML, railML 3),
-`railit-fuzz` (Fuzz-Ziele) sowie die Anwendungen `railit` und `railitd` (REST,
-gRPC, TLS/mTLS, Rollen, Feldanbindung über EULYNX). Das Regelwerk `de-estw` ist
+`railit-fuzz` (Fuzz-Ziele), `railit-layout` (Spurplan) sowie die Anwendungen `railit` und
+`railitd` (REST, gRPC, TLS/mTLS, Rollen, Feldanbindung über EULYNX, Bedienplatz). Das Regelwerk `de-estw` ist
 noch das Lehrregelwerk `GenericRules` mit den Zeiten aus Phase 2 (Auflösezeit des
 Durchrutschwegs, Bestätigungsfrist, Leuchtdauer Zs1). Die übrigen Crates aus Abschnitt 5 entstehen in den
 jeweiligen Phasen.

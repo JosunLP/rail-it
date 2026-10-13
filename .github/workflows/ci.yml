@@ -63,6 +63,39 @@ jobs:
         env:
           PROPTEST_CASES: "5000"
 
+  ui:
+    name: Bedienplatz (TypeScript, Bun, Playwright)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/railitd/ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - name: Abhängigkeiten
+        run: bun install --frozen-lockfile
+      - name: Typprüfung
+        run: bun run check
+      - name: Unit-Tests (Prüfcode, Anzeigemodell)
+        run: bun run test
+      - name: Eingechecktes Bundle passt zum Quelltext
+        run: |
+          bun run build
+          git diff --exit-code -- dist
+      - name: Toolchain installieren
+        working-directory: .
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - name: railit und railitd bauen
+        working-directory: .
+        run: cargo build --locked -p railit -p railitd
+      - name: Browser installieren
+        run: bunx playwright install --with-deps chromium
+      - name: Ende-zu-Ende gegen railitd (Beispielstadt)
+        run: bun run e2e
+
   no-std:
     name: no_std-Build (Cortex-M, Cortex-R)
     runs-on: ubuntu-latest

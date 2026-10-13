@@ -7,7 +7,8 @@
 //!   Kani-Nachweis, der ihre ID nennt, eine im Nachweis genannte Funktion, die es gibt, oder
 //!   ein genanntes Szenario.
 //! - Jede im Nachweis genannte Funktion (`snake_case` in Backticks) gibt es im Code.
-//! - Jede ID, die Code oder Tests nennen, ist dokumentiert.
+//! - Jede ID, die Code oder Tests nennen (Rust und TypeScript des Bedienplatzes), ist
+//!   dokumentiert.
 //! - Jede genannte Gefährdung steht in der Gefährdungsliste.
 //!
 //! Mit `--check` schlägt der Befehl außerdem fehl, wenn der Bericht nicht aktuell ist (CI).
@@ -66,7 +67,10 @@ fn files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
     for path in entries {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if path.is_dir() {
-            if !matches!(name, "target" | ".git" | "corpus" | "artifacts") {
+            if !matches!(
+                name,
+                "target" | ".git" | "corpus" | "artifacts" | "node_modules" | "dist"
+            ) {
                 files(&path, ext, out);
             }
         } else if path.extension().is_some_and(|e| e == ext) {
@@ -200,6 +204,8 @@ fn trace(check: bool) -> ExitCode {
     for dir in ["crates", "apps", "fuzz/fuzz_targets"] {
         files(&root.join(dir), "rs", &mut sources);
     }
+    // Bedienplatz (TypeScript): Quelltext, Unit- und Ende-zu-Ende-Tests.
+    files(&root.join("apps"), "ts", &mut sources);
     let mut mentions: BTreeMap<String, Mentions> = BTreeMap::new();
     let mut functions: BTreeSet<String> = BTreeSet::new();
     for path in &sources {
@@ -211,7 +217,10 @@ fn trace(check: bool) -> ExitCode {
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
-        let is_test = rel.contains("/tests/") || rel.ends_with("proofs.rs");
+        let is_test = rel.contains("/tests/")
+            || rel.contains("/test/")
+            || rel.contains("/e2e/")
+            || rel.ends_with("proofs.rs");
         for id in expand(&text) {
             let m = mentions.entry(id).or_default();
             if is_test {
@@ -220,7 +229,12 @@ fn trace(check: bool) -> ExitCode {
                 m.code.insert(rel.clone());
             }
         }
-        for part in text.split("fn ").skip(1) {
+        let keyword = if path.extension().is_some_and(|e| e == "ts") {
+            "function "
+        } else {
+            "fn "
+        };
+        for part in text.split(keyword).skip(1) {
             let name: String = part
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')

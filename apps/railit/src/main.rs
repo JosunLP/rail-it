@@ -25,7 +25,7 @@
 //! railit sim fault set|clear ART ELEMENT
 //! railit aux list
 //! railit aux request ART ELEMENT [--position left|right] [--operator NR]
-//! railit aux confirm ID [--area BEREICH] [--operator NR]
+//! railit aux confirm ID ART ELEMENT [--position left|right] [--area BEREICH] [--operator NR]
 //! railit areas
 //! railit border request|withdraw BEREICH>NACHBAR
 //! railit ops list|ars on|off|describe|erase|hold|release|platform|delay …
