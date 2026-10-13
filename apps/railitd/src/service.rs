@@ -700,9 +700,12 @@ pub(crate) struct Audit {
 }
 
 impl Audit {
-    pub(crate) fn open(path: &Path) -> Result<Self, String> {
-        let writer = AuditWriter::open(path)
-            .map_err(|e| format!("Auditprotokoll {}: {e}", path.display()))?;
+    pub(crate) fn open(path: &Path, seal: Option<railit_plan::SigningKey>) -> Result<Self, String> {
+        let writer = match seal {
+            Some(key) => AuditWriter::open_sealed(path, key),
+            None => AuditWriter::open(path),
+        }
+        .map_err(|e| format!("Auditprotokoll {}: {e}", path.display()))?;
         Ok(Self {
             path: path.to_path_buf(),
             writer: Mutex::new(writer),
@@ -733,16 +736,23 @@ impl Audit {
             .map_err(|_| "Sperre vergiftet".to_string())?;
         let text = std::fs::read_to_string(&self.path).map_err(|e| e.to_string())?;
         let summary = verify_audit(text.as_bytes()).map_err(|e| e.to_string())?;
-        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-        let records: Vec<Value> = lines
-            .iter()
-            .skip(lines.len().saturating_sub(last))
+        // Siegelzeilen tragen keinen Eintrag.
+        let all: Vec<Value> = text
+            .lines()
+            .filter(|l| !l.trim().is_empty())
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-            .map(|v| v.get("record").cloned().unwrap_or(Value::Null))
+            .filter_map(|v| v.get("record").cloned())
+            .collect();
+        let records: Vec<Value> = all
+            .iter()
+            .skip(all.len().saturating_sub(last))
+            .cloned()
             .collect();
         Ok(json!({
             "records": summary.records,
             "head": summary.head,
+            "seals": summary.seals,
+            "unsealed": summary.unsealed,
             "last": records,
         }))
     }

@@ -812,6 +812,46 @@ impl<F: FieldAdapter> Runtime<F> {
         out: Box<dyn Write + Send>,
         checkpoint_every: u64,
     ) -> std::io::Result<()> {
+        self.open_journal(area, out, checkpoint_every, None)
+    }
+
+    /// Wie [`Self::start_journal`], aber gesiegelt: nach dem Kopf, alle `seal_every` Zyklen
+    /// und mit [`Self::seal_journals`] folgt ein Siegel mit `key` (REQ-JRN-004).
+    ///
+    /// # Errors
+    /// Wie [`Self::start_journal`].
+    pub fn start_journal_sealed(
+        &mut self,
+        area: usize,
+        out: Box<dyn Write + Send>,
+        checkpoint_every: u64,
+        key: railit_plan::SigningKey,
+        seal_every: u64,
+    ) -> std::io::Result<()> {
+        self.open_journal(area, out, checkpoint_every, Some((key, seal_every)))
+    }
+
+    /// Siegelt alle gesiegelten Journale (z. B. beim Beenden). Schreibfehler brechen das
+    /// Journal ab wie beim Schreiben eines Zyklus.
+    pub fn seal_journals(&mut self) {
+        for area in &mut self.areas {
+            if let Some(journal) = &mut area.journal {
+                let written = journal.seal().and_then(|()| journal.flush());
+                if let Err(e) = written {
+                    area.journal_error = Some(e.to_string());
+                    area.journal = None;
+                }
+            }
+        }
+    }
+
+    fn open_journal(
+        &mut self,
+        area: usize,
+        out: Box<dyn Write + Send>,
+        checkpoint_every: u64,
+        sealer: Option<(railit_plan::SigningKey, u64)>,
+    ) -> std::io::Result<()> {
         let cycle = self.cycle;
         let a = self
             .areas
@@ -823,7 +863,10 @@ impl<F: FieldAdapter> Runtime<F> {
             ));
         }
         let header = Header::new(a.plan(), a.rules(), cycle, checkpoint_every);
-        let mut journal = JournalWriter::new(out, header)?;
+        let mut journal = match sealer {
+            Some((key, every)) => JournalWriter::sealed(out, header, key, every)?,
+            None => JournalWriter::new(out, header)?,
+        };
         journal.flush()?;
         a.journal = Some(journal);
         a.journal_error = None;

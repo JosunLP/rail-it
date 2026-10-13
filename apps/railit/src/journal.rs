@@ -15,6 +15,20 @@ fn open(path: &Path) -> Result<BufReader<std::fs::File>, ExitCode> {
         .map_err(|e| fail_usage(&format!("{}: {e}", path.display())))
 }
 
+/// Ohne Siegel ungültig, wenn eines verlangt ist.
+fn require(
+    result: Result<Summary, JournalError>,
+    require_seal: bool,
+) -> Result<Summary, JournalError> {
+    match result {
+        Ok(s) if require_seal && s.seals == 0 => Err(JournalError::Seal {
+            line: 0,
+            message: "Journal ist nicht gesiegelt".into(),
+        }),
+        other => other,
+    }
+}
+
 fn report(result: Result<Summary, JournalError>, what: &str, output: Output) -> ExitCode {
     match (result, output) {
         (Ok(s), Output::Json) => {
@@ -27,6 +41,9 @@ fn report(result: Result<Summary, JournalError>, what: &str, output: Output) -> 
                 "last_ms": s.last_ms,
                 "head": s.head,
                 "truncated": s.truncated,
+                "seals": s.seals,
+                "seal_key": s.seal_key,
+                "unsealed": s.unsealed,
             }));
             ExitCode::SUCCESS
         }
@@ -38,6 +55,15 @@ fn report(result: Result<Summary, JournalError>, what: &str, output: Output) -> 
                 s.header.network, s.cycles, s.checkpoints
             );
             println!("  Kopf der Kette: {}", s.head);
+            match &s.seal_key {
+                Some(key) => println!(
+                    "  {} Siegel mit Schlüssel {}…, {} Einträge nach dem letzten Siegel",
+                    s.seals,
+                    key.get(..16).unwrap_or(key),
+                    s.unsealed
+                ),
+                None => println!("  nicht gesiegelt"),
+            }
             if s.truncated {
                 println!(
                     "  Hinweis: letzte Zeile unvollständig (Abbruch beim Schreiben), ignoriert"
@@ -57,9 +83,32 @@ fn report(result: Result<Summary, JournalError>, what: &str, output: Output) -> 
 }
 
 /// `railit journal verify`
-pub(crate) fn verify(path: &Path, output: Output) -> ExitCode {
+pub(crate) fn verify(
+    path: &Path,
+    key: Option<&Path>,
+    require_seal: bool,
+    output: Output,
+) -> ExitCode {
+    let key = match key
+        .map(railit_runtime::keys::read_verifying_key)
+        .transpose()
+    {
+        Ok(k) => k,
+        Err(e) => return fail_usage(&e),
+    };
     match open(path) {
-        Ok(r) => report(railit_journal::verify(r), "Hashkette intakt", output),
+        Ok(r) => {
+            let result = match &key {
+                Some(k) => railit_journal::verify_sealed(r, k),
+                None => railit_journal::verify(r),
+            };
+            let what = if key.is_some() {
+                "Hashkette und Siegel intakt"
+            } else {
+                "Hashkette intakt"
+            };
+            report(require(result, require_seal), what, output)
+        }
         Err(code) => code,
     }
 }

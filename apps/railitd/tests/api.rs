@@ -773,3 +773,70 @@ fn safe_computer_nodes_over_api() {
         "Journal",
     );
 }
+
+/// REQ-JRN-004: Mit `--seal-key` siegelt der Dienst Journal und Auditprotokoll; beim Beenden
+/// folgt ein letztes Siegel über den Rest des Journals.
+#[test]
+fn sealed_journal_and_audit_log() {
+    let (plan, public) = prepare("seal", true);
+    let secret = tmp("seal.key");
+    std::fs::write(
+        &secret,
+        railit_runtime::keys::to_hex(&SigningKey::from_bytes(&[9; 32]).to_bytes()),
+    )
+    .unwrap();
+    let journal = tmp("seal.journal");
+    let audit = tmp("seal.audit");
+    let _ = std::fs::remove_file(&journal);
+    let _ = std::fs::remove_file(&audit);
+    let mut d = start(&[
+        "--plan",
+        plan.to_str().unwrap(),
+        "--trusted-key",
+        public.to_str().unwrap(),
+        "--journal",
+        journal.to_str().unwrap(),
+        "--audit",
+        audit.to_str().unwrap(),
+        "--seal-key",
+        secret.to_str().unwrap(),
+        "--seal-every",
+        "50",
+    ]);
+    assert_eq!(post(&d, "/v1/routes/A-N1/set", None).0, 200);
+    wait_for(&d, "A-N1", "proceed");
+    let (_, log) = get(&d, "/v1/audit?last=5", true);
+    assert!(log["seals"].as_u64().unwrap() >= 1, "{log}");
+    assert_eq!(log["last"][0]["action"], "set_route", "{log}");
+
+    // Geordnet beenden (wie Strg+C): letztes Siegel.
+    let pid = d.child.id().to_string();
+    assert!(
+        Command::new("kill")
+            .args(["-INT", &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while d.child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "railitd endet nicht");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let station = SigningKey::from_bytes(&[9; 32]).verifying_key();
+    let text = std::fs::read_to_string(&journal).unwrap();
+    let s = railit_journal::verify_sealed(text.as_bytes(), &station).unwrap();
+    assert!(s.cycles > 0, "{s:?}");
+    assert!(s.seals >= 2, "{s:?}");
+    assert_eq!(s.unsealed, 0, "letztes Siegel beim Beenden: {s:?}");
+    let other = SigningKey::from_bytes(&[1; 32]).verifying_key();
+    assert!(railit_journal::verify_sealed(text.as_bytes(), &other).is_err());
+
+    let text = std::fs::read_to_string(&audit).unwrap();
+    let s = railit_journal::audit::verify_audit_sealed(text.as_bytes(), &station).unwrap();
+    assert!(
+        s.records >= 1 && s.seals == s.records && s.unsealed == 0,
+        "{s:?}"
+    );
+}

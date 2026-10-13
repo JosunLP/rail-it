@@ -72,6 +72,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-JRN-001 | H-011 | `crates/railit-journal/src/lib.rs`<br>`crates/railit-runtime/src/runtime.rs` | `tampering_breaks_the_chain`<br>`journal_verify_and_replay`<br>`apps/railit/tests/cli.rs`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-runtime/tests/journal.rs` |
 | REQ-JRN-002 | H-011, H-007 | `crates/railit-journal/src/lib.rs` | `journal_replays_to_the_same_state`<br>`forged_journal_is_detected_by_replay`<br>`replay_needs_the_recorded_plan`<br>`aux_operation_and_journal`<br>`apps/railit/tests/cli.rs`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-runtime/tests/journal.rs` |
 | REQ-JRN-003 | H-011 | – | `aux_operation_and_journal` |
+| REQ-JRN-004 | H-011 | `crates/railit-journal/src/audit.rs`<br>`crates/railit-journal/src/lib.rs`<br>`crates/railit-journal/src/seal.rs`<br>`crates/railit-runtime/src/runtime.rs` | `sealed_journal_verifies_with_the_station_key`<br>`rewritten_journal_cannot_carry_the_station_seal`<br>`tampered_signature_is_detected`<br>`sealed_audit_log`<br>`foreign_seals_block_reopening`<br>`sealed_journal_and_audit_log`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-journal/tests/seal.rs` |
 
 ## [kern.md](../requirements/kern.md)
 
@@ -174,4 +175,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-101 Anforderungen, davon 101 mit Nachweis.
+102 Anforderungen, davon 102 mit Nachweis.

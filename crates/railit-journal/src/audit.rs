@@ -6,16 +6,19 @@
 //! (`{"record": …, "prev": "<hex>", "hash": "<hex>"}`, `hash = SHA-256(prev ‖ JSON(record))`).
 //!
 //! Das Protokoll überdauert Neustarts: [`AuditWriter::open`] prüft eine vorhandene Datei und
-//! setzt ihre Kette fort.
+//! setzt ihre Kette fort. Mit Schlüssel ([`AuditWriter::open_sealed`]) folgt jedem Eintrag ein
+//! Siegel (`{"seal": …, "prev", "hash"}`, siehe [`crate::Seal`]; REQ-JRN-004).
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{Hash32, JournalError, from_hex32, to_hex};
+use crate::seal::{self, SealKind};
+use crate::{Hash32, JournalError, Seal, from_hex32, to_hex};
 
 /// Eintrag im Auditprotokoll.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,15 +41,20 @@ pub struct AuditRecord {
     pub outcome: String,
 }
 
+/// Zeile: entweder ein Eintrag oder ein Siegel.
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AuditLine {
-    record: AuditRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    record: Option<AuditRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    seal: Option<Seal>,
     prev: String,
     hash: String,
 }
 
-fn chain(prev: &Hash32, record: &AuditRecord) -> io::Result<Hash32> {
-    let json = serde_json::to_vec(record).map_err(io::Error::other)?;
+fn chain<T: Serialize>(prev: &Hash32, item: &T) -> io::Result<Hash32> {
+    let json = serde_json::to_vec(item).map_err(io::Error::other)?;
     let mut h = Sha256::new();
     h.update(prev);
     h.update(&json);
@@ -64,6 +72,12 @@ pub struct AuditSummary {
     pub head: String,
     /// Die letzte Zeile war unvollständig (Abbruch beim Schreiben) und wurde ignoriert.
     pub truncated: bool,
+    /// Anzahl gültiger Siegel.
+    pub seals: u64,
+    /// Schlüssel der Siegel (Hex), falls gesiegelt.
+    pub seal_key: Option<String>,
+    /// Einträge nach dem letzten Siegel.
+    pub unsealed: u64,
 }
 
 /// Prüft die Hashkette und die fortlaufende Nummerierung eines Auditprotokolls.
@@ -71,10 +85,32 @@ pub struct AuditSummary {
 /// # Errors
 /// [`JournalError`] bei Lese-, Format- oder Kettenfehlern.
 pub fn verify_audit<R: BufRead>(reader: R) -> Result<AuditSummary, JournalError> {
+    read_audit(reader, None)
+}
+
+/// Prüft Hashkette, Nummerierung und Siegel eines Auditprotokolls; jedes Siegel muss mit
+/// `key` erstellt sein (REQ-JRN-004).
+///
+/// # Errors
+/// [`JournalError`] bei Lese-, Format-, Ketten- oder Siegelfehlern.
+pub fn verify_audit_sealed<R: BufRead>(
+    reader: R,
+    key: &VerifyingKey,
+) -> Result<AuditSummary, JournalError> {
+    read_audit(reader, Some(key))
+}
+
+fn read_audit<R: BufRead>(
+    reader: R,
+    trusted: Option<&VerifyingKey>,
+) -> Result<AuditSummary, JournalError> {
     let mut prev: Hash32 = [0; 32];
     let mut records = 0u64;
     let mut last_seq = 0u64;
     let mut truncated = false;
+    let mut seals = 0u64;
+    let mut seal_key = None;
+    let mut unsealed = 0u64;
     let mut lines = reader.lines().enumerate().peekable();
     while let Some((index, line)) = lines.next() {
         let number = index.saturating_add(1);
@@ -95,26 +131,55 @@ pub fn verify_audit<R: BufRead>(reader: R) -> Result<AuditSummary, JournalError>
                 });
             }
         };
-        let hash = chain(&prev, &parsed.record).map_err(|e| JournalError::Io(e.to_string()))?;
+        let hash = match (&parsed.record, &parsed.seal) {
+            (Some(r), None) => chain(&prev, r),
+            (None, Some(s)) => chain(&prev, s),
+            _ => {
+                return Err(JournalError::Syntax {
+                    line: number,
+                    message: "weder Eintrag noch Siegel".into(),
+                });
+            }
+        }
+        .map_err(|e| JournalError::Io(e.to_string()))?;
         if from_hex32(&parsed.prev) != Some(prev) || from_hex32(&parsed.hash) != Some(hash) {
             return Err(JournalError::Chain { line: number });
         }
-        if parsed.record.seq != last_seq.saturating_add(1) {
+        if let Some(s) = &parsed.seal {
+            seal::check(SealKind::Audit, s, &prev, trusted, &mut seal_key).map_err(|message| {
+                JournalError::Seal {
+                    line: number,
+                    message,
+                }
+            })?;
+            seals = seals.saturating_add(1);
+            unsealed = 0;
+            prev = hash;
+            continue;
+        }
+        let Some(record) = &parsed.record else {
+            continue;
+        };
+        if record.seq != last_seq.saturating_add(1) {
             return Err(JournalError::Format(format!(
                 "Zeile {number}: Nummer {} statt {}",
-                parsed.record.seq,
+                record.seq,
                 last_seq.saturating_add(1)
             )));
         }
         prev = hash;
-        last_seq = parsed.record.seq;
+        last_seq = record.seq;
         records = records.saturating_add(1);
+        unsealed = unsealed.saturating_add(1);
     }
     Ok(AuditSummary {
         records,
         last_seq,
         head: to_hex(&prev),
         truncated,
+        seals,
+        seal_key,
+        unsealed,
     })
 }
 
@@ -124,6 +189,7 @@ pub struct AuditWriter<W: Write> {
     out: W,
     prev: Hash32,
     seq: u64,
+    sealer: Option<SigningKey>,
 }
 
 impl AuditWriter<File> {
@@ -133,8 +199,23 @@ impl AuditWriter<File> {
     /// # Errors
     /// Lese- oder Schreibfehler, gebrochene Kette oder unvollständige letzte Zeile.
     pub fn open(path: &Path) -> io::Result<Self> {
+        Self::open_with(path, None)
+    }
+
+    /// Wie [`Self::open`], aber jedem Eintrag folgt ein Siegel mit `key`. Eine vorhandene Datei
+    /// darf nur Siegel dieses Schlüssels enthalten.
+    ///
+    /// # Errors
+    /// Wie [`Self::open`], dazu fremde oder falsche Siegel.
+    pub fn open_sealed(path: &Path, key: SigningKey) -> io::Result<Self> {
+        Self::open_with(path, Some(key))
+    }
+
+    fn open_with(path: &Path, sealer: Option<SigningKey>) -> io::Result<Self> {
         let (prev, seq) = if path.exists() {
-            let summary = verify_audit(BufReader::new(File::open(path)?))
+            let reader = BufReader::new(File::open(path)?);
+            let trusted = sealer.as_ref().map(SigningKey::verifying_key);
+            let summary = read_audit(reader, trusted.as_ref())
                 .map_err(|e| io::Error::other(format!("Auditprotokoll ungültig: {e}")))?;
             if summary.truncated {
                 return Err(io::Error::other(
@@ -148,7 +229,12 @@ impl AuditWriter<File> {
             ([0; 32], 0)
         };
         let out = OpenOptions::new().create(true).append(true).open(path)?;
-        Ok(Self { out, prev, seq })
+        Ok(Self {
+            out,
+            prev,
+            seq,
+            sealer,
+        })
     }
 }
 
@@ -159,7 +245,24 @@ impl<W: Write> AuditWriter<W> {
             out,
             prev: [0; 32],
             seq: 0,
+            sealer: None,
         }
+    }
+
+    /// Neues gesiegeltes Protokoll in `out`.
+    pub fn new_sealed(out: W, key: SigningKey) -> Self {
+        let mut w = Self::new(out);
+        w.sealer = Some(key);
+        w
+    }
+
+    fn write_line(&mut self, line: &AuditLine, hash: Hash32) -> io::Result<()> {
+        let mut bytes = serde_json::to_vec(line).map_err(io::Error::other)?;
+        bytes.push(b'\n');
+        self.out.write_all(&bytes)?;
+        self.out.flush()?;
+        self.prev = hash;
+        Ok(())
     }
 
     /// Hängt einen Eintrag an; `seq` wird vergeben. Gibt die laufende Nummer zurück.
@@ -168,18 +271,27 @@ impl<W: Write> AuditWriter<W> {
     /// Schreibfehler.
     pub fn append(&mut self, mut record: AuditRecord) -> io::Result<u64> {
         record.seq = self.seq.saturating_add(1);
+        let seq = record.seq;
         let hash = chain(&self.prev, &record)?;
         let line = AuditLine {
-            record,
+            record: Some(record),
+            seal: None,
             prev: to_hex(&self.prev),
             hash: to_hex(&hash),
         };
-        let mut bytes = serde_json::to_vec(&line).map_err(io::Error::other)?;
-        bytes.push(b'\n');
-        self.out.write_all(&bytes)?;
-        self.out.flush()?;
-        self.prev = hash;
-        self.seq = line.record.seq;
+        self.write_line(&line, hash)?;
+        self.seq = seq;
+        if let Some(key) = &self.sealer {
+            let s = seal::make(SealKind::Audit, key, &self.prev);
+            let hash = chain(&self.prev, &s)?;
+            let line = AuditLine {
+                record: None,
+                seal: Some(s),
+                prev: to_hex(&self.prev),
+                hash: to_hex(&hash),
+            };
+            self.write_line(&line, hash)?;
+        }
         Ok(self.seq)
     }
 

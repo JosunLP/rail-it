@@ -89,6 +89,13 @@ struct Args {
     /// Abstand der Zustands-Prüfpunkte im Journal (Zyklen).
     #[arg(long, default_value_t = 600)]
     checkpoint_every: u64,
+    /// Geheimer Schlüssel des Stellwerks (`railit plan keygen`): Journal und Auditprotokoll
+    /// werden damit gesiegelt (Prüfung mit `railit journal verify --key`).
+    #[arg(long)]
+    seal_key: Option<PathBuf>,
+    /// Abstand der Siegel im Journal (Zyklen).
+    #[arg(long, default_value_t = 600)]
+    seal_every: u64,
     /// Anbindung der (simulierten) Feldebene: direkt oder über EULYNX SCI und RaSTA.
     #[arg(long, value_enum, default_value_t = FieldArg::Direct)]
     field: FieldArg,
@@ -306,7 +313,12 @@ fn attach_nodes(rt: &mut Runtime<DynField>, args: &Args) -> Result<(), String> {
 
 /// Startet die Journale: eine Datei bei einem Stellbereich, sonst ein Verzeichnis mit
 /// `<Bereich>.journal` je Stellbereich.
-fn start_journals(rt: &mut Runtime<DynField>, path: &Path, every: u64) -> Result<(), String> {
+fn start_journals(
+    rt: &mut Runtime<DynField>,
+    path: &Path,
+    every: u64,
+    seal: Option<(&railit_plan::SigningKey, u64)>,
+) -> Result<(), String> {
     let files: Vec<(usize, PathBuf)> = if rt.area_count() == 1 {
         vec![(0, path.to_path_buf())]
     } else {
@@ -324,8 +336,14 @@ fn start_journals(rt: &mut Runtime<DynField>, path: &Path, every: u64) -> Result
             .create_new(true)
             .open(&file)
             .map_err(|e| format!("Journal {}: {e}", file.display()))?;
-        rt.start_journal(area, Box::new(std::io::BufWriter::new(out)), every)
-            .map_err(|e| format!("Journal {}: {e}", file.display()))?;
+        let out = Box::new(std::io::BufWriter::new(out));
+        match seal {
+            Some((key, seal_every)) => {
+                rt.start_journal_sealed(area, out, every, key.clone(), seal_every)
+            }
+            None => rt.start_journal(area, out, every),
+        }
+        .map_err(|e| format!("Journal {}: {e}", file.display()))?;
         tracing::info!(path = %file.display(), "Journal läuft");
     }
     Ok(())
@@ -350,12 +368,17 @@ async fn serve(
         snapshot: snapshot_tx,
         events: events_tx.clone(),
     };
-    let engine = tokio::spawn(engine::run(rt, channels, period));
+    let mut engine = tokio::spawn(engine::run(rt, channels, period));
 
+    let seal_key = args
+        .seal_key
+        .as_deref()
+        .map(railit_runtime::keys::read_signing_key)
+        .transpose()?;
     let audit = args
         .audit
         .as_deref()
-        .map(service::Audit::open)
+        .map(|path| service::Audit::open(path, seal_key.clone()))
         .transpose()?
         .map(Arc::new);
     let operators_from_users = security.auth.operators_from_users();
@@ -402,7 +425,13 @@ async fn serve(
             .await
             .map_err(|e| format!("Server: {e}")),
     };
-    engine.abort();
+    // Mit dem Server sind alle Sender fort: Die Engine siegelt die Journale und endet.
+    if tokio::time::timeout(std::time::Duration::from_secs(3), &mut engine)
+        .await
+        .is_err()
+    {
+        engine.abort();
+    }
     served
 }
 
@@ -471,8 +500,22 @@ fn main() -> ExitCode {
         Ok(v) => v,
         Err(e) => return fail(&e),
     };
+    let seal_key = match args
+        .seal_key
+        .as_deref()
+        .map(railit_runtime::keys::read_signing_key)
+        .transpose()
+    {
+        Ok(k) => k,
+        Err(e) => return fail(&e),
+    };
     if let Some(path) = &args.journal
-        && let Err(e) = start_journals(&mut rt, path, args.checkpoint_every)
+        && let Err(e) = start_journals(
+            &mut rt,
+            path,
+            args.checkpoint_every,
+            seal_key.as_ref().map(|k| (k, args.seal_every)),
+        )
     {
         return fail(&e);
     }

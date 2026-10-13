@@ -331,6 +331,7 @@ pub(crate) async fn run(rt: Runtime<DynField>, ch: Channels, period: Duration) {
             },
         }
     }
+    engine.rt.seal_journals();
 }
 
 /// Führt einen Befehl an die Betriebsführung aus.

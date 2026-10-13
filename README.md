@@ -181,6 +181,11 @@ railit net validate nordbahn.railml
 railit plan compile nordbahn.railml --out nordbahn/ --key railit.key
 ```
 
+Journal und Auditprotokoll lassen sich mit dem Schlüssel des Stellwerks siegeln:
+`railitd … --journal betrieb.journal --audit audit.log --seal-key stellwerk.key`, geprüft mit
+`railit journal verify betrieb.journal --key stellwerk.pub --require-seal` bzw.
+`railit audit verify audit.log --key stellwerk.pub`.
+
 Für den Betrieb mit Benutzern: `railitd … --users users.toml --audit audit.log
 --tls-cert server.pem --tls-key server.key [--tls-client-ca ca.pem]`; die CLI meldet sich mit
 `--token` bzw. `--ca`, `--cert`, `--key` an (siehe [API](docs/api.md)).

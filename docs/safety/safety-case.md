@@ -117,6 +117,7 @@ einer Fehlbedienung, sie sind keine Sicherheitsfunktion.
 | Strategie | Belege |
 |-----------|--------|
 | Journal aller Eingaben mit Hashkette, deterministisches Abspielen, auch über Abschaltung und Rücksetzen der Sicherheitsschicht | REQ-JRN-001 … 003, `journal_covers_trip_and_reset_of_the_safety_layer` |
+| Siegel des Stellwerks über Journal und Auditprotokoll: Eine neu geschriebene Kette ist erkennbar | REQ-JRN-004, `rewritten_journal_cannot_carry_the_station_seal` |
 
 ## Teil 5 – Verwandte Sicherheitsnachweise
 
@@ -143,7 +144,8 @@ rail-it ist als **generisches Produkt** angelegt. Für einen Einsatz sind zusät
    je Anlage festlegen.
 6. Rücksetzen der Sicherheitsschicht nur nach Klärung der Ursache; danach gelten alle
    Elemente als unbekannt, Fahrstraßen sind neu einzustellen.
-7. Journal und Auditprotokoll außerhalb des Stellwerksrechners sichern.
+7. Journal und Auditprotokoll mit `--seal-key` siegeln und außerhalb des Stellwerksrechners
+   sichern; den öffentlichen Schlüssel zur Prüfung getrennt verwahren.
 8. Hilfshandlungen am Bedienplatz bestätigen; wer bestätigt, liest die Hilfshandlung aus der
    eigenen Anzeige und gibt das Element selbst ein, ohne es vom anfordernden Bediener zu
    übernehmen. Zeigt der Bedienplatz „Anzeige gestört“, wird nicht bedient.

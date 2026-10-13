@@ -34,7 +34,8 @@ cert_cn = "fdl-adorf"      # oder: Common Name des Client-Zertifikats
 | `administration` | alles |
 
 Fehlendes Recht ergibt `403`. Jede Bedienung – auch eine abgewiesene – steht im
-Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`). TLS:
+Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`; mit
+`railitd --seal-key` folgt jedem Eintrag ein Siegel, geprüft mit `--key`). TLS:
 `--tls-cert server.pem --tls-key server.key`, gegenseitige Anmeldung mit
 `--tls-client-ca ca.pem`.
 

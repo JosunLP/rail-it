@@ -1544,6 +1544,7 @@ dependencies = [
 name = "railit-journal"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
  "railit-import",
  "railit-kernel",
  "railit-plan",

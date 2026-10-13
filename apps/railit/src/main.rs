@@ -281,10 +281,16 @@ enum OpsCommand {
 
 #[derive(Debug, Subcommand)]
 enum AuditCommand {
-    /// Prüft die Hashkette eines Auditprotokolls (offline).
+    /// Prüft Hashkette und Siegel eines Auditprotokolls (offline).
     Verify {
         /// Auditprotokoll (`railitd --audit`).
         file: PathBuf,
+        /// Öffentlicher Schlüssel des Stellwerks: Siegel müssen damit erstellt sein.
+        #[arg(long)]
+        key: Option<PathBuf>,
+        /// Ungültig, wenn kein Siegel vorhanden ist.
+        #[arg(long)]
+        require_seal: bool,
     },
     /// Letzte Einträge vom Dienst (online; Rolle mit Auditrecht).
     Show {
@@ -389,10 +395,16 @@ enum ScenarioCommand {
 
 #[derive(Debug, Subcommand)]
 enum JournalCommand {
-    /// Prüft die Hashkette eines Journals.
+    /// Prüft Hashkette und Siegel eines Journals.
     Verify {
         /// Journaldatei (`railitd --journal`).
         file: PathBuf,
+        /// Öffentlicher Schlüssel des Stellwerks: Siegel müssen damit erstellt sein.
+        #[arg(long)]
+        key: Option<PathBuf>,
+        /// Ungültig, wenn kein Siegel vorhanden ist.
+        #[arg(long)]
+        require_seal: bool,
     },
     /// Spielt ein Journal gegen das Plan-Image ab und vergleicht Ausgaben und Prüfpunkte.
     Replay {
@@ -619,11 +631,19 @@ fn main() -> ExitCode {
             node,
             channels,
         }) => plan::run_scenarios(&files, node, channels, output),
-        Command::Journal(JournalCommand::Verify { file }) => journal::verify(&file, output),
+        Command::Journal(JournalCommand::Verify {
+            file,
+            key,
+            require_seal,
+        }) => journal::verify(&file, key.as_deref(), require_seal, output),
         Command::Journal(JournalCommand::Replay { file, plan }) => {
             journal::replay(&file, &plan, output)
         }
-        Command::Audit(AuditCommand::Verify { file }) => admin::audit_verify(&file, output),
+        Command::Audit(AuditCommand::Verify {
+            file,
+            key,
+            require_seal,
+        }) => admin::audit_verify(&file, key.as_deref(), require_seal, output),
         Command::Auth(AuthCommand::Token { name }) => admin::token(&name, output),
         online => {
             let tls = online::TlsFiles {

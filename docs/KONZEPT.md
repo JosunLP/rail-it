@@ -744,6 +744,9 @@ Nach einem Neustart gelten alle Elemente als unbekannt, alle Fahrerlaubnisse sin
 zurückgenommen. Das Journal (`railit-journal`: Eingaben je Zyklus, SHA-256-Hashkette,
 Zustands-Prüfpunkte, deterministisches Replay) dient der Diagnose. Es wird nicht blind wiederhergestellt, denn
 der tatsächliche Zustand draußen hat Vorrang.
+Mit `--seal-key` siegelt der Dienst Journal und Auditprotokoll mit dem Schlüssel des
+Stellwerks (Ed25519 über den Stand der Hashkette, REQ-JRN-004): Die Kette zeigt jede
+veränderte Zeile, das Siegel zeigt, dass niemand die Datei als Ganzes neu geschrieben hat.
 
 **Performance**
 
@@ -790,7 +793,7 @@ besetzt werden.
 | Lints | `clippy` mit `unwrap_used`, `expect_used`, `panic`, `indexing_slicing` und `arithmetic_side_effects` auf `deny` in allen Crates mit SIL 4 |
 | Tests | `cargo test`, `proptest` (Invarianten), deklarative Szenarien |
 | Formal | `kani` (Bounded Model Checking): umgesetzt für Voter, Watchdog, Ausgabepuffer, Bitmengen, Zeit, MD4, RaSTA-Empfang, Telegramm-Paketierung (REQ-SAF-006). Offen: Kernzyklus |
-| Robustheit | `cargo-fuzz`: umgesetzt für Plan-Image (bis in Kern und Fahrerlaubnis), rail-it-TOML, railML 3, Fahrplan, Journal, RaSTA, EULYNX SCI, Binärprotokoll des sicheren Rechners (REQ-SAF-007). Offen: `cargo-mutants` |
+| Robustheit | `cargo-fuzz`: umgesetzt für Plan-Image (bis in Kern und Fahrerlaubnis), rail-it-TOML, railML 3, Fahrplan, Journal, RaSTA, EULYNX SCI, Binärprotokoll des sicheren Rechners, Spiegel mit beliebigem übertragenem Zustand (REQ-SAF-007). Offen: `cargo-mutants` |
 | Lieferkette | `cargo-deny` (Lizenzen, Advisories), `cargo-audit`, SBOM, gepinnte Toolchain |
 | Toolchain | Langfristig eine qualifizierte Toolchain (z. B. Ferrocene) für die Crates mit SIL 4 |
 

@@ -15,17 +15,25 @@
 //!   32 Nullbytes). Wird eine Zeile verändert, entfernt oder eingefügt, bricht die Kette
 //!   (REQ-JRN-001).
 //!
+//! - Mit Schlüssel folgt nach dem Kopf und danach regelmäßig ein **Siegel** (Ed25519 über den
+//!   Hash der vorhergehenden Zeile, siehe [`Seal`]); es bindet den Stand an das Stellwerk
+//!   (REQ-JRN-004).
+//!
 //! [`verify`] prüft die Kette, [`replay`] spielt das Journal gegen einen Plan erneut ab und
 //! vergleicht Ausgaben und Prüfpunkte (REQ-JRN-002). Der Zustands-Hash beruht auf der
 //! `Hash`-Implementierung des Kernzustands; Prüfpunkte sind daher nur zwischen Programmen
 //! gleicher Version und Plattform vergleichbar. Die Ausgaben-Hashes sind plattformunabhängig.
 
 pub mod audit;
+mod seal;
+
+pub use seal::Seal;
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, Write};
 
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use railit_kernel::{Command, Event, Input, Interlocking, OwnedState, VecOutputs};
 use railit_plan::PlanView;
 use railit_rules::GenericRules;
@@ -35,8 +43,8 @@ use sha2::{Digest, Sha256};
 
 /// Kennung des Formats im Kopf.
 pub const FORMAT: &str = "railit-journal";
-/// Version des Formats.
-pub const VERSION: u32 = 2;
+/// Version des Formats (3: Siegel). Gelesen werden auch Journale der Version 2.
+pub const VERSION: u32 = 3;
 
 type Hash32 = [u8; 32];
 
@@ -180,6 +188,8 @@ pub enum Entry {
     Cycle(Cycle),
     /// Meldung der Sicherheitsschicht (redundante Kanäle).
     Safety(SafetyRecord),
+    /// Siegel über alle vorhergehenden Zeilen.
+    Seal(Seal),
 }
 
 /// Art einer Meldung der Sicherheitsschicht.
@@ -249,12 +259,23 @@ pub fn state_digest(state: &OwnedState) -> String {
     to_hex(&h.0.finalize())
 }
 
+/// Siegelt ein Journal regelmäßig.
+#[derive(Debug)]
+struct Sealer {
+    key: SigningKey,
+    every: u64,
+    since: u64,
+}
+
 /// Schreibt ein Journal.
 #[derive(Debug)]
 pub struct JournalWriter<W: Write> {
     out: W,
     prev: Hash32,
     checkpoint_every: u64,
+    sealer: Option<Sealer>,
+    /// Die letzte Zeile ist ein Siegel.
+    sealed: bool,
 }
 
 impl<W: Write> JournalWriter<W> {
@@ -268,9 +289,47 @@ impl<W: Write> JournalWriter<W> {
             out,
             prev: [0; 32],
             checkpoint_every,
+            sealer: None,
+            sealed: false,
         };
         w.write(&Entry::Header(header))?;
         Ok(w)
+    }
+
+    /// Beginnt ein gesiegeltes Journal: Nach dem Kopf und danach alle `every` Zyklen folgt
+    /// ein Siegel mit `key` (REQ-JRN-004); [`Self::seal`] siegelt zusätzlich, etwa beim
+    /// Beenden.
+    ///
+    /// # Errors
+    /// Schreibfehler.
+    pub fn sealed(out: W, header: Header, key: SigningKey, every: u64) -> io::Result<Self> {
+        let mut w = Self::new(out, header)?;
+        w.sealer = Some(Sealer {
+            key,
+            every: every.max(1),
+            since: 0,
+        });
+        w.seal()?;
+        Ok(w)
+    }
+
+    /// Siegelt den bisherigen Stand (ohne Schlüssel: nichts; direkt nach einem Siegel:
+    /// nichts).
+    ///
+    /// # Errors
+    /// Schreibfehler.
+    pub fn seal(&mut self) -> io::Result<()> {
+        if self.sealed {
+            return Ok(());
+        }
+        let Some(sealer) = &mut self.sealer else {
+            return Ok(());
+        };
+        sealer.since = 0;
+        let seal = seal::make(seal::SealKind::Journal, &sealer.key, &self.prev);
+        self.write(&Entry::Seal(seal))?;
+        self.sealed = true;
+        Ok(())
     }
 
     /// Schreibt einen Eintrag unverändert in die Kette (für Werkzeuge, die Journale
@@ -293,6 +352,7 @@ impl<W: Write> JournalWriter<W> {
         serde_json::to_writer(&mut self.out, &line).map_err(io::Error::other)?;
         self.out.write_all(b"\n")?;
         self.prev = hash;
+        self.sealed = false;
         Ok(())
     }
 
@@ -316,7 +376,15 @@ impl<W: Write> JournalWriter<W> {
             inputs: inputs.to_vec(),
             outputs: outputs_digest(&out.commands, &out.events),
             state: checkpoint.then(|| state_digest(state)),
-        }))
+        }))?;
+        let due = self.sealer.as_mut().is_some_and(|s| {
+            s.since = s.since.saturating_add(1);
+            s.since >= s.every
+        });
+        if due {
+            self.seal()?;
+        }
+        Ok(())
     }
 
     /// Hält eine Meldung der Sicherheitsschicht fest (vor dem Zyklus, in dem sie wirkt).
@@ -371,6 +439,13 @@ pub enum JournalError {
     },
     /// Der Plan passt nicht zum Journal.
     Plan(String),
+    /// Ein Siegel ist ungültig (falsche Signatur, fremder Schlüssel, falscher Bezug).
+    Seal {
+        /// Zeilennummer (ab 1).
+        line: usize,
+        /// Beschreibung.
+        message: String,
+    },
     /// Beim Abspielen weicht das Ergebnis vom Journal ab.
     Divergence {
         /// Zyklus.
@@ -388,6 +463,7 @@ impl fmt::Display for JournalError {
             Self::Format(m) => write!(f, "Format: {m}"),
             Self::Chain { line } => write!(f, "Hashkette in Zeile {line} unterbrochen"),
             Self::Plan(m) => write!(f, "Plan: {m}"),
+            Self::Seal { line, message } => write!(f, "Siegel in Zeile {line}: {message}"),
             Self::Divergence { cycle, what } => {
                 write!(f, "Zyklus {cycle}: Abweichung beim Abspielen ({what})")
             }
@@ -414,11 +490,18 @@ pub struct Summary {
     pub truncated: bool,
     /// Meldungen der Sicherheitsschicht.
     pub safety: Vec<SafetyRecord>,
+    /// Anzahl gültiger Siegel.
+    pub seals: u64,
+    /// Schlüssel der Siegel (Hex), falls gesiegelt.
+    pub seal_key: Option<String>,
+    /// Einträge nach dem letzten Siegel (noch nicht bestätigt).
+    pub unsealed: u64,
 }
 
 /// Liest ein Journal und prüft dabei die Hashkette. `on_cycle` erhält jeden Zyklus.
 fn read<R: BufRead>(
     reader: R,
+    trusted: Option<&VerifyingKey>,
     mut on_header: impl FnMut(&Header) -> Result<(), JournalError>,
     mut on_cycle: impl FnMut(&Cycle) -> Result<(), JournalError>,
     mut on_safety: impl FnMut(&SafetyRecord),
@@ -430,6 +513,9 @@ fn read<R: BufRead>(
     let mut checkpoints = 0u64;
     let mut last_ms = 0u64;
     let mut truncated = false;
+    let mut seals = 0u64;
+    let mut seal_key = None;
+    let mut unsealed = 0u64;
     let mut lines = reader.lines().enumerate().peekable();
     while let Some((index, line)) = lines.next() {
         let number = index.saturating_add(1);
@@ -456,10 +542,21 @@ fn read<R: BufRead>(
         if from_hex32(&parsed.prev) != Some(prev) || from_hex32(&parsed.hash) != Some(hash) {
             return Err(JournalError::Chain { line: number });
         }
+        let before = prev;
         prev = hash;
         match (&parsed.entry, &header) {
+            (Entry::Seal(s), Some(_)) => {
+                seal::check(seal::SealKind::Journal, s, &before, trusted, &mut seal_key).map_err(
+                    |message| JournalError::Seal {
+                        line: number,
+                        message,
+                    },
+                )?;
+                seals = seals.saturating_add(1);
+                unsealed = 0;
+            }
             (Entry::Header(h), None) => {
-                if h.format != FORMAT || h.version != VERSION {
+                if h.format != FORMAT || !(2..=VERSION).contains(&h.version) {
                     return Err(JournalError::Format(format!(
                         "unbekanntes Format {} v{}",
                         h.format, h.version
@@ -473,14 +570,16 @@ fn read<R: BufRead>(
                     "Zeile {number}: zweiter Kopf"
                 )));
             }
-            (Entry::Cycle(_) | Entry::Safety(_), None) => {
+            (Entry::Cycle(_) | Entry::Safety(_) | Entry::Seal(_), None) => {
                 return Err(JournalError::Format("Kopf fehlt".into()));
             }
             (Entry::Safety(r), Some(_)) => {
+                unsealed = unsealed.saturating_add(1);
                 on_safety(r);
                 safety.push(r.clone());
             }
             (Entry::Cycle(c), Some(_)) => {
+                unsealed = unsealed.saturating_add(1);
                 on_cycle(c)?;
                 cycles = cycles.saturating_add(1);
                 checkpoints = checkpoints.saturating_add(u64::from(c.state.is_some()));
@@ -497,6 +596,9 @@ fn read<R: BufRead>(
         head: to_hex(&prev),
         truncated,
         safety,
+        seals,
+        seal_key,
+        unsealed,
     })
 }
 
@@ -505,7 +607,17 @@ fn read<R: BufRead>(
 /// # Errors
 /// [`JournalError`] bei Lese-, Format- oder Kettenfehlern.
 pub fn verify<R: BufRead>(reader: R) -> Result<Summary, JournalError> {
-    read(reader, |_| Ok(()), |_| Ok(()), |_| {})
+    read(reader, None, |_| Ok(()), |_| Ok(()), |_| {})
+}
+
+/// Prüft Hashkette und Siegel eines Journals; jedes Siegel muss mit `key` erstellt sein
+/// (REQ-JRN-004). Ob überhaupt gesiegelt ist und wie viele Einträge nach dem letzten Siegel
+/// folgen, steht in der [`Summary`].
+///
+/// # Errors
+/// [`JournalError`] bei Lese-, Format-, Ketten- oder Siegelfehlern.
+pub fn verify_sealed<R: BufRead>(reader: R, key: &VerifyingKey) -> Result<Summary, JournalError> {
+    read(reader, Some(key), |_| Ok(()), |_| Ok(()), |_| {})
 }
 
 /// Spielt ein Journal gegen `plan` erneut ab und vergleicht Ausgaben und Prüfpunkte
@@ -525,6 +637,7 @@ pub fn replay<R: BufRead>(
     let digest = to_hex(&plan.digest());
     let summary = read(
         reader,
+        None,
         |h| {
             if h.plan_digest != digest {
                 return Err(JournalError::Plan(format!(
