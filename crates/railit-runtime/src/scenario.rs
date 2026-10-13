@@ -87,7 +87,7 @@ use railit_ops::{OpsConfig, OpsEvent, Timetable};
 
 use railit_safety::{Fault as ChannelFault, Redundancy, SafetyEvent};
 
-use crate::field::SimulatedField;
+use crate::field::{FieldAdapter, SimulatedField};
 use crate::names::{NamedAux, NamedEvent};
 use crate::runtime::{Addressed, AreaSafetyEvent, Runtime, SafetyConfig};
 
@@ -99,6 +99,8 @@ struct ScenarioFile {
     step: Vec<Step>,
 }
 
+// Die Schalter des Szenarioformats sind voneinander unabhängig.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Header {
@@ -128,6 +130,9 @@ struct Header {
     channels: usize,
     #[serde(default)]
     node: bool,
+    /// Jeden Bereich mitschreiben und am Ende abspielen (nur über [`RunOptions`]).
+    #[serde(skip)]
+    journal: bool,
 }
 
 /// Vorgaben für Szenarien ohne eigene Angabe (z. B. um alle Szenarien auch mit 2-von-3 oder
@@ -138,6 +143,31 @@ pub struct RunOptions {
     pub channels: Option<Redundancy>,
     /// Alle Bereiche auf Knoten im Gleichschritt.
     pub node: bool,
+    /// Jeden Bereich im Journal mitschreiben (mit häufigen Zustandsabzügen) und am Ende
+    /// abspielen: Das Replay muss genau zum Endzustand jedes Bereichs führen (REQ-JRN-002,
+    /// REQ-JRN-006, REQ-JRN-007).
+    pub journal: bool,
+}
+
+/// Abstand der Zustandsabzüge, wenn Szenarien mitgeschrieben werden.
+const SCENARIO_SNAPSHOT_EVERY: u64 = 40;
+
+/// Journal im Speicher.
+#[derive(Clone, Default)]
+struct MemoryJournal(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for MemoryJournal {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .map_err(|_| std::io::Error::other("Journal gesperrt"))?
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Höchstzahl der Zyklen für den Anlauf der Knoten.
@@ -519,7 +549,7 @@ pub fn run_file_with(path: &Path, channels: Option<Redundancy>) -> Result<Outcom
         path,
         RunOptions {
             channels,
-            node: false,
+            ..RunOptions::default()
         },
     )
 }
@@ -548,6 +578,7 @@ fn run_str_with(source: &str, base: &Path, opts: RunOptions) -> Result<Outcome, 
         toml::from_str(source).map_err(|e| ScenarioError::Syntax(e.to_string()))?;
     let mut header = file.scenario;
     header.node |= opts.node;
+    header.journal = opts.journal;
     if let Some(r) = opts.channels
         && header.channels == default_channels()
     {
@@ -603,6 +634,16 @@ fn run_with<F: SimulatedField>(
     .map_err(ScenarioError::Planning)?;
     if header.node {
         rt.use_lockstep_nodes().map_err(ScenarioError::Planning)?;
+    }
+    let mut journals = Vec::new();
+    if header.journal {
+        rt.set_journal_snapshots(SCENARIO_SNAPSHOT_EVERY);
+        for area in 0..rt.area_count() {
+            let buf = MemoryJournal::default();
+            rt.start_journal(area, Box::new(buf.clone()), 10)
+                .map_err(|e| ScenarioError::Io(format!("Journal: {e}")))?;
+            journals.push(buf);
+        }
     }
     for (name, pos) in &header.points {
         let Some(ElementRef::Point(id)) = rt.field().simulator().topology().lookup(name) else {
@@ -662,6 +703,9 @@ fn run_with<F: SimulatedField>(
     for (i, step) in steps.iter().enumerate() {
         outcomes.push(ctx.run_step(i.saturating_add(1), step));
     }
+    if header.journal {
+        outcomes.push(replay_journals(&ctx.rt, &journals, outcomes.len()));
+    }
     let passed = outcomes.iter().all(|s| s.passed);
     Ok(Outcome {
         name: header.name,
@@ -669,6 +713,42 @@ fn run_with<F: SimulatedField>(
         steps: outcomes,
         passed,
     })
+}
+
+/// Spielt die Journale aller Bereiche ab und vergleicht mit dem Endzustand (zusätzlicher
+/// Schritt im Ergebnis).
+fn replay_journals<F: FieldAdapter>(
+    rt: &Runtime<F>,
+    journals: &[MemoryJournal],
+    steps: usize,
+) -> StepOutcome {
+    let mut failures = Vec::new();
+    if let Some(e) = rt.journal_error() {
+        failures.push(format!("Journal abgebrochen: {e}"));
+    }
+    for (area, buf) in journals.iter().enumerate() {
+        let name = rt.area_name(area).unwrap_or("?");
+        let bytes = buf.0.lock().map(|b| b.clone()).unwrap_or_default();
+        let (Some(plan), Some(state)) = (rt.plan_of(area), rt.state_of(area)) else {
+            failures.push(format!("Bereich {name}: unbekannt"));
+            continue;
+        };
+        match railit_journal::replay(bytes.as_slice(), plan) {
+            Ok((_, replayed)) if &replayed == state => {}
+            Ok((summary, _)) => failures.push(format!(
+                "Bereich {name}: Replay von {} Zyklen endet in einem anderen Zustand",
+                summary.cycles
+            )),
+            Err(e) => failures.push(format!("Bereich {name}: Replay: {e}")),
+        }
+    }
+    StepOutcome {
+        index: steps.saturating_add(1),
+        note: Some("Journal abspielen".into()),
+        passed: failures.is_empty(),
+        failures,
+        time_ms: rt.now().as_millis(),
+    }
 }
 
 struct Ctx<F> {

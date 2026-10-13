@@ -361,3 +361,107 @@ fn forged_snapshot_is_detected_by_replay() {
         Err(JournalError::Format(_))
     ));
 }
+
+/// Verbindung zum Knoten, die der Test trennen kann.
+struct Cuttable {
+    inner: railit_runtime::LockstepLink,
+    cut: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl railit_runtime::NodeLink for Cuttable {
+    fn clock_ms(&self, now: railit_types::Tick) -> u32 {
+        self.inner.clock_ms(now)
+    }
+
+    fn exchange(&mut self, now: railit_types::Tick, outgoing: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+        self.inner
+            .set_cut(self.cut.load(std::sync::atomic::Ordering::Relaxed));
+        self.inner.exchange(now, outgoing)
+    }
+
+    fn describe(&self) -> String {
+        "trennbar".into()
+    }
+}
+
+/// REQ-JRN-007: Im Knotenbetrieb schreibt der Spiegel jeden Zyklus des Knotens, den er
+/// nachgerechnet und geprüft hat, und jeden Zustandsabgleich als Übernahme. Auch über eine
+/// Verbindungsunterbrechung hinweg spielt das Journal zum Zustand des Spiegels ab.
+#[test]
+fn node_journal_replays_across_resyncs() {
+    use railit_runtime::railit_safety::Redundancy;
+    use railit_runtime::{LockstepLink, NodeSetup};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let net = railit_import::toml_format::parse(EXAMPLE).unwrap().topology;
+    let compiled = railit_planning::compile(&net, None).unwrap();
+    let plan = railit_runtime::load_plan(compiled.image, None).unwrap();
+    let sim = Simulator::new(net, SimConfig::default());
+    let mut rt = Runtime::new(
+        plan,
+        GenericRules::default(),
+        sim,
+        Duration::from_millis(100),
+    );
+    let setup = NodeSetup {
+        redundancy: Redundancy::TwoOutOfThree,
+        deadline_us: 1_000_000,
+        gap_limit_us: 1_000_000,
+    };
+    let cut = Arc::new(AtomicBool::new(false));
+    let link = Cuttable {
+        inner: LockstepLink::spawn(plan, GenericRules::default(), setup).unwrap(),
+        cut: Arc::clone(&cut),
+    };
+    rt.attach_node(0, Box::new(link)).unwrap();
+    rt.set_journal_snapshots(100);
+    let buf = Shared::default();
+    rt.start_journal(0, Box::new(buf.clone()), 50).unwrap();
+
+    let a = plan.find_signal("A").unwrap();
+    rt.field_mut()
+        .add_train(TrainSpec {
+            name: "RE1".into(),
+            signal: a,
+            length: Length::from_mm(120_000),
+            speed: Speed::from_kmh(60),
+            ignore_signals: false,
+            etcs: false,
+        })
+        .unwrap();
+    let mut id = 0;
+    let mut req = |rt: &mut Runtime<Simulator>, r: Request| {
+        id += 1;
+        rt.cycle(&[(RequestId(id), r)]);
+    };
+    for _ in 0..20 {
+        rt.cycle(&[]);
+    }
+    assert!(rt.nodes_synced(), "Knoten nicht abgeglichen");
+    req(&mut rt, Request::SetRoute(plan.find_route("A-N1").unwrap()));
+    for _ in 0..300 {
+        rt.cycle(&[]);
+    }
+    // Unterbrechung länger als die RaSTA-Überwachungszeit: neuer Aufbau, neuer Abgleich.
+    cut.store(true, Ordering::Relaxed);
+    for _ in 0..60 {
+        rt.cycle(&[]);
+    }
+    cut.store(false, Ordering::Relaxed);
+    for _ in 0..300 {
+        rt.cycle(&[]);
+    }
+    assert!(
+        rt.nodes_synced(),
+        "Knoten nach der Unterbrechung nicht abgeglichen"
+    );
+    assert_eq!(rt.journal_error(), None);
+
+    let bytes = buf.0.lock().unwrap().clone();
+    let summary = verify(bytes.as_slice()).unwrap();
+    assert!(summary.resyncs >= 2, "{} Übernahmen", summary.resyncs);
+    assert!(summary.cycles > 500, "{} Zyklen", summary.cycles);
+    assert!(summary.snapshots >= 3, "{} Abzüge", summary.snapshots);
+    let (_, state) = replay(bytes.as_slice(), &plan).unwrap();
+    assert_eq!(&state, rt.state(), "Endzustand des Spiegels");
+}

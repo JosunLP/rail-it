@@ -416,12 +416,14 @@ pub(crate) fn run_scenarios(
     files: &[std::path::PathBuf],
     node: bool,
     channels: Option<u8>,
+    journal: bool,
     output: Output,
 ) -> ExitCode {
     let opts = railit_runtime::scenario::RunOptions {
         channels: channels
             .and_then(|c| railit_runtime::railit_safety::Redundancy::from_channels(usize::from(c))),
         node,
+        journal,
     };
     let mut all_passed = true;
     let mut results = Vec::new();

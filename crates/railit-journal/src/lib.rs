@@ -189,6 +189,22 @@ impl Header {
     }
 }
 
+/// Zustandsübernahme (REQ-JRN-007): Der Zustand wurde von außen übernommen, im
+/// Knotenbetrieb beim Zustandsabgleich mit dem sicheren Rechner. Das Replay rechnet ab hier
+/// mit diesem Zustand weiter; Zyklen davor, die der Spiegel nicht gesehen hat (etwa während
+/// einer Verbindungsunterbrechung), fehlen im Journal und sind so ausgewiesen.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Resync {
+    /// Zyklusnummer des übernommenen Zustands.
+    pub cycle: u64,
+    /// Zeitpunkt der Übernahme in Millisekunden.
+    pub now_ms: u64,
+    /// Anlass in Worten.
+    pub detail: String,
+    /// Übernommener Zustand.
+    pub state: OwnedState,
+}
+
 /// Zustandsabzug des Kerns nach einem Zyklus.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -283,6 +299,8 @@ pub enum Entry {
     Seal(Seal),
     /// Zustandsabzug (ab Version 4).
     Snapshot(Box<Snapshot>),
+    /// Zustandsübernahme (ab Version 4).
+    Resync(Box<Resync>),
 }
 
 /// Art einer Meldung der Sicherheitsschicht.
@@ -298,6 +316,11 @@ pub enum SafetyKind {
     Tripped,
     /// Rücksetzen: Alle Kanäle beginnen wie nach einem Neustart.
     Reset,
+    /// Meldung der Sicherheitsschicht eines Knotens des sicheren Rechners oder Handlung an
+    /// ihr (nur zur Information). Im Knotenbetrieb hält das Journal die Zyklen fest, die der
+    /// Spiegel nachgerechnet und geprüft hat; was der Knoten im sicheren Zustand tut, zeigt
+    /// eine folgende Zustandsübernahme ([`Resync`]).
+    Node,
 }
 
 /// Meldung der Sicherheitsschicht im Journal. Sie steht vor dem Zyklus, in dem sie wirkt.
@@ -525,6 +548,23 @@ impl<W: Write> JournalWriter<W> {
         Ok(())
     }
 
+    /// Hält eine Zustandsübernahme fest (REQ-JRN-007): Ab hier rechnet das Replay mit
+    /// `state` weiter.
+    ///
+    /// # Errors
+    /// Schreibfehler.
+    pub fn resync(&mut self, now: Tick, state: &OwnedState, detail: &str) -> io::Result<()> {
+        self.tripped = false;
+        // Der nächste Zyklus steht vollständig im Journal.
+        self.last_inputs.clear();
+        self.write(&Entry::Resync(Box::new(Resync {
+            cycle: state.meta().cycle(),
+            now_ms: now.as_millis(),
+            detail: detail.to_string(),
+            state: state.clone(),
+        })))
+    }
+
     /// Hält eine Meldung der Sicherheitsschicht fest (vor dem Zyklus, in dem sie wirkt).
     ///
     /// # Errors
@@ -533,7 +573,7 @@ impl<W: Write> JournalWriter<W> {
         match kind {
             SafetyKind::Tripped => self.tripped = true,
             SafetyKind::Reset => self.tripped = false,
-            SafetyKind::Excluded | SafetyKind::Reintegrated => {}
+            SafetyKind::Excluded | SafetyKind::Reintegrated | SafetyKind::Node => {}
         }
         self.write(&Entry::Safety(SafetyRecord {
             now_ms: now.as_millis(),
@@ -627,6 +667,8 @@ pub struct Summary {
     pub checkpoints: u64,
     /// Anzahl der Zustandsabzüge.
     pub snapshots: u64,
+    /// Anzahl der Zustandsübernahmen.
+    pub resyncs: u64,
     /// Zeitpunkt des letzten Zyklus in Millisekunden.
     pub last_ms: u64,
     /// Hash der letzten vollständigen Zeile (Hex).
@@ -662,6 +704,10 @@ trait Visit {
     fn snapshot(&mut self, _snapshot: Box<Snapshot>) -> Result<(), JournalError> {
         Ok(())
     }
+
+    fn resync(&mut self, _resync: Box<Resync>) -> Result<(), JournalError> {
+        Ok(())
+    }
 }
 
 /// Nur prüfen.
@@ -682,6 +728,7 @@ fn read<R: BufRead>(
     let mut cycles = 0u64;
     let mut checkpoints = 0u64;
     let mut snapshots = 0u64;
+    let mut resyncs = 0u64;
     let mut last_ms = 0u64;
     let mut truncated = false;
     let mut seals = 0u64;
@@ -753,7 +800,14 @@ fn read<R: BufRead>(
                     "Zeile {number}: zweiter Kopf"
                 )));
             }
-            (Entry::Cycle(_) | Entry::Safety(_) | Entry::Seal(_) | Entry::Snapshot(_), None) => {
+            (
+                Entry::Cycle(_)
+                | Entry::Safety(_)
+                | Entry::Seal(_)
+                | Entry::Snapshot(_)
+                | Entry::Resync(_),
+                None,
+            ) => {
                 return Err(JournalError::Format("Kopf fehlt".into()));
             }
             (Entry::Safety(r), Some(_)) => {
@@ -761,7 +815,7 @@ fn read<R: BufRead>(
                 match r.kind {
                     SafetyKind::Tripped => tripped = true,
                     SafetyKind::Reset => tripped = false,
-                    SafetyKind::Excluded | SafetyKind::Reintegrated => {}
+                    SafetyKind::Excluded | SafetyKind::Reintegrated | SafetyKind::Node => {}
                 }
                 visit.safety(&r)?;
                 safety.push(r);
@@ -775,6 +829,15 @@ fn read<R: BufRead>(
                 }
                 snapshots = snapshots.saturating_add(1);
                 visit.snapshot(snap)?;
+            }
+            (Entry::Resync(resync), Some(_)) => {
+                unsealed = unsealed.saturating_add(1);
+                // Die Übernahme hebt den sicheren Zustand der Schicht auf: Der übernommene
+                // Zustand ist maßgeblich.
+                tripped = false;
+                resyncs = resyncs.saturating_add(1);
+                last_ms = resync.now_ms;
+                visit.resync(resync)?;
             }
             (Entry::Cycle(mut c), Some(_)) => {
                 unsealed = unsealed.saturating_add(1);
@@ -804,6 +867,7 @@ fn read<R: BufRead>(
         cycles,
         checkpoints,
         snapshots,
+        resyncs,
         last_ms,
         head: to_hex(&prev),
         truncated,
@@ -843,6 +907,11 @@ pub fn entries<R: BufRead>(reader: R) -> Result<Vec<Entry>, JournalError> {
             self.0.push(Entry::Snapshot(snapshot));
             Ok(())
         }
+
+        fn resync(&mut self, resync: Box<Resync>) -> Result<(), JournalError> {
+            self.0.push(Entry::Resync(resync));
+            Ok(())
+        }
     }
 
     let mut out = Collect(Vec::new());
@@ -877,16 +946,16 @@ enum Item {
     End(Box<Snapshot>),
 }
 
-/// Spielt einen Abschnitt ab: ab `start` (oder dem Anfangszustand), mit `inputs` als
-/// Eingaben des Zyklus davor. Endet der Abschnitt mit einem Abzug, muss der abgespielte
+/// Spielt einen Abschnitt ab: ab `start` (oder dem Anfangszustand); der erste Zyklus bringt
+/// vollständige Eingaben mit. Endet der Abschnitt mit einem Abzug, muss der abgespielte
 /// Zustand ihm gleichen.
 fn replay_segment(
     plan: &PlanView<'_>,
     rules: GenericRules,
     start: Option<OwnedState>,
-    mut inputs: Vec<Input>,
     items: &std::sync::mpsc::Receiver<Item>,
 ) -> Result<OwnedState, JournalError> {
+    let mut inputs: Vec<Input> = Vec::new();
     let kernel = Interlocking::new(*plan, rules);
     let mut state = start.unwrap_or_else(|| OwnedState::new(plan));
     let mut out = VecOutputs::default();
@@ -900,7 +969,7 @@ fn replay_segment(
                 tripped = false;
                 state.view().reset();
             }
-            Item::Safety(SafetyKind::Excluded | SafetyKind::Reintegrated) => {}
+            Item::Safety(SafetyKind::Excluded | SafetyKind::Reintegrated | SafetyKind::Node) => {}
             Item::Cycle(c) => {
                 match &c.delta {
                     Some(d) => d.apply(&mut inputs).map_err(JournalError::Format)?,
@@ -956,8 +1025,9 @@ struct Parallel<'scope, 'env, 'p> {
     done: (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>),
     /// Zuführung zum laufenden Abschnitt.
     current: Option<std::sync::mpsc::SyncSender<Item>>,
-    /// Eingaben des letzten Zyklus mit vollständigen Eingaben (Beginn des nächsten Abschnitts).
-    last_full: Vec<Input>,
+    /// Der laufende Abschnitt hat noch keinen Zyklus erhalten: Der erste geht mit
+    /// vollständigen Eingaben hinaus, spätere als Änderung.
+    fresh: bool,
     /// Ergebnisse je Abschnitt in Reihenfolge.
     results: Vec<std::thread::ScopedJoinHandle<'scope, Result<OwnedState, JournalError>>>,
 }
@@ -979,11 +1049,11 @@ impl<'scope, 'p: 'scope> Parallel<'scope, '_, 'p> {
         }
         let (tx, rx) = std::sync::mpsc::sync_channel(4096);
         let plan = self.plan;
-        let inputs = std::mem::take(&mut self.last_full);
         let done = self.done.0.clone();
         self.running = self.running.saturating_add(1);
+        self.fresh = true;
         self.results.push(self.scope.spawn(move || {
-            let result = replay_segment(plan, rules, start, inputs, &rx);
+            let result = replay_segment(plan, rules, start, &rx);
             let _ = done.send(());
             result
         }));
@@ -1013,17 +1083,15 @@ impl Visit for Parallel<'_, '_, '_> {
     }
 
     fn cycle(&mut self, c: &Cycle, delta: Option<&InputDelta>) -> Result<(), JournalError> {
-        let inputs = if delta.is_some() {
-            Vec::new()
-        } else {
-            self.last_full.clone_from(&c.inputs);
-            c.inputs.clone()
-        };
+        // Der Leser hat die Eingaben vollständig zusammengesetzt; als Änderung genügt, was
+        // der Abschnitt schon kennt.
+        let full = self.fresh || delta.is_none();
+        self.fresh = false;
         self.send(Item::Cycle(Cycle {
             cycle: c.cycle,
             now_ms: c.now_ms,
-            inputs,
-            delta: delta.cloned(),
+            inputs: if full { c.inputs.clone() } else { Vec::new() },
+            delta: if full { None } else { delta.cloned() },
             outputs: c.outputs.clone(),
             state: c.state.clone(),
         }));
@@ -1046,6 +1114,26 @@ impl Visit for Parallel<'_, '_, '_> {
         self.send(Item::End(snapshot));
         self.current = None;
         self.begin(Some(start))
+    }
+
+    /// Eine Übernahme beendet den Abschnitt ohne Vergleich; der nächste beginnt mit dem
+    /// übernommenen Zustand.
+    fn resync(&mut self, resync: Box<Resync>) -> Result<(), JournalError> {
+        if !resync.state.fits(self.plan) {
+            return Err(JournalError::Format(format!(
+                "Zustandsübernahme bei Zyklus {} passt nicht zum Plan",
+                resync.cycle
+            )));
+        }
+        if resync.state.meta().cycle() != resync.cycle {
+            return Err(JournalError::Format(format!(
+                "Zustandsübernahme bei Zyklus {}: Zustand nennt Zyklus {}",
+                resync.cycle,
+                resync.state.meta().cycle()
+            )));
+        }
+        self.current = None;
+        self.begin(Some(resync.state))
     }
 }
 
@@ -1073,7 +1161,7 @@ pub fn replay<R: BufRead>(
             running: 0,
             done: std::sync::mpsc::channel(),
             current: None,
-            last_full: Vec::new(),
+            fresh: true,
             results: Vec::new(),
         };
         let read_result = read(reader, None, &mut parallel);

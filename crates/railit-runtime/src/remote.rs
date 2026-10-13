@@ -29,6 +29,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
 
+use crate::runtime::JournalSlot;
 use railit_embedded::wire::HostMsg;
 use railit_embedded::{Node, NodeClient, NodeConfig, NodeCycle, NodeEvent, NodeSync};
 use railit_kernel::{
@@ -432,6 +433,7 @@ impl Remote {
         now: Tick,
         inputs: &[Input],
         mirror: &mut Mirror,
+        journal: &mut JournalSlot,
     ) -> RemoteOutput {
         let clock = self.link.clock_ms(now);
         if self.client.tick(clock).is_some() {
@@ -473,9 +475,9 @@ impl Remote {
                 NodeEvent::Cycle(c) => {
                     got_cycle = true;
                     self.take_cycle(&c, &mut out);
-                    self.mirror_cycle(c, mirror);
+                    self.mirror_cycle(c, mirror, journal);
                 }
-                NodeEvent::Synced(s) => self.mirror_sync(&s, mirror, &mut out),
+                NodeEvent::Synced(s) => self.mirror_sync(now, &s, mirror, journal, &mut out),
             }
         }
         if got_cycle {
@@ -537,7 +539,7 @@ impl Remote {
     }
 
     /// Spiegel um einen Zyklus des Knotens nachführen und vergleichen.
-    fn mirror_cycle(&mut self, c: NodeCycle, mirror: &mut Mirror) {
+    fn mirror_cycle(&mut self, c: NodeCycle, mirror: &mut Mirror, journal: &mut JournalSlot) {
         if !self.synced {
             if self.buffered.len() >= MAX_BUFFERED {
                 // Abgleich bleibt aus: neu anfordern.
@@ -546,12 +548,19 @@ impl Remote {
             self.buffered.push(c);
             return;
         }
-        if let Err(why) = self.replay(&c, mirror) {
+        if let Err(why) = self.replay(&c, mirror, journal) {
             self.desync(why);
         }
     }
 
-    fn replay(&mut self, c: &NodeCycle, mirror: &mut Mirror) -> Result<(), String> {
+    /// Rechnet einen Zyklus des Knotens im Spiegel nach. Stimmt er, steht er mit genau den
+    /// Eingaben des Knotens im Journal (REQ-JRN-007).
+    fn replay(
+        &mut self,
+        c: &NodeCycle,
+        mirror: &mut Mirror,
+        journal: &mut JournalSlot,
+    ) -> Result<(), String> {
         let inputs = self
             .pop(c.end.inputs)
             .ok_or_else(|| format!("Zyklus {}: Eingaben fehlen", c.cycle))?;
@@ -570,11 +579,21 @@ impl Remote {
                 c.cycle
             ));
         }
+        if let Some(state) = mirror.primary() {
+            journal.write(|j| j.record(Tick::from_millis(c.now_ms), &inputs, &out, state));
+        }
         Ok(())
     }
 
     /// Zustandsabgleich abgeschlossen: Spiegel einsetzen, wartende Zyklen nachrechnen.
-    fn mirror_sync(&mut self, s: &NodeSync, mirror: &mut Mirror, out: &mut RemoteOutput) {
+    fn mirror_sync(
+        &mut self,
+        now: Tick,
+        s: &NodeSync,
+        mirror: &mut Mirror,
+        journal: &mut JournalSlot,
+        out: &mut RemoteOutput,
+    ) {
         if s.plan != self.plan_short {
             self.problem("Knoten rechnet mit einem anderen Plan".into());
             // Kein neuer Abgleich: Mit anderem Plan kann der Spiegel nie stimmen.
@@ -593,12 +612,16 @@ impl Remote {
         self.synced = true;
         self.sync_requested = false;
         self.snapshot.syncs = self.snapshot.syncs.saturating_add(1);
+        if let Some(state) = mirror.primary() {
+            let detail = format!("Zustandsabgleich {} mit dem Knoten", self.snapshot.syncs);
+            journal.write(|j| j.resync(now, state, &detail));
+        }
         for c in waiting {
             if c.cycle <= s.cycle {
                 // Im übertragenen Zustand enthalten.
                 let _ = self.pop(c.end.inputs);
                 let _ = self.pop(c.end.dropped);
-            } else if let Err(why) = self.replay(&c, mirror) {
+            } else if let Err(why) = self.replay(&c, mirror, journal) {
                 self.desync(why);
                 return;
             }

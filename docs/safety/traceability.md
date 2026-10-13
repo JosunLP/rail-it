@@ -71,11 +71,12 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | ID | Gefährdung | Code | Nachweis |
 |----|------------|------|----------|
 | REQ-JRN-001 | H-011 | `crates/railit-journal/src/lib.rs`<br>`crates/railit-runtime/src/runtime.rs` | `tampering_breaks_the_chain`<br>`journal_verify_and_replay`<br>`apps/railit/tests/cli.rs`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-runtime/tests/journal.rs` |
-| REQ-JRN-002 | H-011, H-007 | `crates/railit-journal/src/lib.rs` | `journal_replays_to_the_same_state`<br>`forged_journal_is_detected_by_replay`<br>`replay_needs_the_recorded_plan`<br>`aux_operation_and_journal`<br>`apps/railit/tests/cli.rs`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-runtime/tests/journal.rs` |
-| REQ-JRN-003 | H-011 | – | `aux_operation_and_journal` |
+| REQ-JRN-002 | H-011, H-007 | `crates/railit-journal/src/lib.rs`<br>`crates/railit-runtime/src/scenario.rs` | `journal_replays_to_the_same_state`<br>`forged_journal_is_detected_by_replay`<br>`replay_needs_the_recorded_plan`<br>`aux_operation_and_journal`<br>`apps/railit/tests/cli.rs`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-runtime/tests/journal.rs`<br>`crates/railit-runtime/tests/scenarios.rs` |
+| REQ-JRN-003 | H-011 | `crates/railit-runtime/src/runtime.rs` | `aux_operation_and_journal` |
 | REQ-JRN-004 | H-011 | `crates/railit-journal/src/audit.rs`<br>`crates/railit-journal/src/lib.rs`<br>`crates/railit-journal/src/seal.rs`<br>`crates/railit-runtime/src/runtime.rs` | `sealed_journal_verifies_with_the_station_key`<br>`rewritten_journal_cannot_carry_the_station_seal`<br>`tampered_signature_is_detected`<br>`sealed_audit_log`<br>`foreign_seals_block_reopening`<br>`sealed_journal_and_audit_log`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-journal/tests/seal.rs` |
 | REQ-JRN-005 | H-011 | `crates/railit-journal/src/lib.rs` | `deltas_reconstruct_every_input_list`<br>`malformed_deltas_are_rejected`<br>`forged_journal_is_detected_by_replay` |
-| REQ-JRN-006 | H-011 | `apps/railit/src/bench.rs`<br>`crates/railit-journal/src/lib.rs` | `snapshots_split_the_replay`<br>`forged_snapshot_is_detected_by_replay`<br>`journal_covers_trip_and_reset_of_the_safety_layer` |
+| REQ-JRN-006 | H-011 | `apps/railit/src/bench.rs`<br>`crates/railit-journal/src/lib.rs`<br>`crates/railit-runtime/src/scenario.rs` | `snapshots_split_the_replay`<br>`forged_snapshot_is_detected_by_replay`<br>`journal_covers_trip_and_reset_of_the_safety_layer`<br>`crates/railit-runtime/tests/scenarios.rs` |
+| REQ-JRN-007 | H-011 | `crates/railit-journal/src/lib.rs`<br>`crates/railit-runtime/src/remote.rs`<br>`crates/railit-runtime/src/scenario.rs` | `node_journal_replays_across_resyncs`<br>`safe_computer_nodes_over_api`<br>`all_scenarios_pass_on_safe_computer_nodes`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-runtime/tests/journal.rs`<br>`crates/railit-runtime/tests/scenarios.rs` |
 
 ## [kern.md](../requirements/kern.md)
 
@@ -181,4 +182,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-108 Anforderungen, davon 108 mit Nachweis.
+109 Anforderungen, davon 109 mit Nachweis.

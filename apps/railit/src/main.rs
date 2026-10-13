@@ -415,6 +415,10 @@ enum ScenarioCommand {
         /// Kanäle je Stellbereich für Szenarien ohne eigene Angabe (1, 2 oder 3).
         #[arg(long, value_parser = clap::value_parser!(u8).range(1..=3))]
         channels: Option<u8>,
+        /// Jeden Stellbereich im Journal mitschreiben und am Ende abspielen; das Replay muss
+        /// genau den Endzustand ergeben.
+        #[arg(long)]
+        journal: bool,
     },
 }
 
@@ -665,7 +669,8 @@ fn main() -> ExitCode {
             files,
             node,
             channels,
-        }) => plan::run_scenarios(&files, node, channels, output),
+            journal,
+        }) => plan::run_scenarios(&files, node, channels, journal, output),
         Command::Journal(JournalCommand::Verify {
             file,
             key,

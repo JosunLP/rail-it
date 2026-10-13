@@ -268,9 +268,6 @@ fn attach_nodes(rt: &mut Runtime<DynField>, args: &Args) -> Result<(), String> {
     if args.nodes.is_empty() {
         return Ok(());
     }
-    if args.journal.is_some() {
-        return Err("--journal und --node: das Journal gehört auf den Knoten".into());
-    }
     if args.nodes.iter().any(|n| n == "lockstep") {
         if args.nodes.len() > 1 {
             return Err("--node lockstep gilt für alle Stellbereiche".into());

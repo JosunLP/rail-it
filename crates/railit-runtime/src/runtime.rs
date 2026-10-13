@@ -251,8 +251,7 @@ struct Area {
     inbox: Vec<Option<BorderMessage>>,
     out: VecOutputs,
     inputs: Vec<Input>,
-    journal: Option<JournalWriter<Box<dyn Write + Send>>>,
-    journal_error: Option<String>,
+    journal: JournalSlot,
     /// Kern auf einem sicheren Rechner; `channels` ist dann der Spiegel.
     remote: Option<Box<Remote>>,
 }
@@ -268,8 +267,7 @@ impl Area {
             inbox: vec![None; plan.border_count()],
             out: VecOutputs::default(),
             inputs: Vec::new(),
-            journal: None,
-            journal_error: None,
+            journal: JournalSlot::default(),
             remote: None,
         }
     }
@@ -294,7 +292,7 @@ impl Area {
     /// Watchdog des Dienstes den Zyklus überwacht (nur lokal und nicht abgeschaltet).
     fn step(&mut self, now: Tick) -> (Option<SafeStateReason>, Vec<SafetyEvent>, bool) {
         if let Some(remote) = &mut self.remote {
-            let got = remote.cycle(now, &self.inputs, &mut self.channels);
+            let got = remote.cycle(now, &self.inputs, &mut self.channels, &mut self.journal);
             self.out.commands = got.commands;
             self.out.events = got.events;
             return (got.safe_state, got.safety, false);
@@ -308,8 +306,14 @@ impl Area {
         (reason, verdict.events().collect(), verdict.trip.is_none())
     }
 
-    /// Hält eine Meldung des Voters im Journal fest.
+    /// Hält eine Meldung des Voters im Journal fest. Meldungen der Sicherheitsschicht eines
+    /// Knotens stehen nur zur Information im Journal (das Journal des Spiegels enthält nur
+    /// geprüfte Zyklen und Zustandsübernahmen).
     fn journal_safety_event(&mut self, now: Tick, event: SafetyEvent) {
+        if self.remote.is_some() {
+            self.journal_safety(now, SafetyKind::Node, &format!("{event:?}"));
+            return;
+        }
         let (kind, detail) = match event {
             SafetyEvent::ChannelExcluded {
                 channel,
@@ -325,13 +329,29 @@ impl Area {
 
     /// Hält eine Meldung der Sicherheitsschicht im Journal fest.
     fn journal_safety(&mut self, now: Tick, kind: SafetyKind, detail: &str) {
-        if let Some(journal) = &mut self.journal {
-            let written = journal
-                .record_safety(now, kind, detail)
-                .and_then(|()| journal.flush());
+        self.journal.write(|j| j.record_safety(now, kind, detail));
+    }
+}
+
+/// Journal eines Bereichs. Ein Schreibfehler beendet nur das Journal, nicht den Betrieb
+/// (REQ-JRN-003).
+#[derive(Default)]
+pub(crate) struct JournalSlot {
+    writer: Option<JournalWriter<Box<dyn Write + Send>>>,
+    error: Option<String>,
+}
+
+impl JournalSlot {
+    /// Schreibt mit `f` und gibt die Zeile sofort aus; ohne Journal: nichts.
+    pub(crate) fn write(
+        &mut self,
+        f: impl FnOnce(&mut JournalWriter<Box<dyn Write + Send>>) -> std::io::Result<()>,
+    ) {
+        if let Some(journal) = &mut self.writer {
+            let written = f(journal).and_then(|()| journal.flush());
             if let Err(e) = written {
-                self.journal_error = Some(e.to_string());
-                self.journal = None;
+                self.error = Some(e.to_string());
+                self.writer = None;
             }
         }
     }
@@ -539,9 +559,6 @@ impl<F: FieldAdapter> Runtime<F> {
         }
         let redundancy = self.safety.redundancy;
         let a = self.area_mut(area)?;
-        if a.journal.is_some() {
-            return Err("Journal und Knoten: das Journal schreibt der Knoten".into());
-        }
         let plan = *a.plan();
         let rules = *a.rules();
         a.channels = build_channels(plan, rules, &SafetyConfig::default());
@@ -630,6 +647,11 @@ impl<F: FieldAdapter> Runtime<F> {
         if let Some(remote) = &mut a.remote {
             let channel = u8::try_from(channel).map_err(|_| format!("Kanal {channel}"))?;
             remote.safety_action(railit_embedded::wire::HostMsg::Reintegrate(channel));
+            a.journal_safety(
+                now,
+                SafetyKind::Node,
+                &format!("Wiederaufnahme von Kanal {channel} angefordert"),
+            );
             return Ok(());
         }
         a.channels
@@ -649,7 +671,8 @@ impl<F: FieldAdapter> Runtime<F> {
         let a = self.area_mut(area)?;
         if let Some(remote) = &mut a.remote {
             remote.safety_action(railit_embedded::wire::HostMsg::Reset);
-            a.journal_safety(now, SafetyKind::Reset, "");
+            // Der Knoten setzt zurück; das Journal übernimmt danach seinen Zustand.
+            a.journal_safety(now, SafetyKind::Node, "Rücksetzen angefordert");
             return Ok(());
         }
         a.channels.reset();
@@ -844,13 +867,7 @@ impl<F: FieldAdapter> Runtime<F> {
     /// Journal ab wie beim Schreiben eines Zyklus.
     pub fn seal_journals(&mut self) {
         for area in &mut self.areas {
-            if let Some(journal) = &mut area.journal {
-                let written = journal.seal().and_then(|()| journal.flush());
-                if let Err(e) = written {
-                    area.journal_error = Some(e.to_string());
-                    area.journal = None;
-                }
-            }
+            area.journal.write(JournalWriter::seal);
         }
     }
 
@@ -866,11 +883,6 @@ impl<F: FieldAdapter> Runtime<F> {
             .areas
             .get_mut(area)
             .ok_or_else(|| std::io::Error::other("unbekannter Stellbereich"))?;
-        if a.remote.is_some() {
-            return Err(std::io::Error::other(
-                "Journal und Knoten: das Journal schreibt der Knoten",
-            ));
-        }
         // Zustandsabzüge, ohne Angabe alle zehn Minuten Betrieb: Abschnitte für paralleles
         // Replay.
         let snapshot_every = self.snapshot_every.unwrap_or_else(|| {
@@ -886,15 +898,17 @@ impl<F: FieldAdapter> Runtime<F> {
             None => JournalWriter::new(out, header)?,
         };
         journal.flush()?;
-        a.journal = Some(journal);
-        a.journal_error = None;
+        a.journal = JournalSlot {
+            writer: Some(journal),
+            error: None,
+        };
         Ok(())
     }
 
     /// Fehler, an dem ein Journal abgebrochen ist (erster Bereich mit Fehler). Der Betrieb
     /// läuft weiter; das Journal ist ab diesem Zyklus unvollständig.
     pub fn journal_error(&self) -> Option<&str> {
-        self.areas.iter().find_map(|a| a.journal_error.as_deref())
+        self.areas.iter().find_map(|a| a.journal.error.as_deref())
     }
 
     /// Hash der letzten Journalzeile eines Bereichs, falls dort ein Journal läuft.
@@ -902,6 +916,7 @@ impl<F: FieldAdapter> Runtime<F> {
         self.areas
             .get(area)?
             .journal
+            .writer
             .as_ref()
             .map(JournalWriter::head)
     }
@@ -968,21 +983,14 @@ impl<F: FieldAdapter> Runtime<F> {
                     }
                 }
             }
-            if let Some(journal) = &mut area.journal {
-                let written = journal
-                    .record(
-                        now,
-                        &area.inputs,
-                        &area.out,
-                        area.channels
-                            .primary()
-                            .unwrap_or_else(|| unreachable!("Stellbereich ohne Kanal")),
-                    )
-                    .and_then(|()| journal.flush());
-                if let Err(e) = written {
-                    area.journal_error = Some(e.to_string());
-                    area.journal = None;
-                }
+            // Im Knotenbetrieb schreibt der Spiegel je geprüftem Zyklus des Knotens.
+            if area.remote.is_none() {
+                let state = area
+                    .channels
+                    .primary()
+                    .unwrap_or_else(|| unreachable!("Stellbereich ohne Kanal"));
+                area.journal
+                    .write(|j| j.record(now, &area.inputs, &area.out, state));
             }
             if watched
                 && let Some(Err(trip)) = area.watchdog.as_mut().map(|w| w.check(started, finished))

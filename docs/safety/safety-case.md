@@ -120,6 +120,7 @@ einer Fehlbedienung, sie sind keine Sicherheitsfunktion.
 | Journal aller Eingaben mit Hashkette, deterministisches Abspielen, auch über Abschaltung und Rücksetzen der Sicherheitsschicht | REQ-JRN-001 … 003, `journal_covers_trip_and_reset_of_the_safety_layer` |
 | Siegel des Stellwerks über Journal und Auditprotokoll: Eine neu geschriebene Kette ist erkennbar | REQ-JRN-004, `rewritten_journal_cannot_carry_the_station_seal` |
 | Eingaben als Änderung, Zustandsabzüge und paralleles Replay mit Gleichheitsprüfung an jeder Abschnittsgrenze; ein gefälschter Abzug fällt auf | REQ-JRN-005/006, `forged_snapshot_is_detected_by_replay` |
+| Journal auch im Knotenbetrieb: geprüfte Zyklen des Spiegels und Zustandsübernahmen; alle Szenarien in allen Betriebsarten mitgeschrieben und abgespielt | REQ-JRN-007, `node_journal_replays_across_resyncs` |
 
 ## Teil 5 – Verwandte Sicherheitsnachweise
 
@@ -160,7 +161,7 @@ rail-it ist als **generisches Produkt** angelegt. Für einen Einsatz sind zusät
 | Systematische Gefährdungsanalyse mit Bewertung (FMEA, FTA, quantitative Ziele) | Gefährdungsliste |
 | Qualifizierte Toolchain (z. B. Ferrocene) für die SIL-4-Crates | Konzept 16.2 |
 | Hardware des sicheren Rechners festlegen; Kanäle auf getrennter Hardware bzw. im Lockstep, Speicherprüfungen | H-015, Konzept 19 |
-| Journal auf dem Knoten des sicheren Rechners (heute: mit `--node` kein Journal); Knoten auf der Zielhardware | REQ-EMB, REQ-JRN |
+| Knoten auf der Zielhardware | REQ-EMB |
 | Kani-Nachweise für den gesamten Kernzyklus (heute Eigenschaftstests und Fuzzing) | H-007 |
 | Sicherheitscode von RaSTA nach Zulassungsanforderung prüfen | H-014 |
 | Regelwerke `de-estw` und `etcs` mit den Regeln eines Betreibers | Teil 5 |

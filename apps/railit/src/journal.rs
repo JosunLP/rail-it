@@ -39,6 +39,7 @@ fn report(result: Result<Summary, JournalError>, what: &str, output: Output) -> 
                 "cycles": s.cycles,
                 "checkpoints": s.checkpoints,
                 "snapshots": s.snapshots,
+                "resyncs": s.resyncs,
                 "last_ms": s.last_ms,
                 "head": s.head,
                 "truncated": s.truncated,
@@ -55,6 +56,12 @@ fn report(result: Result<Summary, JournalError>, what: &str, output: Output) -> 
                 "✔ {what}: Netz „{}“, {} Zyklen bis t = {t:.1} s, {} Prüfpunkte, {} Zustandsabzüge",
                 s.header.network, s.cycles, s.checkpoints, s.snapshots
             );
+            if s.resyncs > 0 {
+                println!(
+                    "  {} Zustandsübernahmen (Abgleich mit dem Knoten des sicheren Rechners)",
+                    s.resyncs
+                );
+            }
             println!("  Kopf der Kette: {}", s.head);
             match &s.seal_key {
                 Some(key) => println!(

@@ -702,9 +702,12 @@ fn redundant_channels_over_api() {
 
 /// REQ-EMB-005: Stellbereiche auf Knoten des sicheren Rechners (`--node lockstep`): Der Dienst
 /// zeigt die Anbindung, bedient über den Knoten und weist widersprüchliche Angaben ab.
+/// REQ-JRN-007: Das Journal des Spiegels lässt sich prüfen und abspielen.
 #[test]
 fn safe_computer_nodes_over_api() {
     let (plan, _) = prepare("node", false);
+    let journal = tmp("node.journal");
+    let _ = std::fs::remove_file(&journal);
     let d = start(&[
         "--plan",
         plan.to_str().unwrap(),
@@ -713,6 +716,8 @@ fn safe_computer_nodes_over_api() {
         "2",
         "--node",
         "lockstep",
+        "--journal",
+        journal.to_str().unwrap(),
     ]);
     let node = |d: &Daemon| get(d, "/v1/state", true).1["areas"][0]["safety"].clone();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -758,19 +763,20 @@ fn safe_computer_nodes_over_api() {
         ],
         "unbekannt",
     );
-    let journal = tmp("node.journal");
-    let _ = std::fs::remove_file(&journal);
-    fails(
-        &[
-            "--plan",
-            p,
-            "--allow-unsigned",
-            "--node",
-            "lockstep",
-            "--journal",
-            journal.to_str().unwrap(),
-        ],
-        "Journal",
+    drop(d);
+
+    // Journal des Spiegels: mindestens ein Abgleich als Übernahme, geprüfte Zyklen danach.
+    let bytes = std::fs::read(&journal).unwrap();
+    let summary = railit_journal::verify(bytes.as_slice()).unwrap();
+    assert!(summary.resyncs >= 1 && summary.cycles > 0, "{summary:?}");
+    let plan = railit_runtime::load_plan(std::fs::read(&plan).unwrap(), None).unwrap();
+    let (replayed, state) = railit_journal::replay(bytes.as_slice(), &plan).unwrap();
+    assert_eq!(replayed.cycles, summary.cycles);
+    let a_n1 = plan.find_route("A-N1").unwrap();
+    assert_ne!(
+        state.routes()[a_n1.index().unwrap()].phase(),
+        railit_kernel::RoutePhase::Idle,
+        "A-N1 im abgespielten Zustand eingestellt"
     );
 }
 

@@ -7,15 +7,22 @@ use railit_runtime::scenario::RunOptions;
 
 #[test]
 fn all_scenarios_pass() {
-    run_all(RunOptions::default());
+    run_all(RunOptions {
+        journal: true,
+        ..RunOptions::default()
+    });
 }
 
+/// Alle Läufe schreiben jeden Bereich im Journal mit; am Ende muss das Replay genau den
+/// Endzustand ergeben (REQ-JRN-002, REQ-JRN-006, REQ-JRN-007).
+///
 /// REQ-SAF-001: Mit drei fehlerfreien Kanälen verhält sich das Stellwerk genau wie mit einem.
 #[test]
 fn all_scenarios_pass_with_three_channels() {
     run_all(RunOptions {
         channels: Some(Redundancy::TwoOutOfThree),
         node: false,
+        journal: true,
     });
 }
 
@@ -26,6 +33,7 @@ fn all_scenarios_pass_on_safe_computer_nodes() {
     run_all(RunOptions {
         channels: None,
         node: true,
+        journal: true,
     });
 }
 
