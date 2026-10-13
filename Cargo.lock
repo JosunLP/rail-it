@@ -1527,6 +1527,7 @@ dependencies = [
  "railit-rules",
  "railit-topology",
  "railit-types",
+ "serde_json",
  "sha2",
 ]
 

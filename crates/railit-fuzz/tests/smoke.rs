@@ -35,6 +35,9 @@ fn seeds_pass() {
     railit_fuzz::railml_network(ABZWEIG.as_bytes());
     railit_fuzz::timetable(FAHRPLAN.as_bytes());
     railit_fuzz::journal(b"");
+    let journal = railit_fuzz::example_journal();
+    assert!(journal.len() > 1000, "Beispieljournal");
+    railit_fuzz::journal(&journal);
     railit_fuzz::rasta(&[]);
     railit_fuzz::sci(&[]);
     railit_fuzz::node_wire(&[]);
@@ -106,5 +109,96 @@ proptest! {
         railit_fuzz::sci(&data);
         railit_fuzz::node_wire(&data);
         railit_fuzz::mirror_state(&data);
+    }
+}
+
+proptest! {
+    /// Verfälschte echte Journale (einzelne Bytes, abgeschnitten): Prüfen, Abspielen und
+    /// Mitlesen melden höchstens Fehler (REQ-SAF-007, REQ-JRN-009).
+    #[test]
+    fn mutated_journals(
+        flips in proptest::collection::vec((any::<proptest::sample::Index>(), 1u8..=255), 0..4),
+        cut in any::<proptest::sample::Index>(),
+    ) {
+        let mut journal = railit_fuzz::example_journal();
+        for (i, b) in flips {
+            let at = i.index(journal.len());
+            journal[at] ^= b;
+        }
+        let end = cut.index(journal.len() + 1);
+        journal.truncate(end.max(1));
+        railit_fuzz::journal(&journal);
+    }
+}
+
+/// Anzahl der Zahlenwerte eines JSON-Werts.
+fn count_numbers(v: &serde_json::Value) -> usize {
+    match v {
+        serde_json::Value::Number(_) => 1,
+        serde_json::Value::Array(items) => items.iter().map(count_numbers).sum(),
+        serde_json::Value::Object(map) => map.values().map(count_numbers).sum(),
+        _ => 0,
+    }
+}
+
+/// Ändert den `n`-ten Zahlenwert eines JSON-Werts (Tiefensuche) auf `value`.
+fn set_nth_number(v: &mut serde_json::Value, n: &mut usize, value: u64) -> bool {
+    match v {
+        serde_json::Value::Number(_) => {
+            if *n == 0 {
+                *v = value.into();
+                return true;
+            }
+            *n -= 1;
+            false
+        }
+        serde_json::Value::Array(items) => items.iter_mut().any(|x| set_nth_number(x, n, value)),
+        serde_json::Value::Object(map) => map.values_mut().any(|x| set_nth_number(x, n, value)),
+        _ => false,
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// Zustandsabzüge mit verfälschtem Zustand, die Kette neu berechnet (wie ein Angreifer
+    /// mit Schreibzugriff ohne Siegel): Replay, Zeitfenster und Mitleser übernehmen nichts
+    /// Ungeprüftes und laufen in keine Panik; ein verfälschter Abzug fällt als Abweichung
+    /// auf, sofern er nicht zufällig gleich bleibt.
+    #[test]
+    fn rechained_snapshot_mutations(
+        pick in any::<proptest::sample::Index>(),
+        field in 0usize..400,
+        value in prop_oneof![Just(0u64), Just(1), Just(255), Just(65_535), Just(u64::from(u32::MAX)), any::<u64>()],
+    ) {
+        use railit_journal::{Entry, JournalWriter};
+        let bytes = railit_fuzz::example_journal();
+        let mut entries = railit_journal::entries(bytes.as_slice()).unwrap();
+        let snapshots: Vec<usize> = (0..entries.len())
+            .filter(|i| matches!(entries[*i], Entry::Snapshot(_)))
+            .collect();
+        prop_assume!(!snapshots.is_empty());
+        let at = snapshots[pick.index(snapshots.len())];
+        let Entry::Snapshot(snap) = &entries[at] else { unreachable!() };
+        let mut value_json = serde_json::to_value(&snap.state).unwrap();
+        let numbers = count_numbers(&value_json);
+        prop_assume!(numbers > 0);
+        let mut n = field % numbers;
+        prop_assert!(set_nth_number(&mut value_json, &mut n, value));
+        let Ok(state) = serde_json::from_value(value_json) else {
+            return Ok(());
+        };
+        let changed = state != snap.state;
+        entries[at] = Entry::Snapshot(Box::new(railit_journal::Snapshot { cycle: snap.cycle, state }));
+        let Entry::Header(header) = entries[0].clone() else { unreachable!() };
+        let mut w = JournalWriter::new(Vec::new(), header).unwrap();
+        for e in &entries[1..] {
+            w.append(e).unwrap();
+        }
+        let forged = w.into_inner();
+        railit_fuzz::journal(&forged);
+        if changed {
+            prop_assert!(railit_journal::replay(forged.as_slice(), railit_fuzz::example_plan_view()).is_err());
+        }
     }
 }

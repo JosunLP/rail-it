@@ -227,9 +227,96 @@ pub fn timetable(data: &[u8]) {
     }
 }
 
-/// Journal: Prüfung der Hashkette.
+/// Plan der Beispielstadt für Tests.
+///
+/// # Panics
+/// Wenn sich die Beispielstadt nicht projektieren lässt.
+#[allow(clippy::expect_used)]
+pub fn example_plan_view() -> &'static PlanView<'static> {
+    example_plan().expect("Beispielstadt")
+}
+
+/// Plan der Beispielstadt (einmal projektiert).
+fn example_plan() -> Option<&'static PlanView<'static>> {
+    use std::sync::OnceLock;
+    static PLAN: OnceLock<Option<PlanView<'static>>> = OnceLock::new();
+    PLAN.get_or_init(|| {
+        let net =
+            railit_import::toml_format::parse(include_str!("../../../examples/beispielstadt.toml"))
+                .ok()?
+                .topology;
+        let image = railit_planning::compile(&net, None).ok()?.image;
+        PlanView::parse(Box::leak(image.into_boxed_slice())).ok()
+    })
+    .as_ref()
+}
+
+/// Journal: Prüfung der Hashkette, paralleles Replay, Zeitfenster und Mitlesen in Stücken
+/// gegen den Plan der Beispielstadt. Abzüge und Übernahmen im Journal tragen beliebige
+/// Zustände; sie dürfen nur zu Fehlermeldungen führen, nie zu einer Panik (der
+/// Bereitschaftsrechner liest das Journal aus dem Netz).
 pub fn journal(data: &[u8]) {
     let _ = railit_journal::verify(data);
+    let Some(plan) = example_plan() else {
+        return;
+    };
+    let _ = railit_journal::replay(data, plan);
+    let _ = railit_journal::replay_window(data, plan, 0, u64::MAX, |_| {});
+    let step = usize::from(data.first().copied().unwrap_or(1)).max(1);
+    let mut follower = railit_journal::Follower::new(plan, None);
+    for chunk in data.chunks(step) {
+        if follower.feed(chunk).is_err() {
+            break;
+        }
+    }
+}
+
+/// Journal eines kurzen Betriebs der Beispielstadt mit Prüfpunkten und Zustandsabzügen
+/// (Startkorpus und gezielte Veränderungen in den Tests).
+pub fn example_journal() -> Vec<u8> {
+    let Some(plan) = example_plan() else {
+        return Vec::new();
+    };
+    let rules = GenericRules::default();
+    let header =
+        railit_journal::Header::new(plan, &rules, railit_types::Duration::from_millis(100), 7)
+            .with_snapshots(15);
+    let Ok(mut writer) = railit_journal::JournalWriter::new(Vec::new(), header) else {
+        return Vec::new();
+    };
+    let kernel = Interlocking::new(*plan, rules);
+    let mut state = OwnedState::new(plan);
+    let mut out = VecOutputs::default();
+    for cycle in 0..60u64 {
+        let mut inputs: Vec<Input> = (0..plan.tvd_count())
+            .filter_map(TvdId::from_index)
+            .map(|tvd| Input::Tvd {
+                tvd,
+                occupancy: Occupancy::Clear,
+            })
+            .collect();
+        inputs.extend(
+            (0..plan.point_count())
+                .filter_map(PointId::from_index)
+                .map(|point| Input::Point {
+                    point,
+                    report: PointReport::Right,
+                }),
+        );
+        if cycle == 2 {
+            inputs.push(Input::Request {
+                id: RequestId(1),
+                request: Request::SetRoute(RouteId::new(1)),
+            });
+        }
+        out.clear();
+        let now = Tick::from_millis(cycle * 100);
+        let _ = kernel.step(&mut state.view(), now, &inputs, &mut out);
+        if writer.record(now, &inputs, &out, &state).is_err() {
+            break;
+        }
+    }
+    writer.into_inner()
 }
 
 /// RaSTA nach dem Verbindungsaufbau: Die Bytes werden in PDUs (Längenbyte + Inhalt) zerlegt
@@ -285,17 +372,7 @@ pub fn node_wire(data: &[u8]) {
 /// einsetzen, dann Kernzyklen darauf rechnen. Der Kern darf auch mit beliebigem Zustand in
 /// keinen Panikpfad laufen (er geht höchstens in den sicheren Zustand).
 pub fn mirror_state(data: &[u8]) {
-    use std::sync::OnceLock;
-    static PLAN: OnceLock<Option<PlanView<'static>>> = OnceLock::new();
-    let plan = PLAN.get_or_init(|| {
-        let net =
-            railit_import::toml_format::parse(include_str!("../../../examples/beispielstadt.toml"))
-                .ok()?
-                .topology;
-        let image = railit_planning::compile(&net, None).ok()?.image;
-        PlanView::parse(Box::leak(image.into_boxed_slice())).ok()
-    });
-    let Some(plan) = plan else {
+    let Some(plan) = example_plan() else {
         return;
     };
     let mut state = OwnedState::new(plan);
