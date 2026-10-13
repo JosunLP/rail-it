@@ -443,6 +443,33 @@ enum JournalCommand {
         #[arg(long)]
         plan: PathBuf,
     },
+    /// Zustand zu einem Zeitpunkt, aus dem Journal rekonstruiert (ab dem letzten
+    /// Zustandsabzug davor).
+    State {
+        /// Journaldatei.
+        file: PathBuf,
+        /// Plan-Image, mit dem das Journal aufgezeichnet wurde.
+        #[arg(long)]
+        plan: PathBuf,
+        /// Zeitpunkt in Sekunden seit Beginn des Journals.
+        #[arg(long)]
+        at: f64,
+    },
+    /// Stellbefehle und Ereignisse eines Zeitfensters, neu berechnet und gegen das Journal
+    /// geprüft.
+    Events {
+        /// Journaldatei.
+        file: PathBuf,
+        /// Plan-Image, mit dem das Journal aufgezeichnet wurde.
+        #[arg(long)]
+        plan: PathBuf,
+        /// Beginn in Sekunden.
+        #[arg(long, default_value_t = 0.0)]
+        from: f64,
+        /// Ende in Sekunden (ohne Angabe: bis zum Ende).
+        #[arg(long)]
+        to: Option<f64>,
+    },
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -676,6 +703,15 @@ fn main() -> ExitCode {
             key,
             require_seal,
         }) => journal::verify(&file, key.as_deref(), require_seal, output),
+        Command::Journal(JournalCommand::State { file, plan, at }) => {
+            journal::state(&file, &plan, at, output)
+        }
+        Command::Journal(JournalCommand::Events {
+            file,
+            plan,
+            from,
+            to,
+        }) => journal::events(&file, &plan, from, to, output),
         Command::Journal(JournalCommand::Replay { file, plan }) => {
             journal::replay(&file, &plan, output)
         }

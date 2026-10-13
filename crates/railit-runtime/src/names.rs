@@ -1,12 +1,13 @@
 //! Zustand und Ereignisse mit fachlichen Namen statt IDs.
 
 use railit_kernel::{
-    Alarm, Aspect, AuxOperation, Event, LxReport, Occupancy, OwnedState, PointReport, Rejection,
-    RoutePhase, SignalReport,
+    Alarm, Aspect, AuxOperation, Command, Event, LxReport, Occupancy, OwnedState, PointReport,
+    Rejection, RoutePhase, SignalReport,
 };
 use railit_plan::{PlanView, RouteEnd};
 use railit_types::{BorderId, LxId, PointId, PointPosition, RouteId, SignalId, Tick, TvdId};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 fn point_name(plan: &PlanView<'_>, id: PointId) -> String {
     plan.point_name(id).unwrap_or("?").to_string()
@@ -232,6 +233,135 @@ pub enum NamedEvent {
         /// Hält der Bereich die Erlaubnis jetzt?
         holding: bool,
     },
+}
+
+/// Stellbefehl mit Namen (Diagnose, Journal).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum NamedCommand {
+    /// Weiche umstellen.
+    MovePoint {
+        /// Weiche.
+        point: String,
+        /// Lage.
+        position: PointPosition,
+    },
+    /// Signalbegriff.
+    SetSignal {
+        /// Signal.
+        signal: String,
+        /// Begriff.
+        aspect: Aspect,
+    },
+    /// Ersatzsignal ein oder aus.
+    SetSubstitute {
+        /// Signal.
+        signal: String,
+        /// Eingeschaltet?
+        on: bool,
+    },
+    /// Bahnübergang schließen oder öffnen.
+    SetLevelCrossing {
+        /// Bahnübergang.
+        lx: String,
+        /// Schließen?
+        close: bool,
+    },
+    /// Grundstellung eines Abschnitts (Achszähler).
+    ResetTvd {
+        /// Abschnitt.
+        tvd: String,
+    },
+    /// Meldung an den Nachbarbereich.
+    Border {
+        /// Grenze.
+        border: String,
+        /// Der Bereich hält die Erlaubnis.
+        holding: bool,
+        /// Der Bereich bietet die Erlaubnis an.
+        offer: bool,
+        /// Der Bereich fordert die Erlaubnis an.
+        request: bool,
+    },
+}
+
+impl NamedCommand {
+    /// Übersetzt einen Stellbefehl mit den Namen aus `plan`.
+    pub fn new(plan: &PlanView<'_>, command: &Command) -> Self {
+        let id = |name: Option<&str>, raw: Option<usize>| {
+            name.map_or_else(|| format!("#{}", raw.unwrap_or(usize::MAX)), str::to_string)
+        };
+        match *command {
+            Command::MovePoint { point, position } => Self::MovePoint {
+                point: id(plan.point_name(point), point.index()),
+                position,
+            },
+            Command::SetSignal { signal, aspect } => Self::SetSignal {
+                signal: id(plan.signal_name(signal), signal.index()),
+                aspect,
+            },
+            Command::SetSubstitute { signal, on } => Self::SetSubstitute {
+                signal: id(plan.signal_name(signal), signal.index()),
+                on,
+            },
+            Command::SetLevelCrossing { lx, close } => Self::SetLevelCrossing {
+                lx: id(plan.lx_name(lx), lx.index()),
+                close,
+            },
+            Command::ResetTvd(tvd) => Self::ResetTvd {
+                tvd: id(plan.tvd_name(tvd), tvd.index()),
+            },
+            Command::Border { border, message } => Self::Border {
+                border: border_name(plan, border),
+                holding: message.holding,
+                offer: message.offer,
+                request: message.request,
+            },
+        }
+    }
+}
+
+impl fmt::Display for NamedCommand {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MovePoint { point, position } => {
+                let p = match position {
+                    PointPosition::Left => "links",
+                    PointPosition::Right => "rechts",
+                };
+                write!(f, "Weiche {point} nach {p}")
+            }
+            Self::SetSignal { signal, aspect } => {
+                let a = match aspect {
+                    Aspect::Stop => "Halt",
+                    Aspect::Proceed => "Fahrt",
+                };
+                write!(f, "Signal {signal} auf {a}")
+            }
+            Self::SetSubstitute { signal, on } => {
+                write!(
+                    f,
+                    "Ersatzsignal {signal} {}",
+                    if *on { "ein" } else { "aus" }
+                )
+            }
+            Self::SetLevelCrossing { lx, close } => write!(
+                f,
+                "Bahnübergang {lx} {}",
+                if *close { "schließen" } else { "öffnen" }
+            ),
+            Self::ResetTvd { tvd } => write!(f, "Grundstellung {tvd}"),
+            Self::Border {
+                border,
+                holding,
+                offer,
+                request,
+            } => write!(
+                f,
+                "Grenze {border}: hält {holding}, bietet an {offer}, fordert an {request}"
+            ),
+        }
+    }
 }
 
 impl NamedEvent {

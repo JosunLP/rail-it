@@ -708,6 +708,11 @@ trait Visit {
     fn resync(&mut self, _resync: Box<Resync>) -> Result<(), JournalError> {
         Ok(())
     }
+
+    /// Weiterlesen ist nicht mehr nötig.
+    fn done(&self) -> bool {
+        false
+    }
 }
 
 /// Nur prüfen.
@@ -742,6 +747,9 @@ fn read<R: BufRead>(
     let mut tripped = false;
     let mut lines = reader.lines().enumerate().peekable();
     while let Some((index, line)) = lines.next() {
+        if visit.done() {
+            break;
+        }
         let number = index.saturating_add(1);
         let text = line.map_err(|e| JournalError::Io(e.to_string()))?;
         if text.trim().is_empty() {
@@ -944,6 +952,26 @@ enum Item {
     Safety(SafetyKind),
     /// Zustandsabzug am Ende des Abschnitts.
     End(Box<Snapshot>),
+    /// Zustandsübernahme: Ab hier gilt dieser Zustand.
+    Adopt(Box<Resync>),
+}
+
+/// Ein abgespielter Zyklus (Diagnose, [`replay_window`]): Ausgaben und Zustand sind neu
+/// berechnet und gegen die Hashes im Journal geprüft.
+#[derive(Debug)]
+pub struct Replayed<'a> {
+    /// Zyklusnummer des Kerns.
+    pub cycle: u64,
+    /// Zeitpunkt in Millisekunden.
+    pub now_ms: u64,
+    /// Eingaben des Kerns.
+    pub inputs: &'a [Input],
+    /// Stellbefehle.
+    pub commands: &'a [Command],
+    /// Ereignisse.
+    pub events: &'a [Event],
+    /// Zustand nach dem Zyklus.
+    pub state: &'a OwnedState,
 }
 
 /// Spielt einen Abschnitt ab: ab `start` (oder dem Anfangszustand); der erste Zyklus bringt
@@ -953,7 +981,8 @@ fn replay_segment(
     plan: &PlanView<'_>,
     rules: GenericRules,
     start: Option<OwnedState>,
-    items: &std::sync::mpsc::Receiver<Item>,
+    items: impl IntoIterator<Item = Item>,
+    mut on_cycle: impl FnMut(&Replayed<'_>),
 ) -> Result<OwnedState, JournalError> {
     let mut inputs: Vec<Input> = Vec::new();
     let kernel = Interlocking::new(*plan, rules);
@@ -999,6 +1028,18 @@ fn replay_segment(
                 if c.state.as_ref().is_some_and(|s| *s != state_digest(&state)) {
                     return Err(diverged("state"));
                 }
+                on_cycle(&Replayed {
+                    cycle: c.cycle,
+                    now_ms: c.now_ms,
+                    inputs: &inputs,
+                    commands: &out.commands,
+                    events: &out.events,
+                    state: &state,
+                });
+            }
+            Item::Adopt(resync) => {
+                tripped = false;
+                state = resync.state;
             }
             Item::End(snapshot) => {
                 if snapshot.state != state {
@@ -1053,7 +1094,7 @@ impl<'scope, 'p: 'scope> Parallel<'scope, '_, 'p> {
         self.running = self.running.saturating_add(1);
         self.fresh = true;
         self.results.push(self.scope.spawn(move || {
-            let result = replay_segment(plan, rules, start, &rx);
+            let result = replay_segment(plan, rules, start, &rx, |_| {});
             let _ = done.send(());
             result
         }));
@@ -1135,6 +1176,149 @@ impl Visit for Parallel<'_, '_, '_> {
         self.current = None;
         self.begin(Some(resync.state))
     }
+}
+
+/// Sammelt die Einträge ab dem letzten Abzug bzw. der letzten Übernahme vor einem
+/// Zeitfenster bis zu dessen Ende.
+struct Window<'p> {
+    plan: &'p PlanView<'p>,
+    digest: String,
+    rules: Option<GenericRules>,
+    from_ms: u64,
+    to_ms: u64,
+    /// Zustand, ab dem abgespielt wird (`None`: Anfangszustand).
+    base: Option<OwnedState>,
+    items: Vec<Item>,
+    /// Seit `base` noch kein Zyklus: Der nächste geht vollständig hinein.
+    fresh: bool,
+    /// Zeitpunkt des letzten Zyklus.
+    last_ms: u64,
+    done: bool,
+}
+
+impl Window<'_> {
+    fn rebase(&mut self, state: OwnedState) {
+        self.base = Some(state);
+        self.items.clear();
+        self.fresh = true;
+    }
+}
+
+impl Visit for Window<'_> {
+    fn header(&mut self, h: &Header) -> Result<(), JournalError> {
+        if h.plan_digest != self.digest {
+            return Err(JournalError::Plan(format!(
+                "Journal gehört zu Plan {}, geladen ist {}",
+                h.plan_digest, self.digest
+            )));
+        }
+        self.rules = Some(h.rules.into());
+        Ok(())
+    }
+
+    fn cycle(&mut self, c: &Cycle, delta: Option<&InputDelta>) -> Result<(), JournalError> {
+        if c.now_ms > self.to_ms {
+            self.done = true;
+            return Ok(());
+        }
+        let full = self.fresh || delta.is_none();
+        self.fresh = false;
+        self.last_ms = c.now_ms;
+        self.items.push(Item::Cycle(Cycle {
+            cycle: c.cycle,
+            now_ms: c.now_ms,
+            inputs: if full { c.inputs.clone() } else { Vec::new() },
+            delta: if full { None } else { delta.cloned() },
+            outputs: c.outputs.clone(),
+            state: c.state.clone(),
+        }));
+        Ok(())
+    }
+
+    fn safety(&mut self, record: &SafetyRecord) -> Result<(), JournalError> {
+        if !self.done {
+            self.items.push(Item::Safety(record.kind));
+        }
+        Ok(())
+    }
+
+    fn snapshot(&mut self, snapshot: Box<Snapshot>) -> Result<(), JournalError> {
+        if !snapshot.state.fits(self.plan) {
+            return Err(JournalError::Format(format!(
+                "Zustandsabzug nach Zyklus {} passt nicht zum Plan",
+                snapshot.cycle
+            )));
+        }
+        if self.last_ms < self.from_ms {
+            // Abkürzung: Ab hier abspielen statt vom Anfang.
+            self.rebase(snapshot.state);
+        } else if !self.done {
+            self.items.push(Item::End(snapshot));
+        }
+        Ok(())
+    }
+
+    fn resync(&mut self, resync: Box<Resync>) -> Result<(), JournalError> {
+        if !resync.state.fits(self.plan) {
+            return Err(JournalError::Format(format!(
+                "Zustandsübernahme bei Zyklus {} passt nicht zum Plan",
+                resync.cycle
+            )));
+        }
+        if self.done {
+            return Ok(());
+        }
+        if resync.now_ms < self.from_ms {
+            self.rebase(resync.state);
+        } else {
+            self.fresh = true;
+            self.items.push(Item::Adopt(resync));
+        }
+        Ok(())
+    }
+
+    fn done(&self) -> bool {
+        self.done
+    }
+}
+
+/// Spielt die Zyklen eines Zeitfensters ab (Diagnose, REQ-JRN-008): ab dem letzten
+/// Zustandsabzug bzw. der letzten Übernahme vor `from_ms`, bis einschließlich `to_ms`.
+/// `on_cycle` erhält jeden Zyklus im Fenster mit Eingaben, neu berechneten und gegen die
+/// Hashes im Journal geprüften Ausgaben und dem Zustand danach. Liefert den Zustand nach dem
+/// letzten Zyklus bis `to_ms`. Gelesen wird nur bis zum Ende des Fensters.
+///
+/// # Errors
+/// [`JournalError`] bei Ketten- oder Formatfehlern bis zum Ende des Fensters, unpassendem
+/// Plan oder Abweichungen.
+pub fn replay_window<R: BufRead>(
+    reader: R,
+    plan: &PlanView<'_>,
+    from_ms: u64,
+    to_ms: u64,
+    mut on_cycle: impl FnMut(&Replayed<'_>),
+) -> Result<OwnedState, JournalError> {
+    let mut window = Window {
+        plan,
+        digest: to_hex(&plan.digest()),
+        rules: None,
+        from_ms,
+        to_ms,
+        base: None,
+        items: Vec::new(),
+        fresh: true,
+        last_ms: 0,
+        done: false,
+    };
+    read(reader, None, &mut window)?;
+    let rules = window
+        .rules
+        .ok_or_else(|| JournalError::Format("Kopf fehlt".into()))?;
+    replay_segment(plan, rules, window.base, window.items, |c| {
+        if c.now_ms >= from_ms {
+            on_cycle(c);
+        }
+    })
 }
 
 /// Spielt ein Journal gegen `plan` erneut ab und vergleicht Ausgaben und Prüfpunkte

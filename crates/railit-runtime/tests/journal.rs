@@ -465,3 +465,38 @@ fn node_journal_replays_across_resyncs() {
     let (_, state) = replay(bytes.as_slice(), &plan).unwrap();
     assert_eq!(&state, rt.state(), "Endzustand des Spiegels");
 }
+
+/// REQ-JRN-008: Ein Zeitfenster spielt ab dem nächstgelegenen Abzug ab und liefert dieselben
+/// Zyklen, Ausgaben und Zustände wie das Abspielen vom Anfang.
+#[test]
+fn window_replays_from_the_nearest_snapshot() {
+    use railit_journal::replay_window;
+    use railit_kernel::Event;
+
+    let (rt, plain) = run();
+    let (_, with_snapshots) = run_with_snapshots(Some(50));
+    let collect = |bytes: &[u8], from: u64, to: u64| {
+        let mut seen = Vec::new();
+        let state = replay_window(bytes, rt.plan(), from, to, |c| {
+            assert!((from..=to).contains(&c.now_ms), "{} außerhalb", c.now_ms);
+            seen.push((c.cycle, c.now_ms, c.commands.to_vec(), c.events.to_vec()));
+        })
+        .unwrap();
+        (seen, state)
+    };
+    let (a, state_a) = collect(&with_snapshots, 30_000, 40_000);
+    let (b, state_b) = collect(&plain, 30_000, 40_000);
+    assert_eq!(a.len(), 101, "Zyklen von 30 s bis 40 s");
+    assert_eq!(a, b);
+    assert_eq!(state_a, state_b);
+
+    // Das ganze Journal endet im Endzustand; die Anforderung am Anfang wurde angenommen.
+    let (all, end) = collect(&with_snapshots, 0, u64::MAX);
+    assert_eq!(&end, rt.state());
+    assert!(
+        all.iter()
+            .take(3)
+            .any(|(_, _, _, events)| events.iter().any(|e| matches!(e, Event::Accepted(_)))),
+        "Annahme am Anfang"
+    );
+}

@@ -269,6 +269,31 @@ fn journal_verify_and_replay() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["checkpoints"], 10);
 
+    // REQ-JRN-008: Zustand zu einem Zeitpunkt und Ereignisse eines Zeitfensters.
+    let (j, p) = (journal.to_str().unwrap(), plan.to_str().unwrap());
+    let out = railit(&["journal", "state", j, "--plan", p, "--at", "8"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("A-N1 (Fahrt)"), "{stdout}");
+    assert!(stdout.contains("W1 links"), "{stdout}");
+    let out = railit(&["--output", "json", "journal", "events", j, "--plan", p, "--to", "1"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = v.as_array().unwrap();
+    assert!(rows.iter().all(|r| r["now_ms"].as_u64().unwrap() <= 1000));
+    assert!(
+        rows.iter()
+            .flat_map(|r| r["events"].as_array().unwrap())
+            .any(|e| e["type"] == "accepted"),
+        "{v}"
+    );
+    assert!(
+        rows.iter()
+            .flat_map(|r| r["commands"].as_array().unwrap())
+            .any(|c| c["type"] == "move_point" && c["point"] == "W1"),
+        "{v}"
+    );
+
     // Manipuliert: Kette bricht, Exit-Code 1.
     let text = std::fs::read_to_string(&journal).unwrap();
     let tampered = dir.join("tampered.journal");

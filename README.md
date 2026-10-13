@@ -189,6 +189,15 @@ railit net validate nordbahn.railml
 railit plan compile nordbahn.railml --out nordbahn/ --key railit.key
 ```
 
+Aus dem Journal lässt sich jeder Zeitpunkt befragen – rekonstruiert ab dem letzten
+Zustandsabzug, die Ausgaben neu berechnet und gegen das Journal geprüft:
+
+```sh
+railit journal state  betrieb.journal --plan plan.rplan --at 20        # Zustand bei t = 20 s
+railit journal events betrieb.journal --plan plan.rplan --from 0 --to 90
+railit scenario run tests/scenarios/*.toml --node --journal            # mitschreiben und abspielen
+```
+
 Journal und Auditprotokoll lassen sich mit dem Schlüssel des Stellwerks siegeln:
 `railitd … --journal betrieb.journal --audit audit.log --seal-key stellwerk.key`, geprüft mit
 `railit journal verify betrieb.journal --key stellwerk.pub --require-seal` bzw.
