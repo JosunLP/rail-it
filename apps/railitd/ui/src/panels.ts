@@ -6,8 +6,8 @@
 import { bool, component, safeHtml } from '@bquery/bquery/component';
 import { computed, signal } from '@bquery/bquery/reactive';
 import { type SanitizedHtml, trusted } from '@bquery/bquery/security';
-import { auxText, clock, type DisplayHealth, nodeProblem } from './model';
-import type { PendingAux, Snapshot } from './types';
+import { auxText, clock, type DisplayHealth, nodeProblem, trainText } from './model';
+import type { OpsState, PendingAux, Snapshot } from './types';
 
 /** Aktuelles Zustandsbild (undefiniert bis zum ersten Abruf). */
 export const snapshot = signal<Snapshot | undefined>(undefined);
@@ -134,21 +134,37 @@ component('rit-log', {
   },
 });
 
-const trains = view(() => snapshot.value?.ops ?? null);
+interface TrainsView {
+  ops: OpsState | null;
+  operable: boolean;
+}
 
-/** Züge mit Zugnummer (Betriebsführung). */
+const trains = view<TrainsView>(() => ({
+  ops: snapshot.value?.ops ?? null,
+  operable: displayHealth.value !== 'stale',
+}));
+
+/** Züge mit Zugnummer, Zuglenkung und Disposition (Betriebsführung). */
 component('rit-trains', {
   shadow: false,
   signals: { trains },
   render: ({ signals }) => {
-    const ops = JSON.parse(signals.trains.value) as Snapshot['ops'] | null;
+    const { ops, operable } = JSON.parse(signals.trains.value) as TrainsView;
     if (!ops) return safeHtml`<h2>Züge</h2><p class="empty">Betriebsführung aus</p>`;
     const rows = ops.trains
       .filter((t) => !t.left)
-      .map((t) => {
-        const delay = t.delay_s > 0 ? `+${Math.round(t.delay_s / 60)} min` : 'pünktlich';
-        return safeHtml`<li><b>${t.number}</b> an ${t.berth ?? '–'} · ${delay}</li>`;
-      });
-    return safeHtml`<h2>Züge <span class="badge">${ops.ars ? 'Zuglenkung ein' : 'Zuglenkung aus'}</span></h2><ul>${join(rows)}</ul>`;
+      .map(
+        (t) => safeHtml`
+          <li class="${t.hold ? 'train held' : 'train'}" data-train="${t.number}">
+            <span><b>${t.number}</b> ${trainText(t)}</span>
+            <button type="button" class="hold" data-hold="${t.number}" data-on="${t.hold ? 'false' : 'true'}" ${bool('disabled', !operable)}>${t.hold ? 'Freigeben' : 'Zurückhalten'}</button>
+          </li>`,
+      );
+    return safeHtml`
+      <h2>Züge
+        <button type="button" class="${ops.ars ? 'ars on' : 'ars'}" data-ars="${ops.ars ? 'false' : 'true'}" title="Zuglenkung ein- oder ausschalten" ${bool('disabled', !operable)}>${ops.ars ? 'Zuglenkung ein' : 'Zuglenkung aus'}</button>
+      </h2>
+      ${trusted(rows.length ? safeHtml`<ul>${join(rows)}</ul>` : safeHtml`<p class="empty">keine Züge</p>`)}
+    `;
   },
 });

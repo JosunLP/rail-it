@@ -53,6 +53,26 @@ export interface PendingAux {
   check: string;
 }
 
+/** Zug der Betriebsführung. */
+export interface TrainState {
+  number: string;
+  berth: string | null;
+  left: boolean;
+  timetabled: boolean;
+  hold: boolean;
+  next_stop: string | null;
+  at_stop: string | null;
+  delay_s: number | null;
+  extra_delay_s: number;
+}
+
+/** Betriebsführung (Zugnummern, Zuglenkung). */
+export interface OpsState {
+  ars: boolean;
+  timetable: string;
+  trains: TrainState[];
+}
+
 /** Anbindung eines Stellbereichs an seinen Knoten des sicheren Rechners. */
 export interface NodeState {
   link: string;
@@ -113,7 +133,7 @@ export interface Snapshot {
   level_crossings: { name: string; report: string; close_commanded: boolean }[];
   pending_aux: PendingAux[];
   aux_counter: number;
-  ops?: { ars: boolean; trains: { number: string; berth: string | null; left: boolean; delay_s: number }[] };
+  ops?: OpsState | null;
 }
 
 /// Antwort auf eine Anforderung (`accepted` oder `rejected`).

@@ -11,11 +11,28 @@ import {
   pointPosition,
   reasonText,
   routesFrom,
+  parseCommand,
   STALE_AFTER_MS,
   signalClass,
+  trainText,
   tvdClass,
 } from '../src/model';
-import type { Snapshot } from '../src/types';
+import type { Snapshot, TrainState } from '../src/types';
+
+function train(patch: Partial<TrainState>): TrainState {
+  return {
+    number: 'RB 1',
+    berth: 'S1',
+    left: false,
+    timetabled: true,
+    hold: false,
+    next_stop: null,
+    at_stop: null,
+    delay_s: 0,
+    extra_delay_s: 0,
+    ...patch,
+  };
+}
 
 function snapshot(patch: Partial<Snapshot> = {}): Snapshot {
   return {
@@ -135,10 +152,11 @@ describe('Darstellung', () => {
     const s = snapshot({
       ops: {
         ars: true,
+        timetable: 'Test',
         trains: [
-          { number: 'RB 1', berth: 'S1', left: false, delay_s: 0 },
-          { number: 'RB 2', berth: 'S2', left: true, delay_s: 0 },
-          { number: 'RB 3', berth: null, left: false, delay_s: 0 },
+          train({ number: 'RB 1', berth: 'S1' }),
+          train({ number: 'RB 2', berth: 'S2', left: true }),
+          train({ number: 'RB 3', berth: null }),
         ],
       },
     });
@@ -171,5 +189,34 @@ describe('Bedienung', () => {
     expect(reasonText('tvd_not_clear', 'T1')).toBe('Abschnitt T1 nicht frei');
     expect(reasonText('neu')).toBe('neu');
     expect(reasonText(undefined)).toBe('unbekannt');
+  });
+});
+
+describe('Betriebsführung', () => {
+  test('Zug in Worten', () => {
+    expect(trainText(train({ next_stop: 'Adorf/1', delay_s: 130 }))).toBe('an S1 · nächster Halt Adorf/1 · +2 min');
+    expect(trainText(train({ at_stop: 'Bstadt/2', delay_s: 0 }))).toBe('an S1 · hält in Bstadt/2 · pünktlich');
+    expect(trainText(train({ delay_s: null }))).toBe('an S1 · noch nicht gemessen');
+    expect(trainText(train({ timetabled: false, berth: null }))).toBe('an – · ohne Fahrplan');
+    expect(trainText(train({ delay_s: -120, extra_delay_s: 60 }))).toBe('an S1 · -2 min · Wartezeit 1 min');
+  });
+});
+
+describe('Stelltisch-Eingabe (REQ-UI-004)', () => {
+  const s = snapshot();
+  test('Fahrstraße per Start und Ziel oder Name', () => {
+    expect(parseCommand('S1 S2', s)).toEqual({ kind: 'set_route', route: 'S1-S2' });
+    expect(parseCommand('  S1-S3 ', s)).toEqual({ kind: 'set_route', route: 'S1-S3' });
+    expect(parseCommand('S2 S1', s).kind).toBe('error');
+  });
+  test('Rücknahme und Weichen', () => {
+    expect(parseCommand('frt S1-S2', s)).toEqual({ kind: 'cancel_route', route: 'S1-S2' });
+    expect(parseCommand('FRT X', s).kind).toBe('error');
+    expect(parseCommand('W1 r', s)).toEqual({ kind: 'move_point', point: 'W1', position: 'right' });
+    expect(parseCommand('W1 L', s)).toEqual({ kind: 'move_point', point: 'W1', position: 'left' });
+  });
+  test('Fehler', () => {
+    expect(parseCommand('', s).kind).toBe('error');
+    expect(parseCommand('a b c d', s).kind).toBe('error');
   });
 });

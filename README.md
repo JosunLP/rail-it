@@ -110,10 +110,15 @@ railit journal replay betrieb.journal --plan beispielstadt.rplan
   Hilfshandlung aus.
 - Kommt 2 s lang kein aktuelles Zustandsbild, deckt der Bedienplatz den Spurplan ab und sperrt
   jede Bedienung.
+- Tastatur wie am Stelltisch: `A N1` (Fahrstraße), `FRT A-N1` (Rücknahme), `W1 L` (Weiche).
+- Betriebsführung: Zuglenkung ein/aus, Züge zurückhalten und freigeben; Zugnummern stehen am
+  Signal, Grenzen zeigen, wer die Erlaubnis hält.
 
 ![Bedienplatz: Fahrstraße A-N2 eingestellt, RE 7 in Gleis 2, Hilfshandlung offen](docs/img/bedienplatz.png)
 
 ![Bestätigung einer Hilfshandlung durch den zweiten Bediener](docs/img/bestaetigung.png)
+
+![Nordbahn: drei Stellbereiche, Zuglenkung nach Fahrplan, RE1 und RE2 in Bstadt](docs/img/nordbahn.png)
 
 Entwicklung des Bedienplatzes (Bun ≥ 1.4): `cd apps/railitd/ui && bun install && bun run
 build`; Prüfungen mit `bun run check`, `bun run test` und `bun run e2e` (Playwright gegen

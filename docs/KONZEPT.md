@@ -707,6 +707,11 @@ Stufe 2 ist das Sicherheitsargument: Eine falsche Anzeige kann den Bediener täu
 aber nie zur Ausführung einer anderen als der angeforderten Hilfshandlung. Stufe 1 und die
 Anzeigeüberwachung senken die Wahrscheinlichkeit einer Fehlbedienung.
 
+**Netz und Betrieb (Phase 7).** Stellbereiche mit Grenzen und Erlaubnisrichtung, Zugnummern
+am Signal, Zuglenkung ein/aus, Zurückhalten und Freigeben von Zügen; Stelltisch-Eingabe über
+die Tastatur (`Start Ziel`, `FRT Fahrstraße`, `Weiche L/R`). Weite Netze werden in voller
+Breite gezeichnet und lassen sich verschieben (REQ-UI-004).
+
 **Technik.** TypeScript mit bQuery (Signale, Web-Components im Light DOM, `safeHtml` mit
 Maskierung aller Netznamen; der Spurplan entsteht mit `createElementNS`, nie aus
 HTML-Zeichenketten), gebaut mit Bun zu einem einzelnen Modul. Das Bundle ist eingecheckt und in

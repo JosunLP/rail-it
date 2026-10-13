@@ -67,6 +67,33 @@ rit-status .network {
   font-weight: 600;
 }
 
+form.command input {
+  width: 340px;
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+}
+
+rit-trains li.train {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+rit-trains li.held b {
+  color: var(--warn);
+}
+
+rit-trains button.ars.on {
+  border-color: var(--route);
+  color: var(--route);
+}
+
+rit-trains button {
+  font-size: 12px;
+  padding: 2px 6px;
+  text-transform: none;
+}
+
 rit-status .node-problem {
   color: var(--error);
   font-weight: 700;

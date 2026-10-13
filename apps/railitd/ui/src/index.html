@@ -11,6 +11,9 @@
     <header>
       <span class="brand">rail-it</span>
       <rit-status id="status"></rit-status>
+      <form id="command-form" class="command" autocomplete="off">
+        <input id="command" type="text" spellcheck="false" aria-label="Eingabe" data-command />
+      </form>
       <label class="operator">Bediener <input id="operator" type="number" min="1" max="65535" /></label>
     </header>
 

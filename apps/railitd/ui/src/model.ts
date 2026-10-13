@@ -1,7 +1,7 @@
 // Anzeigemodell: reine Funktionen von Zustandsbild und Spurplan zu Darstellung und
 // Bedienhandlungen. Ohne DOM, damit sie sich mit `bun test` prüfen lassen.
 
-import type { AuxKind, NamedAux, Snapshot } from './types';
+import type { AuxKind, NamedAux, Snapshot, TrainState } from './types';
 
 /** Nach so vielen Millisekunden ohne neues Zustandsbild gilt die Anzeige als gestört. */
 export const STALE_AFTER_MS = 2000;
@@ -155,4 +155,62 @@ export function clock(ms: number): string {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   return `${h}:${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
+
+/** Zug in Worten: Standort, nächster Halt, Pünktlichkeit. */
+export function trainText(t: TrainState): string {
+  const parts = [`an ${t.berth ?? '–'}`];
+  if (t.at_stop) parts.push(`hält in ${t.at_stop}`);
+  else if (t.next_stop) parts.push(`nächster Halt ${t.next_stop}`);
+  if (!t.timetabled) parts.push('ohne Fahrplan');
+  else if (t.delay_s === null) parts.push('noch nicht gemessen');
+  else if (t.delay_s >= 60) parts.push(`+${Math.round(t.delay_s / 60)} min`);
+  else if (t.delay_s <= -60) parts.push(`${Math.round(t.delay_s / 60)} min`);
+  else parts.push('pünktlich');
+  if (t.extra_delay_s > 0) parts.push(`Wartezeit ${Math.round(t.extra_delay_s / 60)} min`);
+  return parts.join(' · ');
+}
+
+/** Bedienung über die Tastatur (Stelltisch-Eingabe). */
+export type Command =
+  | { kind: 'set_route'; route: string }
+  | { kind: 'cancel_route'; route: string }
+  | { kind: 'move_point'; point: string; position: 'left' | 'right' }
+  | { kind: 'error'; message: string };
+
+/** Kurzhilfe für die Eingabezeile. */
+export const COMMAND_HELP = 'Start Ziel (z. B. „A N1“) · FRT Fahrstraße · Weiche L/R';
+
+/**
+ * Liest eine Eingabe: `A N1` oder `A-N1` (Fahrstraße einstellen), `FRT A-N1` (zurücknehmen),
+ * `W1 L` bzw. `W1 R` (Weiche umstellen). Groß- und Kleinschreibung der Befehlswörter ist
+ * gleich; Elementnamen gelten, wie sie im Netz heißen.
+ */
+export function parseCommand(text: string, snapshot: Snapshot): Command {
+  const words = text.trim().split(/\s+/).filter((w) => w.length > 0);
+  const [first, second, third] = words;
+  if (!first) return { kind: 'error', message: 'Eingabe leer' };
+  const routeNamed = (name: string) => snapshot.routes.some((r) => r.name === name);
+  if (first.toUpperCase() === 'FRT') {
+    if (!second || third) return { kind: 'error', message: 'FRT erwartet genau eine Fahrstraße' };
+    return routeNamed(second)
+      ? { kind: 'cancel_route', route: second }
+      : { kind: 'error', message: `Fahrstraße ${second} gibt es nicht` };
+  }
+  if (words.length === 1) {
+    return routeNamed(first)
+      ? { kind: 'set_route', route: first }
+      : { kind: 'error', message: `Fahrstraße ${first} gibt es nicht` };
+  }
+  if (words.length === 2 && second) {
+    const position = { L: 'left', R: 'right' }[second.toUpperCase()] as 'left' | 'right' | undefined;
+    if (position && snapshot.points.some((p) => p.name === first)) {
+      return { kind: 'move_point', point: first, position };
+    }
+    const route = findRoute(snapshot, first, second);
+    return route
+      ? { kind: 'set_route', route }
+      : { kind: 'error', message: `keine Fahrstraße von ${first} nach ${second}` };
+  }
+  return { kind: 'error', message: `unbekannte Eingabe: ${COMMAND_HELP}` };
 }

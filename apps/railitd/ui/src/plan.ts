@@ -150,6 +150,8 @@ export class PlanView {
       this.signals.set(s.name, { group, berth });
     }
 
+    // Mindestbreite: Weite Netze bleiben lesbar und lassen sich waagerecht scrollen.
+    this.svg.style.minWidth = `${Math.round(layout.width)}px`;
     container.replaceChildren(this.svg);
     this.bind(handlers);
   }

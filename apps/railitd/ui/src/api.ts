@@ -127,6 +127,20 @@ export const requestAux = (op: NamedAux) => request('/v1/aux', { ...op });
 export const confirmAux = (pending: PendingAux, restated: NamedAux, check: string) =>
   request(`/v1/aux/${pending.aux}/confirm?area=${seg(pending.area)}`, { ...restated, check });
 
+/**
+ * Handlung der Betriebsführung (`/v1/ops/…`): `undefined` bei Erfolg, sonst die Fehlermeldung
+ * des Dienstes.
+ */
+export async function opsAction(path: string, body?: Record<string, unknown>): Promise<string | undefined> {
+  const r = await call(() => http.post<{ ok?: boolean; error?: string }>(path, body ?? null));
+  if (r.status >= 400) return r.data?.error ?? `HTTP ${r.status}`;
+  return undefined;
+}
+
+export const setArs = (on: boolean) => opsAction('/v1/ops/ars', { on });
+export const holdTrain = (train: string, hold: boolean) =>
+  opsAction(`/v1/ops/trains/${seg(train)}/${hold ? 'hold' : 'release'}`);
+
 /** Ereignisstrom (Server-Sent Events) mit Anmeldekopf; verbindet sich selbst neu. */
 export function streamEvents(onEvent: (event: Record<string, unknown>) => void): () => void {
   let stopped = false;

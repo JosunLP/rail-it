@@ -16,9 +16,11 @@ import { auxCheck } from './check';
 import {
   activeRoutesFrom,
   auxText,
+  COMMAND_HELP,
   findRoute,
   health,
   operable,
+  parseCommand,
   reasonText,
   routesFrom,
 } from './model';
@@ -248,6 +250,38 @@ async function submitConfirm(): Promise<void> {
   await act(`Bestätigung #${p.aux}`, () => api.confirmAux(p, restated, check));
 }
 
+// ── Betriebsführung und Stelltisch-Eingabe ──────────────────────────────────────────────
+
+async function ops(what: string, run: () => Promise<string | undefined>): Promise<void> {
+  if (!guard()) return;
+  try {
+    const error = await run();
+    report(error ? 'warn' : 'info', error ? `${what}: ${error}` : `${what}: ausgeführt`);
+  } catch (e) {
+    report('error', `${what}: ${(e as Error).message}`);
+  }
+}
+
+function command(text: string): void {
+  const s = snapshot.peek();
+  if (!s) return;
+  const c = parseCommand(text, s);
+  switch (c.kind) {
+    case 'set_route':
+      void act(`Fahrstraße ${c.route}`, () => api.setRoute(c.route));
+      break;
+    case 'cancel_route':
+      void act(`Rücknahme ${c.route}`, () => api.cancelRoute(c.route));
+      break;
+    case 'move_point':
+      void act(`Weiche ${c.point}`, () => api.movePoint(c.point, c.position));
+      break;
+    case 'error':
+      report('warn', c.message);
+      break;
+  }
+}
+
 // ── Anmeldung und Start ────────────────────────────────────────────────────────────────
 
 async function login(message: string): Promise<void> {
@@ -317,6 +351,23 @@ async function main(): Promise<void> {
     void submitConfirm();
   });
   $('#confirm-cancel').on('click', () => (document.getElementById('confirm') as HTMLDialogElement).close());
+  $('#trains').delegate('click', 'button[data-ars]', (_e, target) => {
+    const on = target.getAttribute('data-ars') === 'true';
+    void ops(on ? 'Zuglenkung ein' : 'Zuglenkung aus', () => api.setArs(on));
+  });
+  $('#trains').delegate('click', 'button[data-hold]', (_e, target) => {
+    const train = target.getAttribute('data-hold') ?? '';
+    const hold = target.getAttribute('data-on') === 'true';
+    void ops(`${train} ${hold ? 'zurückhalten' : 'freigeben'}`, () => api.holdTrain(train, hold));
+  });
+  const input = document.getElementById('command') as HTMLInputElement | null;
+  if (input) input.placeholder = COMMAND_HELP;
+  $('#command-form').on('submit', (e) => {
+    e.preventDefault();
+    const text = ($('#command').val() as string) ?? '';
+    $('#command').val('');
+    if (text.trim()) command(text);
+  });
   $(document.body).on('click', (e) => {
     if (!(e.target as Element).closest('#menu, svg')) hideMenu();
   });
