@@ -1,6 +1,6 @@
 # rail-it – Konzept einer Engine für Netz- und Stellwerkmanagement
 
-> Status: **v0.8** (Phasen 0 bis 6 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
+> Status: **v0.9** (Phasen 0 bis 7 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
 >
 > v0.2 arbeitet die Grundsatzentscheidungen aus Abschnitt 2 ein: vollständiger Netz- und
 > Bahnbetrieb, deutsches ESTW **und** europäisches System (ETCS/EULYNX), Server **und**
@@ -858,17 +858,18 @@ Daraus folgen diese Regeln:
 | **4 – Europa** | ETCS Level 2 (MA-Erzeugung, RBC-Funktion), EULYNX SCI-P/-LS/-TDS/-LX über RaSTA zu simulierten Objektsteuerungen, Import und Export von railML 3 | Mischbetrieb ESTW/ETCS in der Simulation (Szenarien 16 bis 19); Feldanbindung bereit für Prüfstände | ✔ (PlanPro-Import und SCI-ILS offen) |
 | **5 – Sicherheit & Embedded** | Redundante Kanäle, Voter, Watchdog, Cortex-R-Runtime, Kani-Nachweise, Fuzzing, Safety Case, Rückverfolgbarkeit | Kandidat für das Labor mit [Sicherheitsnachweis](safety/safety-case.md) (Szenarien 20, 21) | ✔ (Hardware, Einbindung des sicheren Rechners in `railitd` offen) |
 | **6 – UI** | Spurplan-UI als API-Client mit sicherer Anzeige- und Bestätigungskette | Bedienplatz unter `/ui/` mit automatisch berechnetem Spurplan, Anzeigeüberwachung und Prüfcode (Abschnitt 14.3) | ✔ (ergonomische Prüfung mit Bedienern offen) |
-| **7 – Betriebsreife** | Sicherer Rechner im Dienst (Knoten, Spiegel, Zustandsabgleich), robuste RaSTA-Wiederholung, signiertes Journal, Bedienplatz für Netz und Betrieb, Leistungsmessung | Verteilte Einsatzvariante lauffähig (`railit-node`, `railitd --node`), alle Szenarien über Knoten | in Arbeit |
+| **7 – Betriebsreife** | Sicherer Rechner im Dienst (Knoten, Spiegel, Zustandsabgleich), robuste RaSTA-Wiederholung, signiertes Journal, Bedienplatz für Netz und Betrieb, Leistungsmessung | Verteilte Einsatzvariante lauffähig (`railit-node`, `railitd --node`), alle Szenarien über Knoten; Journal und Audit gesiegelt; Leistungsziele bei 5000 Elementen in der CI gemessen | ✔ (Zielhardware offen) |
+| **8 – Verfügbarkeit & Diagnose** | Journal auch im Knotenbetrieb, Diagnose aus dem Journal (Zustand zu einem Zeitpunkt, Ereignisse eines Zeitraums), Metriken für den Betrieb | Jeder Betrieb ist lückenlos aufgezeichnet und nachträglich in Sekunden befragbar | in Arbeit |
 
-**Umgesetzte Crates (Stand Phase 6):** `railit-types`, `railit-topology`, `railit-plan`,
+**Umgesetzte Crates (Stand Phase 7):** `railit-types`, `railit-topology`, `railit-plan`,
 `railit-planning`, `railit-rules`, `railit-kernel`, `railit-safety` (Kanäle, Voter, Watchdog),
 `railit-embedded` (sicherer Rechner), `railit-movement` (Ks, H/V, ETCS-Fahrerlaubnis),
 `railit-etcs` (RBC-Funktion), `railit-rasta`, `railit-adapters` (EULYNX SCI), `railit-journal`
 (mit Auditprotokoll), `railit-sim`, `railit-ops` (Zugnummernmeldung, Fahrplan, Zuglenkung,
 Disposition), `railit-runtime` (mehrere Stellbereiche, Szenario-Runner,
 Schlüsselverwaltung, redundante Kanäle), `railit-import` (rail-it-TOML, railML 3),
-`railit-fuzz` (Fuzz-Ziele), `railit-layout` (Spurplan) sowie die Anwendungen `railit` und
-`railitd` (REST, gRPC, TLS/mTLS, Rollen, Feldanbindung über EULYNX, Bedienplatz). Das Regelwerk `de-estw` ist
+`railit-fuzz` (Fuzz-Ziele), `railit-layout` (Spurplan) sowie die Anwendungen `railit`,
+`railit-node` (Knoten des sicheren Rechners) und `railitd` (REST, gRPC, TLS/mTLS, Rollen, Feldanbindung über EULYNX, Bedienplatz). Das Regelwerk `de-estw` ist
 noch das Lehrregelwerk `GenericRules` mit den Zeiten aus Phase 2 (Auflösezeit des
 Durchrutschwegs, Bestätigungsfrist, Leuchtdauer Zs1). Die übrigen Crates aus Abschnitt 5 entstehen in den
 jeweiligen Phasen.
@@ -878,8 +879,8 @@ jeweiligen Phasen.
 ## 19. Noch offene Punkte
 
 1. **Konkrete Embedded-Hardware** für den sicheren Rechner. Die Runtime (`railit-embedded`)
-   ist fertig; Startcode, Uhr, Netzwerk und Speicherprüfungen hängen von der Hardware ab,
-   ebenso die Einbindung in `railitd`.
+   ist fertig und als Knoten (`railit-node`) in `railitd` eingebunden; Startcode, Uhr,
+   Netzwerk und Speicherprüfungen hängen von der Hardware ab.
 2. **Offene Punkte bis zu einer Zulassung:** siehe
    [Sicherheitsnachweis, Teil 7](safety/safety-case.md#teil-7--offene-punkte-bis-zu-einer-zulassung).
 3. **Besetzung der unabhängigen Rollen** (Verifikation, Validierung, ISA) mit Blick auf eine

@@ -31,10 +31,11 @@ Runtime für den sicheren Rechner auf Cortex-R, formale Nachweise mit Kani, Fuzz
 [Sicherheitsnachweis](docs/safety/safety-case.md) und automatische
 [Rückverfolgbarkeit](docs/safety/traceability.md)) und Phase 6 (Bedienplatz: automatisch
 berechneter Spurplan, Web-Bedienplatz mit Anzeigeüberwachung und sicherer Anzeige- und
-Bestätigungskette für Hilfshandlungen) sind umgesetzt. Phase 7 (Betriebsreife) ist in Arbeit:
-Der sichere Rechner ist als Knoten im Dienst angebunden (`railit-node`, `railitd --node`),
-Journal und Auditprotokoll werden gesiegelt, und die Leistungsziele aus dem Konzept werden in
-der CI gemessen (siehe [Leistung](#leistung)).
+Bestätigungskette für Hilfshandlungen) und Phase 7 (Betriebsreife: der sichere Rechner als
+Knoten im Dienst mit Spiegel und Zustandsabgleich (`railit-node`, `railitd --node`), robuste
+RaSTA-Wiederholung, gesiegeltes Journal und Auditprotokoll, Bedienplatz für Netz und Betrieb,
+Leistungsziele in der CI gemessen, siehe [Leistung](#leistung)) sind umgesetzt. Phase 8
+(Verfügbarkeit und Diagnose) ist in Arbeit.
 
 | Crate | Inhalt | |
 |-------|--------|---|
