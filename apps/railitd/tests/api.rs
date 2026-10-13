@@ -104,6 +104,25 @@ fn get(d: &Daemon, path: &str, token: bool) -> (u16, Value) {
     )
 }
 
+/// Text einer Antwort (z. B. Metriken).
+fn get_text(d: &Daemon, path: &str) -> (u16, String) {
+    let mut resp = agent()
+        .get(format!("{}{path}", d.url))
+        .header("Authorization", format!("Bearer {TOKEN}"))
+        .call()
+        .unwrap();
+    (
+        resp.status().as_u16(),
+        resp.body_mut().read_to_string().unwrap_or_default(),
+    )
+}
+
+/// Wert einer Metrik ohne bzw. mit genau diesen Labels.
+fn metric(text: &str, series: &str) -> Option<f64> {
+    text.lines()
+        .find_map(|l| l.strip_prefix(series)?.strip_prefix(' ')?.parse().ok())
+}
+
 fn post(d: &Daemon, path: &str, body: Option<Value>) -> (u16, Value) {
     let req = agent()
         .post(format!("{}{path}", d.url))
@@ -210,6 +229,48 @@ fn operate_station_over_api() {
     let fault = json!({"kind": "tvd_disturbed", "element": "T2"});
     assert_eq!(post(&d, "/v1/sim/faults", Some(fault)).0, 200);
     let (status, answer) = post(&d, "/v1/routes/A-N2/set", None);
+
+    // REQ-SVC-009: Metriken im Prometheus-Textformat.
+    let (code, text) = get_text(&d, "/v1/metrics");
+    assert_eq!(code, 200, "{text}");
+    assert!(
+        metric(&text, "railit_cycles_total").unwrap() > 10.0,
+        "{text}"
+    );
+    assert_eq!(
+        metric(&text, "railit_cycle_seconds_count"),
+        metric(&text, "railit_cycles_total")
+    );
+    assert!(
+        metric(
+            &text,
+            "railit_requests_total{result=\"accepted\",reason=\"\"}"
+        )
+        .unwrap()
+            >= 1.0,
+        "{text}"
+    );
+    assert!(
+        metric(
+            &text,
+            "railit_requests_total{result=\"rejected\",reason=\"conflict\"}"
+        )
+        .unwrap()
+            >= 1.0,
+        "{text}"
+    );
+    assert_eq!(metric(&text, "railit_journal_ok"), Some(1.0));
+    assert_eq!(
+        metric(&text, "railit_safe_state{area=\"Beispielstadt\"}"),
+        Some(0.0),
+        "{text}"
+    );
+    assert_eq!(
+        get(&d, "/v1/metrics", false).0,
+        401,
+        "ohne Token abgewiesen"
+    );
+
     assert_eq!(
         (status, answer["reason"].as_str()),
         (409, Some("tvd_not_clear"))
@@ -732,6 +793,13 @@ fn safe_computer_nodes_over_api() {
     assert_eq!(post(&d, "/v1/routes/A-N1/set", None).0, 200);
     wait_for(&d, "A-N1", "proceed");
     assert_eq!(node(&d)["node"]["divergences"], 0);
+    let (_, text) = get_text(&d, "/v1/metrics");
+    assert_eq!(
+        metric(&text, "railit_node_synced{area=\"Beispielstadt\"}"),
+        Some(1.0),
+        "{text}"
+    );
+    assert!(metric(&text, "railit_node_cycles_total{area=\"Beispielstadt\"}").unwrap() > 0.0);
 
     // Widersprüchliche Angaben.
     let fails = |args: &[&str], text: &str| {

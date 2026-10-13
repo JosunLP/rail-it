@@ -7,6 +7,7 @@
 //! | GET | `/v1/plan` | Netz, Stellbereiche, Fahrstraßen, Elemente, Prüfsummen |
 //! | GET | `/v1/layout` | Spurplan-Geometrie (automatisch berechnet) |
 //! | GET | `/v1/state` | Zustandsbild aller Stellbereiche |
+//! | GET | `/v1/metrics` | Metriken im Prometheus-Textformat |
 //! | GET | `/v1/areas` | Stellbereiche mit Grenzen und Erlaubnissen |
 //! | POST | `/v1/routes/{name}/set` | Fahrstraße einstellen |
 //! | POST | `/v1/routes/{name}/cancel` | Fahrstraße zurücknehmen |
@@ -71,6 +72,8 @@ use crate::service::{FaultKind, NewTrain, SafetyAction, Service, ServiceError};
 pub(crate) struct AppState {
     pub(crate) service: Service,
     pub(crate) auth: Arc<AuthMode>,
+    /// Zähler der Engine für `/v1/metrics`.
+    pub(crate) metrics: tokio::sync::watch::Receiver<Arc<crate::metrics::Counters>>,
 }
 
 /// Name aus dem Client-Zertifikat der Verbindung (mTLS), von der TLS-Schicht gesetzt.
@@ -109,6 +112,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/v1/plan", get(plan))
         .route("/v1/layout", get(layout))
         .route("/v1/state", get(snapshot))
+        .route("/v1/metrics", get(metrics))
         .route("/v1/areas", get(areas))
         .route("/v1/routes/{name}/set", post(set_route))
         .route("/v1/routes/{name}/cancel", post(cancel_route))
@@ -227,6 +231,20 @@ async fn layout(State(state): State<AppState>) -> Json<Value> {
 
 async fn snapshot(State(state): State<AppState>) -> Json<Snapshot> {
     Json(state.service.snapshot().as_ref().clone())
+}
+
+/// Metriken im Prometheus-Textformat (REQ-SVC-009).
+async fn metrics(State(state): State<AppState>) -> Response {
+    let counters = Arc::clone(&state.metrics.borrow());
+    let text = crate::metrics::render(&counters, &state.service.snapshot());
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        text,
+    )
+        .into_response()
 }
 
 async fn areas(State(state): State<AppState>) -> Json<Value> {

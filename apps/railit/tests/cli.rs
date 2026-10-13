@@ -276,7 +276,9 @@ fn journal_verify_and_replay() {
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("A-N1 (Fahrt)"), "{stdout}");
     assert!(stdout.contains("W1 links"), "{stdout}");
-    let out = railit(&["--output", "json", "journal", "events", j, "--plan", p, "--to", "1"]);
+    let out = railit(&[
+        "--output", "json", "journal", "events", j, "--plan", p, "--to", "1",
+    ]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let rows = v.as_array().unwrap();

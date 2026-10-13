@@ -46,6 +46,7 @@ Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`; mit
 | GET | `/v1/layout` | Spurplan-Geometrie, aus der Topologie berechnet: Gleise, Weichen, Signale, Bahnübergänge, Grenzen, Stellbereiche, Betriebsstellen | JSON |
 | GET | `/v1/plan` | Plan: Prüfsumme, Signatur, Elemente, Fahrstraßen mit Weichen, Abschnitten, Geschwindigkeit, Durchrutschweg, Flankenschutz, Bahnübergängen, Feindlichkeiten | JSON |
 | GET | `/v1/state` | Zustandsbild (siehe unten) | JSON |
+| GET | `/v1/metrics` | Metriken für den Betrieb (siehe unten) | Prometheus-Text |
 | POST | `/v1/routes/{name}/set` | Fahrstraße einstellen | 200 `accepted` / 409 `rejected` |
 | POST | `/v1/routes/{name}/cancel` | Fahrstraße zurücknehmen | 200 / 409 |
 | POST | `/v1/points/{name}/move` | Weiche umstellen, Body `{"position":"left"\|"right"}` | 200 / 409 |
@@ -254,7 +255,34 @@ Zustand auf der Kommandozeile.
 Mit `railitd --journal DATEI [--checkpoint-every N]` schreibt der Dienst ein Betriebsjournal
 (JSON Lines, Hashkette). `railit journal verify DATEI` prüft die Kette,
 `railit journal replay DATEI --plan PLAN.rplan` spielt es ab und vergleicht Ausgaben und
-Zustand.
+Zustand. Alle zehn Minuten Betrieb steht ein Zustandsabzug im Journal; das Replay spielt die
+Abschnitte dazwischen parallel ab. `railit journal state DATEI --plan PLAN.rplan --at SEK` zeigt
+den Zustand zu einem Zeitpunkt, `railit journal events … --from SEK --to SEK` die Stellbefehle
+und Ereignisse eines Zeitfensters. Mit `--node` schreibt der Spiegel das Journal: geprüfte
+Zyklen des Knotens und jeden Zustandsabgleich als Übernahme.
+
+## Metriken
+
+`/v1/metrics` liefert Metriken im Prometheus-Textformat (Version 0.0.4), mit derselben Anmeldung
+wie `/v1/state` (Prometheus: `authorization: { credentials: <Token> }`).
+
+| Metrik | Art | Inhalt |
+|--------|-----|--------|
+| `railit_cycles_total`, `railit_cycle_overruns_total` | Zähler | Zyklen des Dienstes; Zyklen länger als die Zykluszeit |
+| `railit_cycle_seconds` | Histogramm | Rechenzeit eines Zyklus (alle Bereiche, Feld, Betriebsführung) |
+| `railit_cycle_seconds_max` | Wert | Längster Zyklus seit dem Start |
+| `railit_requests_total{result,reason}` | Zähler | Angenommene und abgelehnte Anforderungen nach Grund |
+| `railit_alarms_total{alarm}` | Zähler | Störungs- und Gefahrenmeldungen der Kerne |
+| `railit_aux_executed_total`, `railit_aux_counter{area}` | Zähler, Wert | Hilfshandlungen seit Start bzw. Zählwerk je Bereich |
+| `railit_channel_exclusions_total`, `railit_safety_trips_total` | Zähler | Ausschlüsse von Kanälen, Abschaltungen der Sicherheitsschicht |
+| `railit_safe_state{area}`, `railit_channels_active{area}` | Wert | Sicherer Zustand, mitwählende Kanäle |
+| `railit_routes{area,phase}` | Wert | Eingestellte Fahrstraßen je Phase |
+| `railit_journal_ok` | Wert | 0, sobald ein Journal abgebrochen ist |
+| `railit_etcs_emergency_stops_total` | Zähler | ETCS-Notbremsungen |
+| `railit_node_up`, `…_available`, `…_synced{area}` | Wert | Anbindung des Knotens (nur mit `--node`) |
+| `railit_node_cycles_total`, `…_syncs_total`, `…_divergences_total`, `…_link_losses_total`, `…_protocol_errors_total` | Zähler | Knoten: Zyklen, Abgleiche, Abweichungen, Verbindungsabbrüche, Protokollfehler |
+
+Metriken sind reine Beobachtung (SIL 0) ohne Rückwirkung auf den Betrieb.
 
 ## Beispiel
 

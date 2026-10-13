@@ -37,6 +37,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-SVC-006 | H-006 | – | `aux_operation_and_journal`<br>`mutual_tls_identifies_users_by_certificate` |
 | REQ-SVC-007 | H-004, H-012 | – | `network_with_areas_over_api`<br>`every_area_journal_replays` |
 | REQ-SVC-008 | H-006 | – | `interlocking_over_grpc`<br>`mutual_tls_identifies_users_by_certificate`<br>`apps/railitd/tests/grpc.rs` |
+| REQ-SVC-009 | H-015, H-016 | `apps/railitd/src/api.rs`<br>`apps/railitd/src/metrics.rs` | `operate_station_over_api`<br>`safe_computer_nodes_over_api`<br>`histogram_is_cumulative_and_consistent`<br>`apps/railitd/tests/api.rs` |
 
 ## [embedded.md](../requirements/embedded.md)
 
@@ -183,4 +184,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-110 Anforderungen, davon 110 mit Nachweis.
+111 Anforderungen, davon 111 mit Nachweis.

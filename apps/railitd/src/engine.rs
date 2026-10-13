@@ -12,6 +12,8 @@ use railit_runtime::railit_safety::SafetyEvent;
 use railit_runtime::{Addressed, AreaSafetyEvent, NamedEvent, Runtime, Snapshot};
 use railit_runtime::{DynField, SimulatedField};
 use railit_sim::{Fault, SimEvent, TrainInfo, TrainSpec};
+
+use crate::metrics::Counters;
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time::{Duration, MissedTickBehavior};
@@ -113,6 +115,7 @@ pub(crate) struct Channels {
     pub(crate) rx: mpsc::Receiver<EngineMsg>,
     pub(crate) snapshot: watch::Sender<Arc<Snapshot>>,
     pub(crate) events: broadcast::Sender<Arc<str>>,
+    pub(crate) metrics: watch::Sender<Arc<Counters>>,
 }
 
 fn event_json(time_ms: u64, area: Option<&str>, mut value: Value) -> Arc<str> {
@@ -134,11 +137,15 @@ struct Engine {
     next_id: u64,
     safe_state_logged: bool,
     journal_error_logged: bool,
+    period: Duration,
+    counters: Counters,
 }
 
 impl Engine {
     fn tick(&mut self) {
+        let started = std::time::Instant::now();
         let out = self.rt.cycle_addressed(&self.pending);
+        self.counters.observe_cycle(started.elapsed(), self.period);
         self.pending.clear();
         let time_ms = out.now.as_millis();
         if let Some(error) = self.rt.journal_error()
@@ -149,6 +156,7 @@ impl Engine {
                 "Journal abgebrochen; der Betrieb läuft ohne Journal weiter"
             );
             self.journal_error_logged = true;
+            self.counters.journal_failed = true;
         }
         let multi = self.rt.area_count() > 1;
 
@@ -157,6 +165,7 @@ impl Engine {
         let mut aux_event = None;
         for e in &out.events {
             let named = self.rt.name_event(e);
+            self.counters.observe_event(&named);
             let area = self.rt.area_name(e.area).unwrap_or("?").to_string();
             match &named {
                 NamedEvent::Alarm { alarm, element } => {
@@ -192,6 +201,8 @@ impl Engine {
         }
         for e in &out.etcs {
             if let railit_runtime::railit_etcs::RbcEvent::EmergencyStop { train, reason } = e {
+                self.counters.etcs_emergency_stops =
+                    self.counters.etcs_emergency_stops.saturating_add(1);
                 tracing::warn!(train, reason, "ETCS-Notbremsung");
             }
             let mut value = serde_json::to_value(e).unwrap_or(Value::Null);
@@ -232,11 +243,23 @@ impl Engine {
             self.safe_state_logged = true;
         }
         self.ch.snapshot.send_replace(Arc::new(self.rt.snapshot()));
+        self.ch
+            .metrics
+            .send_replace(Arc::new(self.counters.clone()));
     }
 
     /// Meldungen der Sicherheitsschichten: protokollieren und als Ereignis senden.
-    fn publish_safety(&self, time_ms: u64, events: &[AreaSafetyEvent]) {
+    fn publish_safety(&mut self, time_ms: u64, events: &[AreaSafetyEvent]) {
         for e in events {
+            match e.event {
+                SafetyEvent::ChannelExcluded { .. } => {
+                    self.counters.channel_exclusions =
+                        self.counters.channel_exclusions.saturating_add(1);
+                }
+                SafetyEvent::Tripped(_) => {
+                    self.counters.safety_trips = self.counters.safety_trips.saturating_add(1);
+                }
+            }
             let area = self.rt.area_name(e.area).unwrap_or("?").to_string();
             let value = match e.event {
                 SafetyEvent::ChannelExcluded {
@@ -321,6 +344,8 @@ pub(crate) async fn run(rt: Runtime<DynField>, ch: Channels, period: Duration) {
         next_id: 0,
         safe_state_logged: false,
         journal_error_logged: false,
+        period,
+        counters: Counters::default(),
     };
     loop {
         tokio::select! {

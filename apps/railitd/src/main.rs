@@ -24,6 +24,7 @@ mod api;
 mod auth;
 mod engine;
 mod grpc;
+mod metrics;
 mod service;
 mod tls;
 mod ui;
@@ -360,10 +361,12 @@ async fn serve(
     let (snapshot_tx, snapshot_rx) = watch::channel(Arc::new(rt.snapshot()));
     let (events_tx, _) = broadcast::channel(4096);
     let directory = rt.directory().clone();
+    let (metrics_tx, metrics_rx) = watch::channel(Arc::new(metrics::Counters::default()));
     let channels = engine::Channels {
         rx,
         snapshot: snapshot_tx,
         events: events_tx.clone(),
+        metrics: metrics_tx,
     };
     let mut engine = tokio::spawn(engine::run(rt, channels, period));
 
@@ -390,6 +393,7 @@ async fn serve(
             operators_from_users,
         ),
         auth: Arc::new(security.auth),
+        metrics: metrics_rx,
     };
     let listener = tokio::net::TcpListener::bind(args.listen)
         .await
