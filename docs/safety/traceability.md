@@ -40,6 +40,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-SVC-008 | H-006 | – | `interlocking_over_grpc`<br>`mutual_tls_identifies_users_by_certificate`<br>`apps/railitd/tests/grpc.rs` |
 | REQ-SVC-009 | H-015, H-016 | `apps/railitd/src/api.rs`<br>`apps/railitd/src/metrics.rs` | `operate_station_over_api`<br>`safe_computer_nodes_over_api`<br>`histogram_is_cumulative_and_consistent`<br>`apps/railitd/tests/api.rs` |
 | REQ-SVC-010 | H-011, H-016 | `apps/railitd/src/api.rs`<br>`apps/railitd/src/review.rs` | `aux_operation_and_journal`<br>`apps/railitd/tests/api.rs` |
+| REQ-SVC-011 | H-011, H-015, H-016 | `apps/railitd/src/api.rs`<br>`apps/railitd/src/standby.rs`<br>`apps/railitd/ui/src/panels.ts` | `standby_follows_the_primary`<br>`area_names_are_encoded`<br>`apps/railitd/tests/api.rs`<br>`apps/railitd/ui/e2e/bedienplatz.test.ts` |
 
 ## [embedded.md](../requirements/embedded.md)
 
@@ -187,4 +188,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-114 Anforderungen, davon 114 mit Nachweis.
+115 Anforderungen, davon 115 mit Nachweis.

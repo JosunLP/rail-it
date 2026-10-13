@@ -121,6 +121,7 @@ einer Fehlbedienung, sie sind keine Sicherheitsfunktion.
 | Siegel des Stellwerks über Journal und Auditprotokoll: Eine neu geschriebene Kette ist erkennbar | REQ-JRN-004, `rewritten_journal_cannot_carry_the_station_seal` |
 | Eingaben als Änderung, Zustandsabzüge und paralleles Replay mit Gleichheitsprüfung an jeder Abschnittsgrenze; ein gefälschter Abzug fällt auf | REQ-JRN-005/006, `forged_snapshot_is_detected_by_replay` |
 | Journal auch im Knotenbetrieb: geprüfte Zyklen des Spiegels und Zustandsübernahmen; alle Szenarien in allen Betriebsarten mitgeschrieben und abgespielt | REQ-JRN-007, `node_journal_replays_across_resyncs` |
+| Mitlesen: Ein zweiter Rechner prüft und rechnet das Journal laufend nach und zeigt den Zustand ohne Bedienung an; Rückschau am Bedienplatz ohne Bedienung und ohne verfälschte Signalfarben | REQ-JRN-009, REQ-SVC-010/011, REQ-UI-005, `standby_follows_the_primary` |
 
 ## Teil 5 – Verwandte Sicherheitsnachweise
 
@@ -162,6 +163,7 @@ rail-it ist als **generisches Produkt** angelegt. Für einen Einsatz sind zusät
 | Qualifizierte Toolchain (z. B. Ferrocene) für die SIL-4-Crates | Konzept 16.2 |
 | Hardware des sicheren Rechners festlegen; Kanäle auf getrennter Hardware bzw. im Lockstep, Speicherprüfungen | H-015, Konzept 19 |
 | Knoten auf der Zielhardware | REQ-EMB |
+| Übernahme des Betriebs durch den Bereitschaftsrechner (Übergabe der Feldanbindung, Ausfallerkennung des Hauptrechners) | REQ-SVC-011, H-015 |
 | Kani-Nachweise für den gesamten Kernzyklus (heute Eigenschaftstests und Fuzzing) | H-007 |
 | Sicherheitscode von RaSTA nach Zulassungsanforderung prüfen | H-014 |
 | Regelwerke `de-estw` und `etcs` mit den Regeln eines Betreibers | Teil 5 |

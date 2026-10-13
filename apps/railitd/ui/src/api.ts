@@ -217,3 +217,13 @@ export async function getJournalEvents(fromMs: number, toMs: number, area: strin
     await review<{ cycles: ReviewCycle[] }>(`/v1/journal/events?from_ms=${from}&to_ms=${to}&area=${seg(area)}`)
   ).cycles;
 }
+
+/** Rolle des Dienstes: Hauptrechner oder Bereitschaftsrechner (liest nur mit). */
+export async function getRole(): Promise<{ role: 'primary' | 'standby'; primary?: string }> {
+  const r = await call(() =>
+    http.get<{ role?: string; standby?: { primary: string } | null }>('/v1/health'),
+  );
+  return r.data?.role === 'standby'
+    ? { role: 'standby', primary: r.data.standby?.primary }
+    : { role: 'primary' };
+}

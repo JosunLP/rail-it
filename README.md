@@ -199,7 +199,13 @@ Zustandsabzug, die Ausgaben neu berechnet und gegen das Journal geprüft:
 railit journal state  betrieb.journal --plan plan.rplan --at 20        # Zustand bei t = 20 s
 railit journal events betrieb.journal --plan plan.rplan --from 0 --to 90
 railit scenario run tests/scenarios/*.toml --node --journal            # mitschreiben und abspielen
+railit journal follow betrieb.journal --plan plan.rplan                # wachsendes Journal mitlesen
 ```
+
+Ein zweiter Dienst kann als **Bereitschaftsrechner** mitlesen: `railitd … --standby
+http://hauptrechner:7070` folgt dem Journal des Hauptrechners, rechnet jede Zeile nach und zeigt
+dessen Zustand am Bedienplatz an – ohne Bedienung. Im Bedienplatz zeigt die **Rückschau** den
+Spurplan zu jedem vergangenen Zeitpunkt.
 
 Journal und Auditprotokoll lassen sich mit dem Schlüssel des Stellwerks siegeln:
 `railitd … --journal betrieb.journal --audit audit.log --seal-key stellwerk.key`, geprüft mit

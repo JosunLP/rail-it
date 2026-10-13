@@ -11,6 +11,7 @@
 //! | GET | `/v1/journal` | Journaldateien für die Rückschau |
 //! | GET | `/v1/journal/state?at_ms=&area=` | Zustandsbild zu einem Zeitpunkt (aus dem Journal) |
 //! | GET | `/v1/journal/events?from_ms=&to_ms=&area=` | Befehle und Ereignisse eines Zeitfensters |
+//! | GET | `/v1/journal/stream?area=&offset=` | Journal als fortlaufender Strom (Bereitschaftsrechner) |
 //! | GET | `/v1/areas` | Stellbereiche mit Grenzen und Erlaubnissen |
 //! | POST | `/v1/routes/{name}/set` | Fahrstraße einstellen |
 //! | POST | `/v1/routes/{name}/cancel` | Fahrstraße zurücknehmen |
@@ -79,6 +80,8 @@ pub(crate) struct AppState {
     pub(crate) metrics: tokio::sync::watch::Receiver<Arc<crate::metrics::Counters>>,
     /// Journaldateien für die Rückschau.
     pub(crate) journals: Arc<Vec<crate::review::JournalFile>>,
+    /// Bereitschaftsrechner: Stand des Mitlesens (sonst Hauptrechner).
+    pub(crate) standby: Option<Arc<crate::standby::Standby>>,
 }
 
 /// Name aus dem Client-Zertifikat der Verbindung (mTLS), von der TLS-Schicht gesetzt.
@@ -121,6 +124,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/v1/journal", get(journal_overview))
         .route("/v1/journal/state", get(journal_state))
         .route("/v1/journal/events", get(journal_events))
+        .route("/v1/journal/stream", get(journal_stream))
         .route("/v1/areas", get(areas))
         .route("/v1/routes/{name}/set", post(set_route))
         .route("/v1/routes/{name}/cancel", post(cancel_route))
@@ -189,6 +193,14 @@ async fn auth(State(state): State<AppState>, mut request: HttpRequest, next: Nex
         }
         return ApiError(StatusCode::FORBIDDEN, "keine Leseberechtigung".into()).into_response();
     }
+    // Der Bereitschaftsrechner zeigt nur an (REQ-SVC-011).
+    if state.standby.is_some() && request.method() != axum::http::Method::GET {
+        const TEXT: &str = "Bereitschaftsrechner: keine Bedienung";
+        if grpc {
+            return tonic::Status::unavailable(TEXT).into_http();
+        }
+        return ApiError(StatusCode::SERVICE_UNAVAILABLE, TEXT.into()).into_response();
+    }
     request.extensions_mut().insert(principal);
     next.run(request).await
 }
@@ -219,7 +231,15 @@ fn done() -> Response {
 
 async fn health(State(state): State<AppState>) -> Json<Value> {
     let snap = state.service.snapshot();
+    let standby = state.standby.as_ref().map(|s| {
+        json!({
+            "primary": s.primary,
+            "areas": s.areas(),
+        })
+    });
     Json(json!({
+        "role": if standby.is_some() { "standby" } else { "primary" },
+        "standby": standby,
         "status": if snap.safe_state.is_some() { "safe_state" } else { "ok" },
         "network": snap.network,
         "areas": snap.areas.iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
@@ -305,6 +325,59 @@ async fn journal_events(State(state): State<AppState>, Query(q): Query<ReviewQue
         ));
     }
     review(&state, q.area, move |f| crate::review::events(f, from, to)).await
+}
+
+/// Parameter des Journalstroms.
+#[derive(Deserialize)]
+struct StreamQuery {
+    area: Option<String>,
+    /// Ab diesem Byte (Vorgabe: Anfang).
+    offset: Option<u64>,
+}
+
+/// Journal als fortlaufender Strom (REQ-SVC-011): ab `offset` alle vorhandenen Bytes, danach
+/// jede neue Zeile, bis der Empfänger trennt. Grundlage des Bereitschaftsrechners.
+async fn journal_stream(State(state): State<AppState>, Query(q): Query<StreamQuery>) -> ApiResult {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    let file = crate::review::pick(&state.journals, q.area.as_deref())
+        .map_err(|e| ApiError(StatusCode::NOT_FOUND, e))?
+        .clone();
+    let mut f = tokio::fs::File::open(&file.path)
+        .await
+        .map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    f.seek(std::io::SeekFrom::Start(q.offset.unwrap_or(0)))
+        .await
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(16);
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 1 << 16];
+        loop {
+            match f.read(&mut buf).await {
+                Ok(0) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+                Ok(n) => {
+                    let chunk =
+                        axum::body::Bytes::copy_from_slice(buf.get(..n).unwrap_or_default());
+                    if tx.send(Ok(chunk)).await.is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e)).await;
+                    break;
+                }
+            }
+            if tx.is_closed() {
+                break;
+            }
+        }
+    });
+    let body = axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx));
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/x-ndjson")],
+        body,
+    )
+        .into_response())
 }
 
 async fn areas(State(state): State<AppState>) -> Json<Value> {

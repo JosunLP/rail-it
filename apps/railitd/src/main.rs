@@ -27,6 +27,7 @@ mod grpc;
 mod metrics;
 mod review;
 mod service;
+mod standby;
 mod tls;
 mod ui;
 
@@ -88,6 +89,14 @@ struct Args {
     /// `<Bereich>.journal` je Bereich. Prüfen und abspielen mit `railit journal`.
     #[arg(long)]
     journal: Option<PathBuf>,
+    /// Bereitschaftsrechner: liest die Journale des Hauptrechners unter dieser Adresse mit
+    /// (`http://host:port`), rechnet nach und zeigt dessen Zustand an – ohne Feld, ohne
+    /// Kern im Betrieb, ohne Bedienung.
+    #[arg(long, value_name = "URL", conflicts_with_all = ["journal", "nodes"])]
+    standby: Option<String>,
+    /// Zugangstoken beim Hauptrechner (mit `--standby`).
+    #[arg(long, value_name = "TOKEN", requires = "standby")]
+    standby_token: Option<String>,
     /// Abstand der Zustands-Prüfpunkte im Journal (Zyklen).
     #[arg(long, default_value_t = 600)]
     checkpoint_every: u64,
@@ -348,6 +357,21 @@ fn area_plans(rt: &Runtime<DynField>) -> Vec<(String, railit_plan::PlanView<'sta
         .collect()
 }
 
+/// Auditprotokoll (`--audit`), gesiegelt mit `--seal-key`.
+fn open_audit(args: &Args) -> Result<Option<Arc<service::Audit>>, String> {
+    let seal_key = args
+        .seal_key
+        .as_deref()
+        .map(railit_runtime::keys::read_signing_key)
+        .transpose()?;
+    Ok(args
+        .audit
+        .as_deref()
+        .map(|path| service::Audit::open(path, seal_key))
+        .transpose()?
+        .map(Arc::new))
+}
+
 /// Startet Engine und API und läuft bis Strg+C.
 async fn serve(
     args: Args,
@@ -369,25 +393,36 @@ async fn serve(
             .map(|path| review::files(path, &area_plans(&rt)))
             .unwrap_or_default(),
     );
-    let channels = engine::Channels {
-        rx,
-        snapshot: snapshot_tx,
-        events: events_tx.clone(),
-        metrics: metrics_tx,
+    let standby = args.standby.as_deref().map(|url| {
+        let areas = area_plans(&rt);
+        let network = areas
+            .first()
+            .map(|(_, p)| p.network_name().to_string())
+            .unwrap_or_default();
+        tracing::info!(primary = url, "Bereitschaftsrechner: liest das Journal mit");
+        standby::start(
+            url,
+            args.standby_token.as_deref(),
+            network,
+            areas,
+            snapshot_tx.clone(),
+        )
+    });
+    let mut engine = if standby.is_some() {
+        // Ohne Engine scheitert jede Bedienung; das Zustandsbild speisen die Mitleser.
+        drop((rx, rt, metrics_tx));
+        tokio::spawn(async {})
+    } else {
+        let channels = engine::Channels {
+            rx,
+            snapshot: snapshot_tx,
+            events: events_tx.clone(),
+            metrics: metrics_tx,
+        };
+        tokio::spawn(engine::run(rt, channels, period))
     };
-    let mut engine = tokio::spawn(engine::run(rt, channels, period));
 
-    let seal_key = args
-        .seal_key
-        .as_deref()
-        .map(railit_runtime::keys::read_signing_key)
-        .transpose()?;
-    let audit = args
-        .audit
-        .as_deref()
-        .map(|path| service::Audit::open(path, seal_key.clone()))
-        .transpose()?
-        .map(Arc::new);
+    let audit = open_audit(&args)?;
     let operators_from_users = security.auth.operators_from_users();
     let state = api::AppState {
         service: service::Service::new(
@@ -402,6 +437,7 @@ async fn serve(
         auth: Arc::new(security.auth),
         metrics: metrics_rx,
         journals,
+        standby,
     };
     let listener = tokio::net::TcpListener::bind(args.listen)
         .await

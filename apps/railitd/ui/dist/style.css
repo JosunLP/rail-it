@@ -687,3 +687,28 @@ body.review rit-trains {
 .review-panel .review-command .text {
   color: var(--accent);
 }
+
+/* ── Bereitschaftsrechner (REQ-SVC-011) ───────────────────────────────────────────── */
+
+.standby-banner {
+  display: none;
+}
+
+body.standby .standby-banner {
+  display: block;
+  position: absolute;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 14px;
+  font-weight: 700;
+  color: #111;
+  background: var(--warn);
+  border-radius: 4px;
+  z-index: 4;
+  pointer-events: none;
+}
+
+body.standby header {
+  border-bottom: 3px solid var(--warn);
+}

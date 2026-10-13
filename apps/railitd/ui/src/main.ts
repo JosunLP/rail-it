@@ -29,7 +29,7 @@ import {
   reviewRows,
   routesFrom,
 } from './model';
-import { displayHealth, messages, report, reviewAt, reviewRowsSignal, snapshot } from './panels';
+import { displayHealth, messages, report, reviewAt, reviewRowsSignal, snapshot, standbyRole } from './panels';
 import { type PlanTarget, PlanView } from './plan';
 import type { Answer, AuxKind, JournalInfo, NamedAux, PendingAux, Snapshot } from './types';
 
@@ -51,7 +51,7 @@ effect(() => {
 
 effect(() => {
   const h = displayHealth.value;
-  const reviewing = reviewAt.value !== undefined;
+  const reviewing = reviewAt.value !== undefined || standbyRole.value;
   $('body').toggleClass('stale', h === 'stale').toggleClass('safe-state', h === 'safe_state');
   for (const b of Array.from(document.querySelectorAll('[data-command]'))) {
     (b as HTMLButtonElement).disabled = !operable(h) || reviewing;
@@ -59,6 +59,10 @@ effect(() => {
 });
 
 function guard(): boolean {
+  if (standbyRole.peek()) {
+    report('warn', 'Bereitschaftsrechner: keine Bedienung');
+    return false;
+  }
   if (reviewAt.peek() !== undefined) {
     report('warn', 'Rückschau: keine Bedienung – erst zurück zum Betrieb');
     return false;
@@ -114,7 +118,7 @@ function showMenu(x: number, y: number, title: string, items: MenuItem[]): void 
     b.type = 'button';
     b.textContent = item.label;
     b.setAttribute('data-command', '');
-    b.disabled = !operable(displayHealth.peek()) || reviewAt.peek() !== undefined;
+    b.disabled = !operable(displayHealth.peek()) || reviewAt.peek() !== undefined || standbyRole.peek();
     $(b).on('click', () => {
       hideMenu();
       item.run();
@@ -432,6 +436,13 @@ async function main(): Promise<void> {
     const s = reviewAt.value !== undefined ? reviewSnapshot.value : snapshot.value;
     if (s) plan.update(s);
   });
+  const role = await api.getRole().catch(() => ({ role: 'primary' as const, primary: undefined }));
+  if (role.role === 'standby') {
+    standbyRole.value = true;
+    $('body').addClass('standby');
+    $('#standby-primary').text(role.primary ?? '');
+    report('info', `Bereitschaftsrechner: liest das Journal von ${role.primary ?? '?'} mit`);
+  }
   journals = await api.getJournals().catch(() => []);
   setupReview();
 

@@ -351,7 +351,11 @@ fn aux_operation_and_journal() {
     // REQ-SVC-010: Rückschau aus dem eigenen Journal.
     let (status, overview) = get(&d, "/v1/journal", true);
     assert_eq!(status, 200);
-    assert_eq!(overview["journals"].as_array().unwrap().len(), 1, "{overview}");
+    assert_eq!(
+        overview["journals"].as_array().unwrap().len(),
+        1,
+        "{overview}"
+    );
     let now = get(&d, "/v1/health", false).1["time_ms"].as_u64().unwrap();
     let (status, past) = get(&d, &format!("/v1/journal/state?at_ms={now}"), true);
     assert_eq!(status, 200, "{past}");
@@ -939,4 +943,74 @@ fn sealed_journal_and_audit_log() {
         s.records >= 1 && s.seals == s.records && s.unsealed == 0,
         "{s:?}"
     );
+}
+
+/// REQ-SVC-011: Ein Bereitschaftsrechner liest das Journal des Hauptrechners mit, zeigt
+/// dessen Zustand an und lässt keine Bedienung zu; fällt der Hauptrechner aus, bleibt der
+/// letzte geprüfte Zustand stehen und die Trennung wird gemeldet.
+#[test]
+fn standby_follows_the_primary() {
+    let (plan, _) = prepare("standby", false);
+    let journal = tmp("standby.journal");
+    let _ = std::fs::remove_file(&journal);
+    let p = plan.to_str().unwrap();
+    let primary = start(&[
+        "--plan",
+        p,
+        "--allow-unsigned",
+        "--journal",
+        journal.to_str().unwrap(),
+    ]);
+    let standby = start(&[
+        "--plan",
+        p,
+        "--allow-unsigned",
+        "--standby",
+        &primary.url,
+        "--standby-token",
+        TOKEN,
+    ]);
+    assert_eq!(post(&primary, "/v1/routes/A-N1/set", None).0, 200);
+    wait_for(&primary, "A-N1", "proceed");
+    wait_for(&standby, "A-N1", "proceed");
+
+    let (_, health) = get(&standby, "/v1/health", false);
+    assert_eq!(health["role"], "standby", "{health}");
+    let area = &health["standby"]["areas"][0];
+    assert_eq!(area["connected"], true, "{health}");
+    assert!(area["cycles"].as_u64().unwrap() > 0, "{health}");
+    assert_eq!(get(&primary, "/v1/health", false).1["role"], "primary");
+
+    // Keine Bedienung am Bereitschaftsrechner.
+    let (status, answer) = post(&standby, "/v1/routes/A-N2/set", None);
+    assert_eq!(status, 503, "{answer}");
+    assert!(
+        answer["error"]
+            .as_str()
+            .unwrap()
+            .contains("Bereitschaftsrechner")
+    );
+
+    // Der Hauptrechner fällt aus: Trennung gemeldet, letzter Zustand bleibt.
+    drop(primary);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while get(&standby, "/v1/health", false).1["standby"]["areas"][0]["connected"] != false {
+        assert!(Instant::now() < deadline, "Trennung nicht erkannt");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(route_phase(&standby, "A-N1"), "proceed");
+
+    // Widersprüchliche Angaben.
+    let out = daemon(&[
+        "--plan",
+        p,
+        "--allow-unsigned",
+        "--standby",
+        "http://x",
+        "--journal",
+        "j",
+    ])
+    .output()
+    .unwrap();
+    assert_eq!(out.status.code(), Some(2));
 }

@@ -65,7 +65,7 @@ clap = { version = "4", features = ["derive", "env"] }
 proptest = "1"
 sha2 = { version = "0.10", default-features = false }
 postcard = { version = "1", default-features = false }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal", "fs", "io-util"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 axum = { version = "0.8", features = ["http2"] }
 tracing = "0.1"

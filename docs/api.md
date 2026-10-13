@@ -50,6 +50,7 @@ Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`; mit
 | GET | `/v1/journal` | Journaldateien je Stellbereich (Rückschau) | JSON |
 | GET | `/v1/journal/state?at_ms=…[&area=…]` | Zustandsbild zu einem Zeitpunkt, aus dem Journal | JSON |
 | GET | `/v1/journal/events?from_ms=…&to_ms=…[&area=…]` | Stellbefehle und Ereignisse eines Zeitfensters (höchstens 5000 Zyklen, `truncated`) | JSON |
+| GET | `/v1/journal/stream?[area=…][&offset=…]` | Journal ab Byte `offset` und danach fortlaufend (Bereitschaftsrechner) | NDJSON-Strom |
 | POST | `/v1/routes/{name}/set` | Fahrstraße einstellen | 200 `accepted` / 409 `rejected` |
 | POST | `/v1/routes/{name}/cancel` | Fahrstraße zurücknehmen | 200 / 409 |
 | POST | `/v1/points/{name}/move` | Weiche umstellen, Body `{"position":"left"\|"right"}` | 200 / 409 |
@@ -266,6 +267,16 @@ und Ereignisse eines Zeitfensters; dieselbe Rückschau liefert der Dienst unter
 Journals). `railit journal follow DATEI --plan PLAN.rplan` liest ein wachsendes Journal mit und
 rechnet jede neue Zeile sofort nach. Mit `--node` schreibt der Spiegel das Journal: geprüfte
 Zyklen des Knotens und jeden Zustandsabgleich als Übernahme.
+
+## Bereitschaftsrechner
+
+`railitd --network … --plan … --standby http://hauptrechner:7070 [--standby-token TOKEN]`
+liest die Journale des Hauptrechners über `/v1/journal/stream` mit, prüft und rechnet jede
+Zeile nach und zeigt den Zustand über dieselbe API und denselben Bedienplatz an (gelb
+gekennzeichnet). Bedienungen werden mit `503` abgewiesen. `/v1/health` enthält `role`
+(`primary` bzw. `standby`) und je Bereich `connected`, `cycles`, `last_ms`, `reconnects` und
+`problem`. Der Hauptrechner braucht `--journal`; `--standby` schließt `--journal` und `--node`
+aus. Die Übernahme des Betriebs durch den Bereitschaftsrechner ist noch nicht umgesetzt.
 
 ## Metriken
 

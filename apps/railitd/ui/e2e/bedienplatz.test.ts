@@ -16,6 +16,8 @@ const port = 17_000 + Math.floor(Math.random() * 2000);
 const base = `http://127.0.0.1:${port}`;
 
 let daemon: ReturnType<typeof Bun.spawn> | undefined;
+let standby: ReturnType<typeof Bun.spawn> | undefined;
+const standbyBase = `http://127.0.0.1:${port + 1}`;
 let browser: Browser;
 
 async function healthy(): Promise<boolean> {
@@ -41,12 +43,22 @@ beforeAll(async () => {
   );
   for (let i = 0; i < 100 && !(await healthy()); i++) await Bun.sleep(100);
   if (!(await healthy())) throw new Error('railitd startet nicht');
+  // Bereitschaftsrechner: liest das Journal des Hauptrechners mit (REQ-SVC-011).
+  standby = Bun.spawn(
+    [
+      join(bin, 'railitd'),
+      ...['--network', network, '--plan', plan, '--allow-unsigned'],
+      ...['--standby', base, '--listen', `127.0.0.1:${port + 1}`],
+    ],
+    { stdout: 'ignore', stderr: 'ignore' },
+  );
   browser = await chromium.launch();
 });
 
 afterAll(async () => {
   await browser?.close();
   daemon?.kill();
+  standby?.kill();
 });
 
 /** Bedienplatz in eigenem Browserkontext (eigene Sitzung) mit Bedienernummer. */
@@ -183,6 +195,21 @@ describe('Bedienplatz', () => {
     await two.locator('body:not(.review)').waitFor();
     await signal(two, 'A').and(two.locator('.sig-proceed')).waitFor();
     expect(await two.locator('#command').isDisabled()).toBe(false);
+  });
+
+  test('Bereitschaftsrechner zeigt den Zustand des Hauptrechners ohne Bedienung (REQ-SVC-011)', async () => {
+    const context = await browser.newContext({ viewport: { width: 1400, height: 800 } });
+    const page = await context.newPage();
+    page.on('pageerror', (e) => {
+      throw e;
+    });
+    await page.goto(`${standbyBase}/`);
+    await page.locator('body.standby').waitFor({ timeout: 10_000 });
+    expect(await page.locator('.standby-banner').isVisible()).toBe(true);
+    // Am Hauptrechner ist A-N1 eingestellt (voriger Test), der Bereitschaftsrechner zeigt es.
+    await signal(page, 'A').and(page.locator('.sig-proceed')).waitFor({ timeout: 10_000 });
+    expect(await page.locator('#command').isDisabled()).toBe(true);
+    await context.close();
   });
 
   test('Anzeigeüberwachung: ohne aktuelles Zustandsbild keine Bedienung (REQ-UI-002)', async () => {

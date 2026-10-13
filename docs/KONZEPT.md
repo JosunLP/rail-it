@@ -1,6 +1,6 @@
 # rail-it – Konzept einer Engine für Netz- und Stellwerkmanagement
 
-> Status: **v0.10** (Phasen 0 bis 8 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
+> Status: **v0.11** (Phasen 0 bis 9 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
 >
 > v0.2 arbeitet die Grundsatzentscheidungen aus Abschnitt 2 ein: vollständiger Netz- und
 > Bahnbetrieb, deutsches ESTW **und** europäisches System (ETCS/EULYNX), Server **und**
@@ -732,7 +732,7 @@ verfälschte Anzeige, Ausfall des Dienstes).
   des Zustands.
 - Optional diversitär (anderes Target, andere Optimierungsstufe).
 - Ein Watchdog überwacht die Zyklus-Deadline.
-- Hot Standby, indem ein zweiter Rechner das Journal mitliest.
+- Hot Standby, indem ein zweiter Rechner das Journal mitliest (Phase 9: Bereitschaftsrechner liest mit und zeigt an; Übernahme offen).
 
 **Stand Phase 5:** `railit-safety` setzt Kanäle, Voter, Watchdog und den sicheren Zustand um
 (REQ-SAF-001 … 005). Jeder Kanal hat seinen eigenen Zustandsspeicher; sein Digest ist ein
@@ -741,7 +741,7 @@ Voter ist eine reine Funktion und mit Kani für alle Eingaben nachgewiesen. Im s
 Zustand gibt die Schicht keine Kanalausgabe mehr weiter, sondern stellt allein aus dem Plan
 alle Signale auf Halt. Die Runtime betreibt jeden Stellbereich mit 1, 2 oder 3 Kanälen
 (`railitd --channels`, `--watchdog-ms`); Ausschluss, Wiederaufnahme, Abschaltung und
-Rücksetzen stehen im Journal. Diversitäre Kanäle und Hot Standby sind noch offen.
+Rücksetzen stehen im Journal. Diversitäre Kanäle sind noch offen; zum Bereitschaftsrechner siehe Stand Phase 9.
 
 **Neustart**
 
@@ -768,8 +768,22 @@ veränderte Zeile, das Siegel zeigt, dass niemand die Datei als Ganzes neu gesch
   Rechenzeit je Zyklus als Histogramm, Überschreitungen, Anforderungen nach Ergebnis,
   Meldungen, sicherer Zustand, Kanäle, Fahrstraßen, Journal, Anbindung der Knoten.
 
-Offen bleiben Hot Standby (ein zweiter Rechner liest das Journal mit) und die Ablage des
-Journals außerhalb des Stellwerksrechners.
+**Stand Phase 9 – Mitlesen und Rückschau.**
+
+- Ein wachsendes Journal lässt sich mitlesen (`Follower`, `railit journal follow`): Jede neue
+  Zeile wird sofort geprüft und nachgerechnet; der Zustand des Mitlesers gleicht nach jedem
+  Zyklus dem des Stellwerks (REQ-JRN-009).
+- Der Dienst beantwortet Fragen an seine eigenen Journale (`/v1/journal/state`,
+  `/v1/journal/events`, REQ-SVC-010); der Bedienplatz zeigt in der **Rückschau** den Spurplan
+  zu jedem vergangenen Zeitpunkt, deutlich gekennzeichnet und ohne Bedienung (REQ-UI-005).
+- **Bereitschaftsrechner:** Der Hauptrechner liefert sein Journal als Strom
+  (`/v1/journal/stream`); `railitd --standby` liest mit, rechnet nach und zeigt den Zustand an,
+  ohne Bedienung (REQ-SVC-011). Damit liegt das Journal zugleich außerhalb des
+  Stellwerksrechners vor, laufend geprüft.
+
+Offen bleibt die **Übernahme** des Betriebs durch den Bereitschaftsrechner: Sie verlangt die
+Übergabe der Feldanbindung und eine Regel, wann der Bereitschaftsrechner den Hauptrechner
+für ausgefallen hält (Konzept 19).
 
 **Performance**
 
@@ -877,7 +891,8 @@ Daraus folgen diese Regeln:
 | **5 – Sicherheit & Embedded** | Redundante Kanäle, Voter, Watchdog, Cortex-R-Runtime, Kani-Nachweise, Fuzzing, Safety Case, Rückverfolgbarkeit | Kandidat für das Labor mit [Sicherheitsnachweis](safety/safety-case.md) (Szenarien 20, 21) | ✔ (Hardware, Einbindung des sicheren Rechners in `railitd` offen) |
 | **6 – UI** | Spurplan-UI als API-Client mit sicherer Anzeige- und Bestätigungskette | Bedienplatz unter `/ui/` mit automatisch berechnetem Spurplan, Anzeigeüberwachung und Prüfcode (Abschnitt 14.3) | ✔ (ergonomische Prüfung mit Bedienern offen) |
 | **7 – Betriebsreife** | Sicherer Rechner im Dienst (Knoten, Spiegel, Zustandsabgleich), robuste RaSTA-Wiederholung, signiertes Journal, Bedienplatz für Netz und Betrieb, Leistungsmessung | Verteilte Einsatzvariante lauffähig (`railit-node`, `railitd --node`), alle Szenarien über Knoten; Journal und Audit gesiegelt; Leistungsziele bei 5000 Elementen in der CI gemessen | ✔ (Zielhardware offen) |
-| **8 – Verfügbarkeit & Diagnose** | Journal auch im Knotenbetrieb, Diagnose aus dem Journal (Zustand zu einem Zeitpunkt, Ereignisse eines Zeitraums), Metriken für den Betrieb | Jeder Betrieb ist lückenlos aufgezeichnet und nachträglich in Sekunden befragbar; Metriken für den Betrieb | ✔ (Hot Standby offen) |
+| **8 – Verfügbarkeit & Diagnose** | Journal auch im Knotenbetrieb, Diagnose aus dem Journal (Zustand zu einem Zeitpunkt, Ereignisse eines Zeitraums), Metriken für den Betrieb | Jeder Betrieb ist lückenlos aufgezeichnet und nachträglich in Sekunden befragbar; Metriken für den Betrieb | ✔ |
+| **9 – Mitlesen & Rückschau** | Mitleser für wachsende Journale, Rückschau im Dienst und im Bedienplatz, Bereitschaftsrechner über den Journalstrom | Ein zweiter Rechner zeigt den Zustand des Hauptrechners laufend geprüft an; jeder Zeitpunkt lässt sich am Bedienplatz zurückschauen | ✔ (Übernahme des Betriebs offen) |
 
 **Umgesetzte Crates (Stand Phase 7):** `railit-types`, `railit-topology`, `railit-plan`,
 `railit-planning`, `railit-rules`, `railit-kernel`, `railit-safety` (Kanäle, Voter, Watchdog),

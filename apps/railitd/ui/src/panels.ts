@@ -15,6 +15,8 @@ export const snapshot = signal<Snapshot | undefined>(undefined);
 export const displayHealth = signal<DisplayHealth>('stale');
 /** Zeitpunkt der Rückschau in Millisekunden; `undefined`: Betrieb (keine Rückschau). */
 export const reviewAt = signal<number | undefined>(undefined);
+/** Der Dienst ist ein Bereitschaftsrechner: Anzeige ohne Bedienung (REQ-SVC-011). */
+export const standbyRole = signal(false);
 
 export interface Message {
   time: string;
@@ -101,7 +103,7 @@ const pending = view<AuxView>(() => ({
   list: snapshot.value?.pending_aux ?? [],
   counter: snapshot.value?.aux_counter ?? 0,
   // In der Rückschau wird nicht bedient.
-  operable: displayHealth.value !== 'stale' && reviewAt.value === undefined,
+  operable: displayHealth.value !== 'stale' && reviewAt.value === undefined && !standbyRole.value,
 }));
 
 /** Offene Hilfshandlungen mit Bestätigung und Zählwerk. */
