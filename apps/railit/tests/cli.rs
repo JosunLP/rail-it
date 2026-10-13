@@ -212,10 +212,10 @@ fn online_commands_report_unreachable_server() {
     );
 }
 
-/// REQ-JRN-001/002: Journal prüfen und abspielen über die Kommandozeile.
-#[test]
-fn journal_verify_and_replay() {
-    let dir = tmp_dir("journal");
+/// Plan und Journal eines kurzen Betriebs (A-N1 eingestellt, 100 Zyklen) im Verzeichnis
+/// `tag`.
+fn short_journal(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = tmp_dir(tag);
     let plan = dir.join("bs.rplan");
     let out = railit(&[
         "plan",
@@ -250,7 +250,14 @@ fn journal_verify_and_replay() {
         rt.cycle(&[]);
     }
     drop(rt);
+    (plan, journal)
+}
 
+/// REQ-JRN-001/002: Journal prüfen und abspielen über die Kommandozeile.
+#[test]
+fn journal_verify_and_replay() {
+    let (plan, journal) = short_journal("journal");
+    let dir = journal.parent().unwrap().to_path_buf();
     let out = railit(&["journal", "verify", journal.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let stdout = String::from_utf8(out.stdout).unwrap();
@@ -268,6 +275,46 @@ fn journal_verify_and_replay() {
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["checkpoints"], 10);
+
+    // Manipuliert: Kette bricht, Exit-Code 1.
+    let text = std::fs::read_to_string(&journal).unwrap();
+    let tampered = dir.join("tampered.journal");
+    std::fs::write(&tampered, text.replacen("\"right\"", "\"left\"", 1)).unwrap();
+    let out = railit(&["journal", "verify", tampered.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("Hashkette in Zeile"), "{stdout}");
+    let out = railit(&[
+        "journal",
+        "follow",
+        tampered.to_str().unwrap(),
+        "--plan",
+        plan.to_str().unwrap(),
+        "--once",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "Mitleser erkennt die Verfälschung"
+    );
+}
+
+/// REQ-JRN-008/009: Mitlesen und Diagnose über die Kommandozeile.
+#[test]
+fn journal_follow_state_and_events() {
+    let (plan, journal) = short_journal("journal-diagnose");
+    // REQ-JRN-009: Mitlesen (hier nur der vorhandene Inhalt).
+    let out = railit(&[
+        "journal",
+        "follow",
+        journal.to_str().unwrap(),
+        "--plan",
+        plan.to_str().unwrap(),
+        "--once",
+    ]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("100 Zyklen geprüft"), "{stdout}");
 
     // REQ-JRN-008: Zustand zu einem Zeitpunkt und Ereignisse eines Zeitfensters.
     let (j, p) = (journal.to_str().unwrap(), plan.to_str().unwrap());
@@ -295,15 +342,6 @@ fn journal_verify_and_replay() {
             .any(|c| c["type"] == "move_point" && c["point"] == "W1"),
         "{v}"
     );
-
-    // Manipuliert: Kette bricht, Exit-Code 1.
-    let text = std::fs::read_to_string(&journal).unwrap();
-    let tampered = dir.join("tampered.journal");
-    std::fs::write(&tampered, text.replacen("\"right\"", "\"left\"", 1)).unwrap();
-    let out = railit(&["journal", "verify", tampered.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(1));
-    let stdout = String::from_utf8(out.stdout).unwrap();
-    assert!(stdout.contains("Hashkette in Zeile"), "{stdout}");
 }
 
 /// Netz mit Stellbereichen: je Bereich ein Plan-Image, jedes einzeln gegen sein Teilnetz

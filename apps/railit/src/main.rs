@@ -443,6 +443,24 @@ enum JournalCommand {
         #[arg(long)]
         plan: PathBuf,
     },
+    /// Liest ein wachsendes Journal mit: prüft und rechnet jede neue Zeile sofort nach und
+    /// meldet laufend den Stand; endet bei der ersten Abweichung mit Exit-Code 1.
+    Follow {
+        /// Journaldatei.
+        file: PathBuf,
+        /// Plan-Image, mit dem das Journal aufgezeichnet wird.
+        #[arg(long)]
+        plan: PathBuf,
+        /// Öffentlicher Schlüssel des Stellwerks: Siegel müssen damit erstellt sein.
+        #[arg(long)]
+        key: Option<PathBuf>,
+        /// Nur den vorhandenen Inhalt prüfen und enden.
+        #[arg(long)]
+        once: bool,
+        /// Abstand der Prüfungen auf neue Zeilen in Millisekunden.
+        #[arg(long, default_value_t = 200)]
+        poll_ms: u64,
+    },
     /// Zustand zu einem Zeitpunkt, aus dem Journal rekonstruiert (ab dem letzten
     /// Zustandsabzug davor).
     State {
@@ -703,6 +721,13 @@ fn main() -> ExitCode {
             key,
             require_seal,
         }) => journal::verify(&file, key.as_deref(), require_seal, output),
+        Command::Journal(JournalCommand::Follow {
+            file,
+            plan,
+            key,
+            once,
+            poll_ms,
+        }) => journal::follow(&file, &plan, key.as_deref(), once, poll_ms, output),
         Command::Journal(JournalCommand::State { file, plan, at }) => {
             journal::state(&file, &plan, at, output)
         }

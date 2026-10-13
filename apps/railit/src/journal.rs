@@ -151,6 +151,104 @@ fn fail_journal(e: &JournalError) -> ExitCode {
     ExitCode::from(EXIT_INVALID)
 }
 
+/// `railit journal follow`
+pub(crate) fn follow(
+    path: &Path,
+    plan_path: &Path,
+    key: Option<&Path>,
+    once: bool,
+    poll_ms: u64,
+    output: Output,
+) -> ExitCode {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let plan = match load_plan(plan_path) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let key = match key
+        .map(railit_runtime::keys::read_verifying_key)
+        .transpose()
+    {
+        Ok(k) => k,
+        Err(e) => return fail_usage(&e),
+    };
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => return fail_usage(&format!("{}: {e}", path.display())),
+    };
+    let mut follower = railit_journal::Follower::new(&plan, key.as_ref());
+    let mut offset = 0u64;
+    let mut buf = vec![0u8; 1 << 16];
+    let mut reported = None;
+    loop {
+        // Kürzer geworden: Die Datei wurde ersetzt oder abgeschnitten.
+        let len = file.metadata().map_or(0, |m| m.len());
+        if len < offset {
+            return fail_journal(&JournalError::Io(format!(
+                "{} ist kürzer geworden ({len} < {offset} Byte)",
+                path.display()
+            )));
+        }
+        if let Err(e) = file.seek(SeekFrom::Start(offset)) {
+            return fail_usage(&format!("{}: {e}", path.display()));
+        }
+        loop {
+            let n = match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => return fail_usage(&format!("{}: {e}", path.display())),
+            };
+            offset = offset.saturating_add(u64::try_from(n).unwrap_or(0));
+            if let Err(e) = follower.feed(buf.get(..n).unwrap_or_default()) {
+                return fail_journal(&e);
+            }
+        }
+        let summary = follower.summary();
+        let cycles = summary.as_ref().map(|s| s.cycles);
+        if cycles != reported
+            && let (Some(s), Some(state)) = (&summary, follower.state())
+        {
+            reported = cycles;
+            let active = state
+                .routes()
+                .iter()
+                .filter(|r| r.phase() != RoutePhase::Idle)
+                .count();
+            match output {
+                Output::Json => println!(
+                    "{}",
+                    json!({
+                        "cycles": s.cycles,
+                        "last_ms": s.last_ms,
+                        "cycle": state.meta().cycle(),
+                        "routes_active": active,
+                        "safe_state": state.meta().safe_state().map(|r| format!("{r:?}")),
+                        "snapshots": s.snapshots,
+                        "resyncs": s.resyncs,
+                        "seals": s.seals,
+                        "head": s.head,
+                    })
+                ),
+                Output::Text => println!(
+                    "✔ t = {:>8.1} s  {} Zyklen geprüft, {active} Fahrstraßen eingestellt{}",
+                    secs(s.last_ms),
+                    s.cycles,
+                    state
+                        .meta()
+                        .safe_state()
+                        .map(|r| format!(", SICHERER ZUSTAND: {r:?}"))
+                        .unwrap_or_default()
+                ),
+            }
+        }
+        if once {
+            return ExitCode::SUCCESS;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(poll_ms.max(10)));
+    }
+}
+
 /// `railit journal state`
 pub(crate) fn state(path: &Path, plan_path: &Path, at: f64, output: Output) -> ExitCode {
     let plan = match load_plan(plan_path) {

@@ -500,3 +500,113 @@ fn window_replays_from_the_nearest_snapshot() {
         "Annahme am Anfang"
     );
 }
+
+/// REQ-JRN-009: Ein Mitleser verfolgt das wachsende Journal und hat nach jedem Zyklus genau
+/// den Zustand des Stellwerks, auch wenn die Bytes in beliebigen Stücken ankommen.
+#[test]
+fn follower_tracks_the_running_interlocking() {
+    use railit_journal::Follower;
+
+    let net = railit_import::toml_format::parse(EXAMPLE).unwrap().topology;
+    let compiled = railit_planning::compile(&net, None).unwrap();
+    let plan = railit_runtime::load_plan(compiled.image, None).unwrap();
+    let sim = Simulator::new(net, SimConfig::default());
+    let mut rt = Runtime::new(
+        plan,
+        GenericRules::default(),
+        sim,
+        Duration::from_millis(100),
+    );
+    rt.set_journal_snapshots(40);
+    let buf = Shared::default();
+    rt.start_journal(0, Box::new(buf.clone()), 25).unwrap();
+    rt.field_mut()
+        .add_train(TrainSpec {
+            name: "RE1".into(),
+            signal: plan.find_signal("A").unwrap(),
+            length: Length::from_mm(120_000),
+            speed: Speed::from_kmh(60),
+            ignore_signals: false,
+            etcs: false,
+        })
+        .unwrap();
+
+    let mut follower = Follower::new(&plan, None);
+    let mut fed = 0usize;
+    let mut rng = 0x9E37_79B9u64;
+    let a_n1 = plan.find_route("A-N1").unwrap();
+    for cycle in 0..500u64 {
+        let requests = if cycle == 2 {
+            vec![(RequestId(1), Request::SetRoute(a_n1))]
+        } else {
+            Vec::new()
+        };
+        rt.cycle(&requests);
+        let bytes = buf.0.lock().unwrap().clone();
+        // In zufälligen Stücken zuführen, die letzte Zeile auch halb.
+        while fed < bytes.len() {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            let n = usize::try_from(rng % 700).unwrap() + 1;
+            let end = (fed + n).min(bytes.len());
+            follower.feed(&bytes[fed..end]).unwrap();
+            fed = end;
+        }
+        assert_eq!(follower.state(), Some(rt.state()), "Zyklus {cycle}");
+    }
+    let summary = follower.summary().unwrap();
+    assert_eq!(summary, verify(buf.0.lock().unwrap().as_slice()).unwrap());
+    assert!(summary.snapshots >= 10, "{summary:?}");
+
+    // Verfälschte Zeile: der Mitleser bleibt mit dem Fehler stehen.
+    let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    let mut lines: Vec<&str> = text.lines().collect();
+    let tampered = lines[100].replacen("\"now_ms\":", "\"now_ms\":1", 1);
+    assert_ne!(tampered, lines[100]);
+    lines[100] = &tampered;
+    let mut forged = Follower::new(&plan, None);
+    let err = forged.feed(lines.join("\n").as_bytes()).unwrap_err();
+    assert_eq!(err, JournalError::Chain { line: 101 });
+    assert_eq!(forged.feed(b"\n").unwrap_err(), err, "bleibt stehen");
+}
+
+/// REQ-JRN-009: Auch das Journal des Spiegels im Knotenbetrieb lässt sich mitlesen.
+#[test]
+fn follower_reads_node_journal() {
+    let (rt_bytes, plan) = {
+        let net = railit_import::toml_format::parse(EXAMPLE).unwrap().topology;
+        let compiled = railit_planning::compile(&net, None).unwrap();
+        let plan = railit_runtime::load_plan(compiled.image, None).unwrap();
+        let sim = Simulator::new(net, SimConfig::default());
+        let mut rt = Runtime::new(
+            plan,
+            GenericRules::default(),
+            sim,
+            Duration::from_millis(100),
+        );
+        rt.use_lockstep_nodes().unwrap();
+        rt.set_journal_snapshots(30);
+        let buf = Shared::default();
+        rt.start_journal(0, Box::new(buf.clone()), 10).unwrap();
+        for i in 0..200u64 {
+            let r = if i == 30 {
+                vec![(
+                    RequestId(1),
+                    Request::SetRoute(plan.find_route("A-N1").unwrap()),
+                )]
+            } else {
+                Vec::new()
+            };
+            rt.cycle(&r);
+        }
+        let bytes = buf.0.lock().unwrap().clone();
+        let mut follower = railit_journal::Follower::new(&plan, None);
+        follower.feed(&bytes).unwrap();
+        assert_eq!(follower.state(), Some(rt.state()));
+        (bytes, plan)
+    };
+    let summary = verify(rt_bytes.as_slice()).unwrap();
+    assert!(summary.resyncs >= 1 && summary.cycles > 100, "{summary:?}");
+    let _ = plan;
+}
