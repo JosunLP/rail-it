@@ -32,6 +32,8 @@ enum Action {
     Aux(AuxOperation, u32),
     Confirm(u32, u32, AuxOperation),
     Wait(u64),
+    /// Übernahme durch einen Bereitschaftsrechner nach `ms` (REQ-IXL-025).
+    TakeOver(u64),
 }
 
 fn action() -> impl Strategy<Value = Action> {
@@ -76,6 +78,7 @@ fn action() -> impl Strategy<Value = Action> {
         2 => (0usize..8).prop_map(Action::Cancel),
         1 => (0usize..2, pos).prop_map(|(i, p)| Action::Move(i, p)),
         2 => (0u64..70_000).prop_map(Action::Wait),
+        1 => (0u64..3_000).prop_map(Action::TakeOver),
     ]
 }
 
@@ -197,6 +200,48 @@ fn check_outputs(h: &Harness, field_points: &[PointReport], field_tvds: &[Occupa
     }
 }
 
+/// Nach einer Übernahme: keine Fahrt, kein Ersatzsignal, kein Umstellbefehl; alle Verschlüsse
+/// und alle Phasen außer „Fahrt“ (jetzt „Halt“) unverändert.
+fn check_take_over(h: &Harness, before: &OwnedState) {
+    for c in &h.out.commands {
+        assert!(
+            matches!(
+                c,
+                Command::SetSignal {
+                    aspect: Aspect::Stop,
+                    ..
+                } | Command::SetSubstitute { on: false, .. }
+                    | Command::SetLevelCrossing { .. }
+            ),
+            "Befehl bei der Übernahme: {c:?}"
+        );
+        if let Command::SetLevelCrossing { lx, close } = *c {
+            assert_eq!(
+                close,
+                h.state.level_crossings()[lx.index().unwrap()].closed_commanded()
+            );
+        }
+    }
+    assert_eq!(h.state.points(), before.points());
+    assert_eq!(h.state.tvds(), before.tvds());
+    assert_eq!(h.state.level_crossings(), before.level_crossings());
+    assert_eq!(h.state.borders(), before.borders());
+    for (now, was) in h.state.routes().iter().zip(before.routes()) {
+        let expected = match was.phase() {
+            RoutePhase::Proceed => RoutePhase::Halted,
+            p => p,
+        };
+        assert_eq!(now.phase(), expected);
+        assert_eq!(now.released(), was.released());
+        assert_eq!(now.substitute_since(), None);
+    }
+    for s in h.state.signals() {
+        assert_eq!(s.commanded(), Aspect::Stop);
+        assert!(!s.substitute());
+    }
+    assert_eq!(h.state.pending_aux().count(), 0);
+}
+
 proptest! {
     // Standard: 256 Fälle; mehr über die Umgebungsvariable PROPTEST_CASES.
     #[test]
@@ -217,6 +262,13 @@ proptest! {
                 Action::Aux(op, who) => requests.push(Request::AuxRequest { op, operator: OperatorId(who) }),
                 Action::Confirm(id, who, op) => requests.push(Request::AuxConfirm { aux: AuxId(id), operator: OperatorId(who), op }),
                 Action::Wait(ms) => dt = ms,
+                Action::TakeOver(ms) => {
+                    let before = h.state.clone();
+                    h.take_over_after(ms);
+                    prop_assert_eq!(h.last, Ok(()), "Übernahme abgewiesen");
+                    check_take_over(&h, &before);
+                    continue;
+                }
             }
             let (field_points, field_tvds) = (h.points.clone(), h.tvds.clone());
             h.lxs_before = h.lxs.clone();

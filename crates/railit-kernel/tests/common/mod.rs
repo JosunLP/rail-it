@@ -211,6 +211,18 @@ impl Harness {
         self.out.events.clone()
     }
 
+    /// Übernahme des Zustands nach `dt` Millisekunden durch einen neuen Rechner
+    /// (REQ-IXL-025); das Stellbild geht an das Feld.
+    pub fn take_over_after(&mut self, dt: u64) -> Vec<Event> {
+        self.now = self.now.checked_add(Duration::from_millis(dt)).unwrap();
+        self.out.clear();
+        self.last = self
+            .kernel
+            .take_over(&mut self.state.view(), self.now, &mut self.out);
+        self.apply_commands();
+        self.out.events.clone()
+    }
+
     /// Ein Zyklus nach 100 ms.
     pub fn step(&mut self, requests: &[Request]) -> Vec<Event> {
         self.step_after(100, requests)

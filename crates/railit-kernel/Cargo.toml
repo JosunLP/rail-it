@@ -43,5 +43,9 @@ required-features = ["alloc"]
 name = "borders"
 required-features = ["alloc"]
 
+[[test]]
+name = "takeover"
+required-features = ["alloc"]
+
 [lints]
 workspace = true

@@ -217,6 +217,74 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
         }
     }
 
+    /// Übernahme des Betriebs durch einen Bereitschaftsrechner (REQ-IXL-025).
+    ///
+    /// `st` ist der Zustand, den der Bereitschaftsrechner aus dem Journal des ausgefallenen
+    /// Rechners mitgelesen und nachgerechnet hat. Die Objektsteuerungen haben beim Verlust
+    /// ihres Stellwerks alle Signale auf Halt gestellt und Ersatzsignale gelöscht; der Zustand
+    /// wird dem restriktiv angeglichen, bevor der übernehmende Kern ihn fortschreibt:
+    ///
+    /// - Jede Fahrstraße mit Fahrt fällt auf Halt (`Halted`, nur Rücknahme möglich); alle
+    ///   Verschlüsse bleiben bestehen.
+    /// - Alle Signale sind auf Halt befohlen, alle Ersatzsignale aus.
+    /// - Offene, noch nicht bestätigte Hilfshandlungen verfallen.
+    /// - Die Einschwingzeit beginnt neu (wie nach einem Anlauf).
+    ///
+    /// Danach werden die Invarianten geprüft und das vollständige Stellbild ausgegeben, damit
+    /// das Feld den Stand des übernehmenden Kerns erhält.
+    ///
+    /// # Errors
+    /// [`SafeStateReason`], wenn der Zustand schon im sicheren Zustand ist, nicht zum Plan
+    /// passt oder die Invarianten verletzt. Dann ist der Kern im sicheren Zustand.
+    pub fn take_over<O: Outputs>(
+        &self,
+        st: &mut KernelState<'_>,
+        now: Tick,
+        out: &mut O,
+    ) -> Result<(), SafeStateReason> {
+        if let Some(reason) = st.meta.safe_state {
+            Self::hold_stop(st, now, true, out);
+            return Err(reason);
+        }
+        if let Err(reason) = self.prepare_take_over(st, now, out) {
+            st.meta.safe_state = Some(reason);
+            Self::hold_stop(st, now, true, out);
+            return Err(reason);
+        }
+        self.command_image(st, out);
+        Ok(())
+    }
+
+    fn prepare_take_over<O: Outputs>(
+        &self,
+        st: &mut KernelState<'_>,
+        now: Tick,
+        out: &mut O,
+    ) -> Res<()> {
+        for index in 0..self.plan.route_count() {
+            let r = RouteId::from_index(index).ok_or(IDX)?;
+            if route(st, r)?.phase == RoutePhase::Proceed {
+                Self::set_phase(st, now, r, RoutePhase::Halted, out)?;
+            }
+            route_mut(st, r)?.substitute_since = None;
+        }
+        for s in st.signals.iter_mut() {
+            s.commanded = Aspect::Stop;
+            s.commanded_at = now;
+            s.substitute = false;
+            s.want = Aspect::Stop;
+            s.want_substitute = false;
+            s.mismatch_alarmed = false;
+        }
+        for slot in st.aux.iter_mut() {
+            if let Some(pending) = slot.take() {
+                out.event(Event::AuxExpired(pending.id));
+            }
+        }
+        st.meta.started_at = now;
+        invariants::check(&self.plan, st, now, self.rules.report_timeout())
+    }
+
     /// Führt einen Zyklus aus.
     ///
     /// Reihenfolge: Meldungen übernehmen → Anforderungen bearbeiten → Hilfshandlungen
