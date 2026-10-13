@@ -7,12 +7,14 @@ import { bool, component, safeHtml } from '@bquery/bquery/component';
 import { computed, signal } from '@bquery/bquery/reactive';
 import { type SanitizedHtml, trusted } from '@bquery/bquery/security';
 import { auxText, clock, type DisplayHealth, nodeProblem, trainText } from './model';
-import type { OpsState, PendingAux, Snapshot } from './types';
+import type { OpsState, PendingAux, ReviewRow, Snapshot } from './types';
 
 /** Aktuelles Zustandsbild (undefiniert bis zum ersten Abruf). */
 export const snapshot = signal<Snapshot | undefined>(undefined);
 /** Zustand der Anzeige. */
 export const displayHealth = signal<DisplayHealth>('stale');
+/** Zeitpunkt der Rückschau in Millisekunden; `undefined`: Betrieb (keine Rückschau). */
+export const reviewAt = signal<number | undefined>(undefined);
 
 export interface Message {
   time: string;
@@ -98,7 +100,8 @@ interface AuxView {
 const pending = view<AuxView>(() => ({
   list: snapshot.value?.pending_aux ?? [],
   counter: snapshot.value?.aux_counter ?? 0,
-  operable: displayHealth.value !== 'stale',
+  // In der Rückschau wird nicht bedient.
+  operable: displayHealth.value !== 'stale' && reviewAt.value === undefined,
 }));
 
 /** Offene Hilfshandlungen mit Bestätigung und Zählwerk. */
@@ -165,6 +168,35 @@ component('rit-trains', {
         <button type="button" class="${ops.ars ? 'ars on' : 'ars'}" data-ars="${ops.ars ? 'false' : 'true'}" title="Zuglenkung ein- oder ausschalten" ${bool('disabled', !operable)}>${ops.ars ? 'Zuglenkung ein' : 'Zuglenkung aus'}</button>
       </h2>
       ${trusted(rows.length ? safeHtml`<ul>${join(rows)}</ul>` : safeHtml`<p class="empty">keine Züge</p>`)}
+    `;
+  },
+});
+
+// ── Rückschau (REQ-UI-005) ──────────────────────────────────────────────────────────────
+
+/** Zeilen der Rückschau: Befehle und Ereignisse der letzten Minute vor `reviewAt`. */
+export const reviewRowsSignal = signal<ReviewRow[]>([]);
+
+const reviewView = view(() => ({ at: reviewAt.value, rows: reviewRowsSignal.value.slice(0, 200) }));
+
+/** Befehle und Ereignisse vor dem Zeitpunkt der Rückschau. */
+component('rit-review', {
+  shadow: false,
+  signals: { reviewView },
+  render: ({ signals }) => {
+    const { at, rows } = JSON.parse(signals.reviewView.value) as { at?: number; rows: ReviewRow[] };
+    if (at === undefined) return safeHtml``;
+    const items = rows.map(
+      (r) => safeHtml`
+        <li class="review-${r.kind}">
+          <span class="time">${clock(r.now_ms)}</span>
+          <span class="area">${r.area}</span>
+          <span class="text">${r.kind === 'command' ? '→ ' : ''}${r.text}</span>
+        </li>`,
+    );
+    return safeHtml`
+      <h2>Rückschau bis ${clock(at)}</h2>
+      ${trusted(items.length ? safeHtml`<ul>${join(items)}</ul>` : safeHtml`<p class="empty">keine Befehle oder Ereignisse in der Minute davor</p>`)}
     `;
   },
 });

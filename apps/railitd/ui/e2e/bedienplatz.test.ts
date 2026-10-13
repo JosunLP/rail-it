@@ -32,7 +32,11 @@ beforeAll(async () => {
   const compile = Bun.spawnSync([join(bin, 'railit'), 'plan', 'compile', network, '--out', plan]);
   if (compile.exitCode !== 0) throw new Error(`plan compile: ${compile.stderr.toString()}`);
   daemon = Bun.spawn(
-    [join(bin, 'railitd'), '--network', network, '--plan', plan, '--allow-unsigned', '--listen', `127.0.0.1:${port}`],
+    [
+      join(bin, 'railitd'),
+      ...['--network', network, '--plan', plan, '--allow-unsigned'],
+      ...['--journal', join(dir, 'betrieb.journal'), '--listen', `127.0.0.1:${port}`],
+    ],
     { stdout: 'ignore', stderr: 'ignore' },
   );
   for (let i = 0; i < 100 && !(await healthy()); i++) await Bun.sleep(100);
@@ -153,6 +157,32 @@ describe('Bedienplatz', () => {
     expect(await two.locator('#confirm-ok').isDisabled()).toBe(true);
     await two.locator('#confirm-cancel').click();
     await two.unroute('**/v1/state');
+  });
+
+  test('Rückschau: Spurplan und Ereignisse aus dem Journal, keine Bedienung (REQ-UI-005)', async () => {
+    await signal(two, 'A').and(two.locator('.sig-proceed')).waitFor();
+    await two.locator('#review-toggle').click();
+    await two.locator('body.review').waitFor();
+    expect(await two.locator('.review-banner').isVisible()).toBe(true);
+    expect(await two.locator('#command').isDisabled()).toBe(true);
+    // Felder des laufenden Betriebs sind ausgeblendet.
+    expect(await two.locator('rit-aux').isVisible()).toBe(false);
+    await two.locator('rit-review li', { hasText: 'Fahrstraße A-N1' }).first().waitFor();
+    await two.locator('rit-review li.review-command', { hasText: 'Signal A auf Fahrt' }).first().waitFor();
+    // Am Anfang des Journals stehen alle Signale auf Halt.
+    await two.locator('#review-slider').fill('0');
+    await signal(two, 'A').and(two.locator('.sig-stop')).waitFor();
+    await two.locator('#review-time', { hasText: '0:00:00' }).waitFor();
+    // Bedienen ist gesperrt, auch über das Kontextmenü.
+    await hit(two, 'A').click({ button: 'right' });
+    const item = two.locator('#menu button').first();
+    if ((await item.count()) > 0) expect(await item.isDisabled()).toBe(true);
+    await two.keyboard.press('Escape');
+    // Zurück zum Betrieb: wieder der aktuelle Zustand.
+    await two.locator('#review-exit').click();
+    await two.locator('body:not(.review)').waitFor();
+    await signal(two, 'A').and(two.locator('.sig-proceed')).waitFor();
+    expect(await two.locator('#command').isDisabled()).toBe(false);
   });
 
   test('Anzeigeüberwachung: ohne aktuelles Zustandsbild keine Bedienung (REQ-UI-002)', async () => {

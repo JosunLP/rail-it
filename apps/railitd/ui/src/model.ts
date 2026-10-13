@@ -1,7 +1,7 @@
 // Anzeigemodell: reine Funktionen von Zustandsbild und Spurplan zu Darstellung und
 // Bedienhandlungen. Ohne DOM, damit sie sich mit `bun test` prüfen lassen.
 
-import type { AuxKind, NamedAux, Snapshot, TrainState } from './types';
+import type { AuxKind, NamedAux, ReviewCycle, ReviewRow, Snapshot, TrainState } from './types';
 
 /** Nach so vielen Millisekunden ohne neues Zustandsbild gilt die Anzeige als gestört. */
 export const STALE_AFTER_MS = 2000;
@@ -213,4 +213,106 @@ export function parseCommand(text: string, snapshot: Snapshot): Command {
       : { kind: 'error', message: `keine Fahrstraße von ${first} nach ${second}` };
   }
   return { kind: 'error', message: `unbekannte Eingabe: ${COMMAND_HELP}` };
+}
+
+// ── Rückschau (REQ-UI-005) ──────────────────────────────────────────────────────────────
+
+/** Zustandsbilder je Stellbereich (aus den Journalen) zu einem Bild zusammenführen. */
+export function mergeSnapshots(parts: Snapshot[]): Snapshot | undefined {
+  const [first, ...rest] = parts;
+  if (!first) return undefined;
+  const merged: Snapshot = {
+    ...first,
+    areas: [...first.areas],
+    points: [...first.points],
+    signals: [...first.signals],
+    tvds: [...first.tvds],
+    routes: [...first.routes],
+    level_crossings: [...first.level_crossings],
+    pending_aux: [...first.pending_aux],
+    ops: null,
+  };
+  for (const p of rest) {
+    merged.time_ms = Math.max(merged.time_ms, p.time_ms);
+    merged.safe_state = merged.safe_state ?? p.safe_state;
+    merged.areas.push(...p.areas);
+    merged.points.push(...p.points);
+    merged.signals.push(...p.signals);
+    merged.tvds.push(...p.tvds);
+    merged.routes.push(...p.routes);
+    merged.level_crossings.push(...p.level_crossings);
+    merged.pending_aux.push(...p.pending_aux);
+    merged.aux_counter += p.aux_counter;
+  }
+  return merged;
+}
+
+const PHASE_TEXT: Record<string, string> = {
+  idle: 'aufgelöst',
+  setting: 'wird eingestellt',
+  locked: 'festgelegt',
+  proceed: 'Fahrt',
+  occupied: 'befahren',
+  arrived: 'angekommen',
+  cancelling: 'wird zurückgenommen',
+  halted: 'haltgefallen',
+};
+
+/** Stellbefehl aus der Rückschau in Worten. */
+export function commandText(c: Record<string, unknown>): string {
+  const s = (k: string) => String(c[k] ?? '');
+  switch (c.type) {
+    case 'move_point':
+      return `Weiche ${s('point')} nach ${c.position === 'left' ? 'links' : 'rechts'}`;
+    case 'set_signal':
+      return `Signal ${s('signal')} auf ${c.aspect === 'proceed' ? 'Fahrt' : 'Halt'}`;
+    case 'set_substitute':
+      return `Ersatzsignal ${s('signal')} ${c.on ? 'ein' : 'aus'}`;
+    case 'set_level_crossing':
+      return `Bahnübergang ${s('lx')} ${c.close ? 'schließen' : 'öffnen'}`;
+    case 'reset_tvd':
+      return `Grundstellung ${s('tvd')}`;
+    case 'border':
+      return `Grenze ${s('border')}`;
+    default:
+      return s('type');
+  }
+}
+
+/** Ereignis aus der Rückschau in Worten. */
+export function eventText(e: Record<string, unknown>): string {
+  const s = (k: string) => String(e[k] ?? '');
+  const at = e.element ? ` (${s('element')})` : '';
+  switch (e.type) {
+    case 'accepted':
+      return `Anforderung ${s('request')} angenommen`;
+    case 'rejected':
+      return `Anforderung ${s('request')} abgelehnt: ${reasonText(s('reason'), e.element as string | null)}`;
+    case 'route_phase':
+      return `Fahrstraße ${s('route')}: ${PHASE_TEXT[s('phase')] ?? s('phase')}`;
+    case 'alarm':
+      return `Meldung ${s('alarm')}${at}`;
+    case 'aux_pending':
+      return `Hilfshandlung #${s('aux')} angefordert`;
+    case 'aux_executed':
+      return `Hilfshandlung #${s('aux')} ausgeführt, Zählwerk ${s('counter')}`;
+    case 'aux_expired':
+      return `Hilfshandlung #${s('aux')} verfallen`;
+    case 'permission':
+      return `Erlaubnis an ${s('border')} ${e.holding ? 'übernommen' : 'abgegeben'}`;
+    default:
+      return s('type');
+  }
+}
+
+/** Zeilen der Rückschau aus den Zyklen aller Bereiche, neueste zuerst. */
+export function reviewRows(perArea: { area: string; cycles: ReviewCycle[] }[]): ReviewRow[] {
+  const rows: ReviewRow[] = [];
+  for (const { area, cycles } of perArea) {
+    for (const c of cycles) {
+      for (const e of c.events) rows.push({ now_ms: c.now_ms, area, kind: 'event', text: eventText(e) });
+      for (const x of c.commands) rows.push({ now_ms: c.now_ms, area, kind: 'command', text: commandText(x) });
+    }
+  }
+  return rows.sort((a, b) => b.now_ms - a.now_ms);
 }

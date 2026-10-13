@@ -14,6 +14,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-UI-002 | H-016 | `apps/railitd/ui/src/main.ts`<br>`apps/railitd/ui/src/model.ts` | `operator_desk_is_static_and_locked_down`<br>`apps/railitd/tests/security.rs`<br>`apps/railitd/ui/e2e/bedienplatz.test.ts`<br>`apps/railitd/ui/test/model.test.ts` |
 | REQ-UI-003 | H-006, H-016 | `apps/railitd/src/service.rs`<br>`apps/railitd/ui/src/check.ts`<br>`apps/railitd/ui/src/main.ts`<br>`crates/railit-runtime/src/names.rs` | `check_code_vectors`<br>`aux_operation_and_journal`<br>`apps/railitd/tests/api.rs`<br>`apps/railitd/ui/e2e/bedienplatz.test.ts`<br>`apps/railitd/ui/test/check.test.ts` |
 | REQ-UI-004 | H-006, H-013, H-016 | – | `apps/railitd/ui/e2e/nordbahn.test.ts`<br>`apps/railitd/ui/test/model.test.ts` |
+| REQ-UI-005 | H-016, H-011 | `apps/railitd/ui/src/api.ts`<br>`apps/railitd/ui/src/main.ts`<br>`apps/railitd/ui/src/model.ts`<br>`apps/railitd/ui/src/panels.ts` | `apps/railitd/ui/e2e/bedienplatz.test.ts`<br>`apps/railitd/ui/test/review.test.ts` |
 
 ## [betrieb.md](../requirements/betrieb.md)
 
@@ -186,4 +187,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-113 Anforderungen, davon 113 mit Nachweis.
+114 Anforderungen, davon 114 mit Nachweis.

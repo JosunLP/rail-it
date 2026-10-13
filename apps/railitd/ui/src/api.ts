@@ -2,7 +2,7 @@
 
 import { createHttp, signal } from '@bquery/bquery/reactive';
 import type { HttpClient } from '@bquery/bquery/reactive';
-import type { Answer, Layout, NamedAux, PendingAux, Snapshot } from './types';
+import type { Answer, JournalInfo, Layout, NamedAux, PendingAux, ReviewCycle, Snapshot } from './types';
 
 const TOKEN_KEY = 'railit.token';
 const OPERATOR_KEY = 'railit.operator';
@@ -187,4 +187,33 @@ export function streamEvents(onEvent: (event: Record<string, unknown>) => void):
     stopped = true;
     controller?.abort();
   };
+}
+
+// ── Rückschau (REQ-UI-005) ──────────────────────────────────────────────────────────────
+
+/** Journaldateien des Dienstes (leer ohne `railitd --journal`). */
+export async function getJournals(): Promise<JournalInfo[]> {
+  const r = await call(() => http.get<{ journals: JournalInfo[] }>('/v1/journal'));
+  return r.data?.journals ?? [];
+}
+
+async function review<T>(path: string): Promise<T> {
+  const r = await call(() => http.get<T & { error?: string }>(path));
+  if (r.status >= 400) throw new ApiError(r.status, r.data?.error ?? `HTTP ${r.status}`);
+  return r.data;
+}
+
+/** Zustandsbild eines Bereichs zum Zeitpunkt `atMs`, aus dem Journal. */
+export async function getJournalState(atMs: number, area: string): Promise<Snapshot> {
+  const at = Math.max(0, Math.round(atMs));
+  return (await review<{ state: Snapshot }>(`/v1/journal/state?at_ms=${at}&area=${seg(area)}`)).state;
+}
+
+/** Zyklen mit Befehlen oder Ereignissen eines Bereichs zwischen `fromMs` und `toMs`. */
+export async function getJournalEvents(fromMs: number, toMs: number, area: string): Promise<ReviewCycle[]> {
+  const from = Math.max(0, Math.round(fromMs));
+  const to = Math.max(from, Math.round(toMs));
+  return (
+    await review<{ cycles: ReviewCycle[] }>(`/v1/journal/events?from_ms=${from}&to_ms=${to}&area=${seg(area)}`)
+  ).cycles;
 }

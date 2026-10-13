@@ -144,3 +144,26 @@ export interface Answer {
   area?: string;
   aux?: { type: string; aux?: number; counter?: number };
 }
+
+/// Journaldatei eines Stellbereichs (`/v1/journal`).
+export interface JournalInfo {
+  area: string;
+  file: string;
+  bytes: number;
+}
+
+/// Zyklus mit Befehlen oder Ereignissen aus der Rückschau (`/v1/journal/events`).
+export interface ReviewCycle {
+  cycle: number;
+  now_ms: number;
+  commands: Record<string, unknown>[];
+  events: Record<string, unknown>[];
+}
+
+/// Zeile der Rückschau: Zeitpunkt, Bereich, Text.
+export interface ReviewRow {
+  now_ms: number;
+  area: string;
+  kind: 'command' | 'event';
+  text: string;
+}

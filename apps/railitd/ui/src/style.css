@@ -595,3 +595,95 @@ dialog label {
 #confirm-ok {
   border-color: var(--warn);
 }
+
+/* ── Rückschau (REQ-UI-005) ───────────────────────────────────────────────────────── */
+
+.review-toggle {
+  margin-left: 8px;
+}
+
+body.review .review-toggle {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.review-bar {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 16px;
+  background: #102a43;
+  border-bottom: 2px solid var(--accent);
+  color: var(--accent);
+}
+
+body.review .review-bar {
+  display: flex;
+}
+
+.review-bar input[type='range'] {
+  flex: 1;
+  min-width: 120px;
+}
+
+.review-time {
+  font-variant-numeric: tabular-nums;
+  min-width: 5.5em;
+}
+
+.review-banner {
+  display: none;
+}
+
+body.review .review-banner {
+  display: block;
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 14px;
+  font-weight: 700;
+  color: #fff;
+  background: rgb(16 42 67 / 0.92);
+  border: 2px solid var(--accent);
+  border-radius: 4px;
+  z-index: 4;
+  pointer-events: none;
+}
+
+/* Kennzeichnung nur durch Rahmen, Leiste und Hinweis: Farbfilter würden Signalfarben
+   verfälschen (Halt darf nie wie Fahrt aussehen). */
+body.review .plan-box {
+  outline: 3px dashed var(--accent);
+  outline-offset: -3px;
+}
+
+/* Diese Felder zeigen den laufenden Betrieb, nicht den Zeitpunkt der Rückschau. */
+body.review rit-aux,
+body.review rit-trains {
+  display: none;
+}
+
+.review-panel:empty {
+  display: none;
+}
+
+.review-panel ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.review-panel li {
+  display: grid;
+  grid-template-columns: 5em 6em 1fr;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 13px;
+}
+
+.review-panel .review-command .text {
+  color: var(--accent);
+}

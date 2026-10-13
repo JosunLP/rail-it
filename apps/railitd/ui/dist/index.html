@@ -15,18 +15,32 @@
         <input id="command" type="text" spellcheck="false" aria-label="Eingabe" data-command />
       </form>
       <label class="operator">Bediener <input id="operator" type="number" min="1" max="65535" /></label>
+      <button id="review-toggle" type="button" class="review-toggle">Rückschau</button>
     </header>
+
+    <div id="review-bar" class="review-bar" role="toolbar" aria-label="Rückschau">
+      <strong>RÜCKSCHAU</strong>
+      <button id="review-back" type="button">−10 s</button>
+      <input id="review-slider" type="range" min="0" max="0" step="100" aria-label="Zeitpunkt" />
+      <span id="review-time" class="review-time"></span>
+      <button id="review-forward" type="button">+10 s</button>
+      <button id="review-exit" type="button">Zurück zum Betrieb</button>
+    </div>
 
     <main>
       <section class="plan-wrap">
         <div id="plan" class="plan-box"></div>
         <div class="stale-banner" role="alert">ANZEIGE GESTÖRT – Spurplan nicht aktuell, keine Bedienung</div>
+        <div class="review-banner" role="status">
+          RÜCKSCHAU – Zustand bei <span id="review-plan-time"></span> aus dem Journal, keine Bedienung
+        </div>
         <p class="hint">
           Fahrstraße: Start- und Zielsignal anklicken · Rechtsklick: Rücknahme, Weichen, Erlaubnisse,
           Hilfshandlungen · Esc: Auswahl aufheben
         </p>
       </section>
       <aside>
+        <rit-review id="review" class="panel review-panel"></rit-review>
         <rit-aux id="aux" class="panel"></rit-aux>
         <rit-trains id="trains" class="panel"></rit-trains>
         <rit-log id="log" class="panel"></rit-log>

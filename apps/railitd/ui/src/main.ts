@@ -8,6 +8,8 @@
 // - Hilfshandlungen: Bestätigung nur über die sichere Anzeige- und Bestätigungskette – der
 //   zweite Bediener gibt das Element selbst ein, der Bedienplatz berechnet den Prüfcode aus
 //   seiner Anzeige (REQ-UI-003).
+// - Rückschau: Spurplan, Befehle und Ereignisse zu einem vergangenen Zeitpunkt aus dem Journal
+//   des Dienstes; deutlich gekennzeichnet, ohne Bedienung (REQ-UI-005).
 
 import { $ } from '@bquery/bquery/core';
 import { effect, signal, usePolling } from '@bquery/bquery/reactive';
@@ -16,19 +18,24 @@ import { auxCheck } from './check';
 import {
   activeRoutesFrom,
   auxText,
+  clock,
   COMMAND_HELP,
   findRoute,
   health,
+  mergeSnapshots,
   operable,
   parseCommand,
   reasonText,
+  reviewRows,
   routesFrom,
 } from './model';
-import { displayHealth, messages, report, snapshot } from './panels';
+import { displayHealth, messages, report, reviewAt, reviewRowsSignal, snapshot } from './panels';
 import { type PlanTarget, PlanView } from './plan';
-import type { Answer, AuxKind, NamedAux, PendingAux, Snapshot } from './types';
+import type { Answer, AuxKind, JournalInfo, NamedAux, PendingAux, Snapshot } from './types';
 
 const POLL_MS = 300;
+/** Die Rückschau zeigt Befehle und Ereignisse dieser Spanne vor dem gewählten Zeitpunkt. */
+const REVIEW_SPAN_MS = 60_000;
 
 /** Zeitpunkt (Uhr des Bedienplatzes), zu dem zuletzt die Zeit des Stellwerks fortschritt. */
 let lastAdvance = 0;
@@ -44,13 +51,18 @@ effect(() => {
 
 effect(() => {
   const h = displayHealth.value;
+  const reviewing = reviewAt.value !== undefined;
   $('body').toggleClass('stale', h === 'stale').toggleClass('safe-state', h === 'safe_state');
   for (const b of Array.from(document.querySelectorAll('[data-command]'))) {
-    (b as HTMLButtonElement).disabled = !operable(h);
+    (b as HTMLButtonElement).disabled = !operable(h) || reviewing;
   }
 });
 
 function guard(): boolean {
+  if (reviewAt.peek() !== undefined) {
+    report('warn', 'Rückschau: keine Bedienung – erst zurück zum Betrieb');
+    return false;
+  }
   if (!operable(displayHealth.peek())) {
     report('error', 'Anzeige gestört: keine Bedienung möglich');
     return false;
@@ -102,7 +114,7 @@ function showMenu(x: number, y: number, title: string, items: MenuItem[]): void 
     b.type = 'button';
     b.textContent = item.label;
     b.setAttribute('data-command', '');
-    b.disabled = !operable(displayHealth.peek());
+    b.disabled = !operable(displayHealth.peek()) || reviewAt.peek() !== undefined;
     $(b).on('click', () => {
       hideMenu();
       item.run();
@@ -282,6 +294,87 @@ function command(text: string): void {
   }
 }
 
+// ── Rückschau (REQ-UI-005) ─────────────────────────────────────────────────────────────
+
+/** Zustandsbild der Rückschau (alle Bereiche zusammengeführt). */
+const reviewSnapshot = signal<Snapshot | undefined>(undefined);
+let journals: JournalInfo[] = [];
+/** Laufende Nummer der Abfrage: Nur die jüngste wird angezeigt. */
+let reviewSeq = 0;
+
+async function loadReview(at: number): Promise<void> {
+  reviewSeq += 1;
+  const seq = reviewSeq;
+  try {
+    const [states, events] = await Promise.all([
+      Promise.all(journals.map((j) => api.getJournalState(at, j.area))),
+      Promise.all(
+        journals.map(async (j) => ({
+          area: j.area,
+          cycles: await api.getJournalEvents(at - REVIEW_SPAN_MS, at, j.area),
+        })),
+      ),
+    ]);
+    if (seq !== reviewSeq || reviewAt.peek() === undefined) return;
+    reviewSnapshot.value = mergeSnapshots(states);
+    reviewRowsSignal.value = reviewRows(events);
+    $('#review-plan-time').text(clock(at));
+  } catch (e) {
+    report('error', `Rückschau: ${(e as Error).message}`);
+  }
+}
+
+function slider(): HTMLInputElement {
+  return document.getElementById('review-slider') as HTMLInputElement;
+}
+
+function setReview(at: number | undefined): void {
+  reviewAt.value = at;
+  $('body').toggleClass('review', at !== undefined);
+  if (at === undefined) {
+    reviewSeq += 1;
+    reviewSnapshot.value = undefined;
+    reviewRowsSignal.value = [];
+    return;
+  }
+  slider().value = String(at);
+  $('#review-time').text(clock(at));
+  void loadReview(at);
+}
+
+function setupReview(): void {
+  const toggle = document.getElementById('review-toggle') as HTMLButtonElement | null;
+  if (!toggle) return;
+  if (journals.length === 0) {
+    toggle.disabled = true;
+    toggle.title = 'Rückschau braucht ein Journal (railitd --journal)';
+  }
+  $(toggle).on('click', () => {
+    if (reviewAt.peek() !== undefined) {
+      setReview(undefined);
+      return;
+    }
+    const live = snapshot.peek()?.time_ms ?? 0;
+    slider().max = String(live);
+    setReview(live);
+  });
+  let pending: ReturnType<typeof setTimeout> | undefined;
+  $(slider()).on('input', () => {
+    const at = Number(slider().value);
+    $('#review-time').text(clock(at));
+    reviewAt.value = at;
+    clearTimeout(pending);
+    pending = setTimeout(() => void loadReview(at), 200);
+  });
+  const step = (delta: number) => {
+    const at = Math.min(Number(slider().max), Math.max(0, (reviewAt.peek() ?? 0) + delta));
+    setReview(at);
+  };
+  $('#review-back').on('click', () => step(-10_000));
+  $('#review-forward').on('click', () => step(10_000));
+  $('#review-exit').on('click', () => setReview(undefined));
+}
+
 // ── Anmeldung und Start ────────────────────────────────────────────────────────────────
 
 async function login(message: string): Promise<void> {
@@ -334,10 +427,13 @@ async function main(): Promise<void> {
   });
   void poll;
 
+  // In der Rückschau zeigt der Spurplan den Zustand aus dem Journal.
   effect(() => {
-    const s = snapshot.value;
+    const s = reviewAt.value !== undefined ? reviewSnapshot.value : snapshot.value;
     if (s) plan.update(s);
   });
+  journals = await api.getJournals().catch(() => []);
+  setupReview();
 
   $('#aux').delegate('click', 'button.confirm', (_e, target) => {
     const s = snapshot.peek();

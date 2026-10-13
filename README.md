@@ -124,6 +124,8 @@ railit journal replay betrieb.journal --plan beispielstadt.rplan
 
 ![Nordbahn: drei Stellbereiche, Zuglenkung nach Fahrplan, RE1 und RE2 in Bstadt](docs/img/nordbahn.png)
 
+![Rückschau: Spurplan bei t = 20 s aus dem Journal, Befehle und Ereignisse der Minute davor](docs/img/rueckschau.png)
+
 Entwicklung des Bedienplatzes (Bun ≥ 1.4): `cd apps/railitd/ui && bun install && bun run
 build`; Prüfungen mit `bun run check`, `bun run test` und `bun run e2e` (Playwright gegen
 einen echten `railitd`, vorher `cargo build -p railit -p railitd`). Das gebaute Bundle
