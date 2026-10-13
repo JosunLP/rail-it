@@ -34,8 +34,9 @@ berechneter Spurplan, Web-Bedienplatz mit Anzeigeüberwachung und sicherer Anzei
 Bestätigungskette für Hilfshandlungen) und Phase 7 (Betriebsreife: der sichere Rechner als
 Knoten im Dienst mit Spiegel und Zustandsabgleich (`railit-node`, `railitd --node`), robuste
 RaSTA-Wiederholung, gesiegeltes Journal und Auditprotokoll, Bedienplatz für Netz und Betrieb,
-Leistungsziele in der CI gemessen, siehe [Leistung](#leistung)) sind umgesetzt. Phase 8
-(Verfügbarkeit und Diagnose) ist in Arbeit.
+Leistungsziele in der CI gemessen, siehe [Leistung](#leistung)) und Phase 8 (Verfügbarkeit
+und Diagnose: Journal auch im Knotenbetrieb, Zustand und Ereignisse zu jedem Zeitpunkt aus dem
+Journal, Metriken unter `/v1/metrics`) sind umgesetzt.
 
 | Crate | Inhalt | |
 |-------|--------|---|

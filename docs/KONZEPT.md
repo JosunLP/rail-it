@@ -1,6 +1,6 @@
 # rail-it – Konzept einer Engine für Netz- und Stellwerkmanagement
 
-> Status: **v0.9** (Phasen 0 bis 7 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
+> Status: **v0.10** (Phasen 0 bis 8 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
 >
 > v0.2 arbeitet die Grundsatzentscheidungen aus Abschnitt 2 ein: vollständiger Netz- und
 > Bahnbetrieb, deutsches ESTW **und** europäisches System (ETCS/EULYNX), Server **und**
@@ -624,7 +624,7 @@ Abwärtskompatibilität in der CI. Er wird auf drei Wegen angeboten:
 | `EtcsService` | Angemeldete Züge, Movement Authorities, Positionsmeldungen |
 | `SimulationService` | Zeit steuern, Züge einsetzen, Störungen injizieren |
 | `EventService` | Abonnements auf Zustand, Alarme, Journal |
-| `DiagnosticsService` | Health, Versionen, Metriken (zusätzlich Prometheus `/metrics`) |
+| `DiagnosticsService` | Health, Versionen, Metriken (umgesetzt als `GET /v1/metrics` im Prometheus-Textformat) |
 | `AdminService` | Benutzer, Rollen, Schlüssel, Freigaben |
 
 Sicherheit: mTLS, Rollen (Fahrdienstleiter, Disponent, Instandhaltung, Projektierer,
@@ -753,6 +753,24 @@ Mit `--seal-key` siegelt der Dienst Journal und Auditprotokoll mit dem Schlüsse
 Stellwerks (Ed25519 über den Stand der Hashkette, REQ-JRN-004): Die Kette zeigt jede
 veränderte Zeile, das Siegel zeigt, dass niemand die Datei als Ganzes neu geschrieben hat.
 
+**Stand Phase 8 – Verfügbarkeit und Diagnose.** Das Journal ist lückenlos und befragbar:
+
+- Auch im Knotenbetrieb (`--node`) wird mitgeschrieben: Der Spiegel hält jeden Zyklus des
+  Knotens fest, den er nachgerechnet und geprüft hat, mit genau dessen Eingaben; jeder
+  Zustandsabgleich steht als **Zustandsübernahme** im Journal (REQ-JRN-007). Zyklen, die der
+  Spiegel nicht gesehen hat (etwa während einer Unterbrechung), sind so ausgewiesen.
+- Jeder Zeitpunkt lässt sich in Sekunden rekonstruieren: `railit journal state --at` und
+  `railit journal events --from --to` spielen ab dem letzten Abzug davor, rechnen die Ausgaben
+  neu und prüfen sie gegen das Journal (REQ-JRN-008).
+- Alle Betriebsszenarien werden lokal, mit 2-von-3 und auf Knoten mitgeschrieben und müssen
+  exakt zum Endzustand abspielen (`railit scenario run --journal`).
+- Der Dienst liefert Metriken im Prometheus-Textformat (`/v1/metrics`, REQ-SVC-009):
+  Rechenzeit je Zyklus als Histogramm, Überschreitungen, Anforderungen nach Ergebnis,
+  Meldungen, sicherer Zustand, Kanäle, Fahrstraßen, Journal, Anbindung der Knoten.
+
+Offen bleiben Hot Standby (ein zweiter Rechner liest das Journal mit) und die Ablage des
+Journals außerhalb des Stellwerksrechners.
+
 **Performance**
 
 | Kennzahl | Ziel |
@@ -859,7 +877,7 @@ Daraus folgen diese Regeln:
 | **5 – Sicherheit & Embedded** | Redundante Kanäle, Voter, Watchdog, Cortex-R-Runtime, Kani-Nachweise, Fuzzing, Safety Case, Rückverfolgbarkeit | Kandidat für das Labor mit [Sicherheitsnachweis](safety/safety-case.md) (Szenarien 20, 21) | ✔ (Hardware, Einbindung des sicheren Rechners in `railitd` offen) |
 | **6 – UI** | Spurplan-UI als API-Client mit sicherer Anzeige- und Bestätigungskette | Bedienplatz unter `/ui/` mit automatisch berechnetem Spurplan, Anzeigeüberwachung und Prüfcode (Abschnitt 14.3) | ✔ (ergonomische Prüfung mit Bedienern offen) |
 | **7 – Betriebsreife** | Sicherer Rechner im Dienst (Knoten, Spiegel, Zustandsabgleich), robuste RaSTA-Wiederholung, signiertes Journal, Bedienplatz für Netz und Betrieb, Leistungsmessung | Verteilte Einsatzvariante lauffähig (`railit-node`, `railitd --node`), alle Szenarien über Knoten; Journal und Audit gesiegelt; Leistungsziele bei 5000 Elementen in der CI gemessen | ✔ (Zielhardware offen) |
-| **8 – Verfügbarkeit & Diagnose** | Journal auch im Knotenbetrieb, Diagnose aus dem Journal (Zustand zu einem Zeitpunkt, Ereignisse eines Zeitraums), Metriken für den Betrieb | Jeder Betrieb ist lückenlos aufgezeichnet und nachträglich in Sekunden befragbar | in Arbeit |
+| **8 – Verfügbarkeit & Diagnose** | Journal auch im Knotenbetrieb, Diagnose aus dem Journal (Zustand zu einem Zeitpunkt, Ereignisse eines Zeitraums), Metriken für den Betrieb | Jeder Betrieb ist lückenlos aufgezeichnet und nachträglich in Sekunden befragbar; Metriken für den Betrieb | ✔ (Hot Standby offen) |
 
 **Umgesetzte Crates (Stand Phase 7):** `railit-types`, `railit-topology`, `railit-plan`,
 `railit-planning`, `railit-rules`, `railit-kernel`, `railit-safety` (Kanäle, Voter, Watchdog),
