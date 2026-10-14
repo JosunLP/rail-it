@@ -1,0 +1,143 @@
+# Weichenverbindung W1–W2 zwischen zwei Gleisen; beide Weichen hängen an einem Antrieb
+# (REQ-TOP-017).
+[network]
+name = "Weichenverbindung"
+
+[[terminal]]
+name = "G1"
+kind = "boundary"
+
+[[terminal]]
+name = "G2"
+kind = "boundary"
+
+[[terminal]]
+name = "G3"
+kind = "boundary"
+
+[[terminal]]
+name = "G4"
+kind = "boundary"
+
+[[track]]
+name = "a1"
+length_m = 500
+
+[[track]]
+name = "b1"
+length_m = 500
+
+[[track]]
+name = "a2"
+length_m = 500
+
+[[track]]
+name = "b2"
+length_m = 500
+
+[[track]]
+name = "v"
+length_m = 60
+
+[[point]]
+name = "W1"
+diverging = "right"
+
+[[point]]
+name = "W2"
+diverging = "right"
+
+[[coupling]]
+points = ["W1", "W2"]
+
+[[link]]
+from = "G1.end"
+to = "a1.a"
+
+[[link]]
+from = "a1.b"
+to = "W1.tip"
+
+[[link]]
+from = "W1.left"
+to = "b1.a"
+
+[[link]]
+from = "b1.b"
+to = "G2.end"
+
+[[link]]
+from = "W1.right"
+to = "v.a"
+
+[[link]]
+from = "v.b"
+to = "W2.right"
+
+[[link]]
+from = "G3.end"
+to = "a2.a"
+
+[[link]]
+from = "a2.b"
+to = "W2.left"
+
+[[link]]
+from = "W2.tip"
+to = "b2.a"
+
+[[link]]
+from = "b2.b"
+to = "G4.end"
+
+[[signal]]
+name = "A"
+track = "a1"
+position_m = 500
+direction = "a_to_b"
+kind = "main"
+
+[[signal]]
+name = "B"
+track = "a2"
+position_m = 500
+direction = "a_to_b"
+kind = "main"
+
+[[signal]]
+name = "C"
+track = "b1"
+position_m = 0
+direction = "b_to_a"
+kind = "main"
+
+[[signal]]
+name = "D"
+track = "b2"
+position_m = 0
+direction = "b_to_a"
+kind = "main"
+
+[[tvd]]
+name = "TA1"
+elements = ["a1"]
+
+[[tvd]]
+name = "TA2"
+elements = ["a2"]
+
+[[tvd]]
+name = "TB1"
+elements = ["b1"]
+
+[[tvd]]
+name = "TB2"
+elements = ["b2"]
+
+[[tvd]]
+name = "TW1"
+elements = ["W1"]
+
+[[tvd]]
+name = "TW2"
+elements = ["W2", "v"]

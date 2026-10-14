@@ -122,6 +122,68 @@ pub struct Crossing {
     pub legs: [(TrackId, Length); 2],
 }
 
+/// Kopplung zweier Weichen an einen gemeinsamen Antrieb (REQ-TOP-017): Sie laufen immer
+/// gemeinsam um. Mit `inverted = false` liegen beide links oder beide rechts, sonst liegt die
+/// zweite jeweils in der anderen Lage als die erste.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct Coupling {
+    /// Die beiden gekoppelten Weichen.
+    pub points: [PointId; 2],
+    /// Gegenläufige Kopplung.
+    pub inverted: bool,
+}
+
+impl Coupling {
+    /// Lage der Partnerweiche, wenn `point` in `pos` liegt; `None`, wenn `point` nicht zur
+    /// Kopplung gehört.
+    pub fn partner(&self, point: PointId, pos: PointPosition) -> Option<(PointId, PointPosition)> {
+        let other = match self.points {
+            [a, b] if a == point => b,
+            [a, b] if b == point => a,
+            _ => return None,
+        };
+        let want = if self.inverted { pos.other() } else { pos };
+        Some((other, want))
+    }
+}
+
+/// Art einer Kreuzungsweiche.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum SlipKind {
+    /// Einfache Kreuzungsweiche (EKW): ein Bogen von Ende `a` nach Ende `d`.
+    Single,
+    /// Doppelte Kreuzungsweiche (DKW): Bögen `a`–`d` und `b`–`c`.
+    Double,
+}
+
+/// Kreuzungsweiche (REQ-TOP-017): eine Kreuzung mit beweglichen Teilen, aufgelöst in
+/// Weichen (Zungenpaare), kurze Gleise und eine [`Crossing`] in einem eigenen
+/// Gleisfreimeldeabschnitt.
+///
+/// Die Enden heißen `a`, `b` (eine Seite) und `c`, `d` (andere Seite). Gerade führen `a`–`c`
+/// und `b`–`d` über die Kreuzung, die Bögen `a`–`d` (EKW und DKW) und `b`–`c` (nur DKW). Am
+/// Ende `x` mit beweglichen Teilen liegt die Weiche `<Name>x` mit der Spitze nach außen:
+/// links gerade, rechts in den Bogen. Die Zungenpaare eines Endes einer DKW sind
+/// gegenläufig gekoppelt, die beiden Zungenpaare einer EKW gleichläufig. So gibt jede
+/// Stellung der Antriebe genau einen befahrbaren Weg frei.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct Slip {
+    /// Fachlicher Name, z. B. `"DKW3"`; zugleich Name des Gleisfreimeldeabschnitts.
+    pub name: String,
+    /// EKW oder DKW.
+    pub kind: SlipKind,
+    /// Ports der Enden `a`, `b`, `c`, `d` zum Anschluss an das übrige Netz.
+    pub ends: [PortRef; 4],
+    /// Weichen der Enden mit beweglichen Teilen (`a`, `d` bei der EKW; `a`…`d` bei der DKW).
+    pub points: Vec<PointId>,
+    /// Innere Gleise: gerade `a`–`c`, gerade `b`–`d`, Bogen `a`–`d`, ggf. Bogen `b`–`c`.
+    pub tracks: Vec<TrackId>,
+}
+
 /// Stellbereich: Gleisfreimeldeabschnitte, die genau ein Sicherheitskern steuert.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]

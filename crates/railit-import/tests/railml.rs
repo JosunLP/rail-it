@@ -8,6 +8,10 @@ use railit_topology::{NodeRef, Port, PortRef, SignalKind, TerminalKind, Topology
 const BEISPIELSTADT: &str = include_str!("../../../examples/beispielstadt.toml");
 const NORDBAHN: &str = include_str!("../../../examples/nordbahn.toml");
 const KREUZUNG: &str = include_str!("../../../examples/kreuzung.toml");
+const DKW: &str = include_str!("../../../examples/dkw.toml");
+
+/// Weichenverbindung W1–W2 zwischen zwei Gleisen; beide Weichen an einem Antrieb.
+const CROSSOVER: &str = include_str!("data/weichenverbindung.toml");
 const HANDMADE: &str = include_str!("data/abzweig.railml");
 
 fn node_name(net: &Topology, n: NodeRef) -> String {
@@ -103,6 +107,16 @@ fn describe(net: &Topology) -> BTreeSet<String> {
             out.insert(format!("platform {} {} {signals:?}", s.name, p.name));
         }
     }
+    for c in net.couplings() {
+        let [a, b] = c.points.map(|p| net.point(p).unwrap().name.clone());
+        out.insert(format!("coupling {a} {b} {}", c.inverted));
+    }
+    for x in net.slips() {
+        let ends = x
+            .ends
+            .map(|e| format!("{}.{:?}", node_name(net, e.node), e.port));
+        out.insert(format!("slip {} {:?} {ends:?}", x.name, x.kind));
+    }
     out
 }
 
@@ -127,6 +141,30 @@ fn beispielstadt_survives_the_roundtrip() {
 #[test]
 fn crossing_survives_the_roundtrip() {
     roundtrip(KREUZUNG);
+}
+
+/// REQ-TOP-014, REQ-TOP-017: auch mit doppelter und einfacher Kreuzungsweiche und mit einer
+/// Weichenverbindung an einem gemeinsamen Antrieb.
+#[test]
+fn slips_and_couplings_survive_the_roundtrip() {
+    roundtrip(DKW);
+    roundtrip(&DKW.replace("kind = \"double\"", "kind = \"single\""));
+    roundtrip(CROSSOVER);
+}
+
+/// REQ-TOP-017: Eine Kreuzungsweiche, deren Teile anders verbunden sind, weist der Import ab.
+#[test]
+fn broken_slip_is_rejected() {
+    let original = toml_format::parse(DKW).unwrap().topology;
+    let xml = railml::export(&original).unwrap();
+    let broken = xml.replace(
+        "<railit:slip name=\"DKW1\" kind=\"double\"/>",
+        "<railit:slip name=\"DKW1\" kind=\"single\"/>",
+    );
+    let err = railml::parse_with_warnings(&broken)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("REQ-TOP-017") && err.contains("DKW1"), "{err}");
 }
 
 /// REQ-TOP-014: auch mit Stellbereichen und Betriebsstellen.

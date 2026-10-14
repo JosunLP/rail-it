@@ -7,7 +7,7 @@ export interface Layout {
   network: string;
   width: number;
   height: number;
-  tracks: { name: string; tvd: string | null; area: string | null; line: Pos[] }[];
+  tracks: { name: string; tvd: string | null; area: string | null; line: Pos[]; slip?: string | null }[];
   points: {
     name: string;
     tvd: string | null;
@@ -16,6 +16,8 @@ export interface Layout {
     fork: Pos;
     left: Pos;
     right: Pos;
+    /** Kreuzungsweiche, zu der das Zungenpaar gehört. */
+    slip?: string | null;
   }[];
   terminals: { name: string; kind: 'boundary' | 'buffer_stop' | 'border'; at: Pos; opens: 'left' | 'right' }[];
   signals: { name: string; kind: string; system: string; at: Pos; facing: 'left' | 'right'; track: string }[];
@@ -24,6 +26,7 @@ export interface Layout {
   borders: { left: string; right: string; at: Pos }[];
   areas: { name: string; x0: number; x1: number }[];
   stations: { name: string; at: Pos }[];
+  slips?: { name: string; at: Pos }[];
 }
 
 export type Occupancy = 'clear' | 'occupied' | 'disturbed';

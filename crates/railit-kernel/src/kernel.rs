@@ -654,8 +654,27 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
         if !self.tvd_clear(st, t, now)? {
             return Ok(Err(Rejection::PointNotOperable(p)));
         }
-        self.command_point(st, now, p, pos, None, false, out)?;
+        // REQ-IXL-026: Eine gekoppelte Weiche läuft nur mit ihrer Partnerweiche um.
+        let partner = self.partner(p, pos);
+        if let Some((q, _)) = partner {
+            if point(st, q)?.is_locked() {
+                return Ok(Err(Rejection::PointLocked(q)));
+            }
+            if !self.point_tvd_clear(st, q, now)? {
+                return Ok(Err(Rejection::PointNotOperable(q)));
+            }
+        }
+        for (x, xpos) in core::iter::once((p, pos)).chain(partner) {
+            self.command_point(st, now, x, xpos, None, false, out)?;
+        }
         Ok(Ok(()))
+    }
+
+    /// Partnerweiche einer gekoppelten Weiche und ihre Lage, wenn `p` in `pos` gestellt wird.
+    fn partner(&self, p: PointId, pos: PointPosition) -> Option<(PointId, PointPosition)> {
+        self.plan
+            .point_coupling(p)
+            .map(|(q, inverted)| (q, if inverted { pos.other() } else { pos }))
     }
 
     /// Stellbefehl an eine Weiche (REQ-IXL-004). Zulässig nur, wenn
@@ -730,12 +749,24 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
                 Some(applicable) => applicable,
                 None => return Ok(Err(Rejection::UnknownElement)),
             },
-            AuxOperation::ForcePoint(p, _) => {
+            AuxOperation::ForcePoint(p, pos) => {
                 let (Some(t), Ok(state)) = (self.plan.point_tvd(p), point(st, p)) else {
                     return Ok(Err(Rejection::UnknownElement));
                 };
                 let occupancy = effective_occupancy(&tvd(st, t)?, now, self.rules.report_timeout());
-                !state.is_locked() && occupancy == Occupancy::Disturbed
+                // Die Partnerweiche einer Kopplung (REQ-IXL-026) ist unverschlossen, ihr
+                // Abschnitt gestört oder frei.
+                let partner_free = match self.partner(p, pos) {
+                    None => true,
+                    Some((q, _)) => {
+                        let qt = self.plan.point_tvd(q).ok_or(IDX)?;
+                        let q_occupancy =
+                            effective_occupancy(&tvd(st, qt)?, now, self.rules.report_timeout());
+                        !point(st, q)?.is_locked()
+                            && matches!(q_occupancy, Occupancy::Disturbed | Occupancy::Clear)
+                    }
+                };
+                !state.is_locked() && occupancy == Occupancy::Disturbed && partner_free
             }
         };
         Ok(if applicable {
@@ -842,7 +873,10 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
                 Ok(())
             }
             AuxOperation::ForcePoint(p, pos) => {
-                self.command_point(st, now, p, pos, None, true, out)
+                for (x, xpos) in core::iter::once((p, pos)).chain(self.partner(p, pos)) {
+                    self.command_point(st, now, x, xpos, None, true, out)?;
+                }
+                Ok(())
             }
             AuxOperation::TakePermission(b) => Self::take_back(st, b),
         }

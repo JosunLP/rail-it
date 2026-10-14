@@ -69,7 +69,8 @@ Kontext: nur Simulation, Ausbildung, Prüfstände (Teil 1); Anwendungsbedingunge
 
 | Strategie | Belege |
 |-----------|--------|
-| Vollständige Netzvalidierung, auch für railML-Import | REQ-TOP-001 … 014 |
+| Vollständige Netzvalidierung, auch für railML- und PlanPro-Import; Kreuzungen und Kreuzungsweichen | REQ-TOP-001 … 017 |
+| Gekoppelte Weichen: Partnerweiche in jeder Fahrstraße verlangt, beim Laden geprüft, nur gemeinsam gestellt | REQ-PLN-021, REQ-IXL-026, Szenario 25 |
 | Generator und unabhängige Gegenprüfung müssen übereinstimmen | REQ-PLN-013 |
 | Plan-Image mit SHA-256 und Ed25519; nur geprüfte Pläne werden verwendet | REQ-PLN-001 … 004 |
 | Abgleich Plan ↔ Netz beim Start | REQ-SVC-001 |

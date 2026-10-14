@@ -17,6 +17,8 @@ Leser ab; ein ungültiges Netz meldet er mit **allen** Fehlern auf einmal. Einf�
 | `[[signal]]` | | Signale und ETCS-Haltetafeln |
 | `[[level_crossing]]` | | Bahnübergänge |
 | `[[crossing]]` | | Kreuzungen ohne bewegliche Teile |
+| `[[slip]]` | | Kreuzungsweichen (EKW, DKW) |
+| `[[coupling]]` | | Weichen an einem gemeinsamen Antrieb |
 | `[[tvd]]` | | Gleisfreimeldeabschnitte |
 | `[[area]]` | | Stellbereiche (je einer pro Sicherheitskern) |
 | `[[station]]` | | Betriebsstellen mit Bahnsteiggleisen für die Betriebsführung |
@@ -97,13 +99,52 @@ Hauptsignale stehen an einer Grenze der Gleisfreimeldung (REQ-PLN-010).
 Zwei Gleise schneiden sich niveaugleich, ohne verbunden zu sein (Kreuzung ohne bewegliche
 Teile). Beide Kreuzungsstellen müssen auf verschiedenen Gleisen im **selben**
 Gleisfreimeldeabschnitt liegen (REQ-TOP-016); Fahrten über die eine und die andere
-Kreuzungsstelle schließen sich damit über den Abschnitt aus. Kreuzungsweichen (EKW, DKW) gibt
-es noch nicht. Beispiel: `examples/kreuzung.toml`.
+Kreuzungsstelle schließen sich damit über den Abschnitt aus. Kreuzungen mit beweglichen Teilen
+beschreibt [`[[slip]]`](#slip-kreuzungsweiche). Beispiel: `examples/kreuzung.toml`.
 
 | Schlüssel | Typ | Bedeutung |
 |-----------|-----|-----------|
 | `name` | Text | Name |
 | `legs` | zwei `{ track, position_m }` | Kreuzungsstellen: Gleis und Position ab Port `a` |
+
+## `[[slip]]` – Kreuzungsweiche
+
+Einfache (EKW) oder doppelte Kreuzungsweiche (REQ-TOP-017). rail-it legt daraus alle Teile an:
+
+- die Zungenpaare als Weichen `<Name>a`, `<Name>b`, `<Name>c`, `<Name>d` (EKW nur `a` und `d`)
+  mit der Spitze nach außen, links gerade, rechts in den Bogen,
+- die inneren Gleise `<Name>.1` (gerade `a`–`c`), `<Name>.2` (gerade `b`–`d`), `<Name>.3`
+  (Bogen `a`–`d`) und `<Name>.4` (Bogen `b`–`c`, nur DKW), je `length_m` lang,
+- die Kreuzung `<Name>.x` der beiden geraden Gleise in ihrer Mitte,
+- den Gleisfreimeldeabschnitt `<Name>` und
+- die Kopplungen: Die Zungenpaare eines Endes einer DKW (`a`/`b`, `c`/`d`) laufen
+  gegenläufig, die beiden einer EKW gleichläufig. Jede Stellung der Antriebe gibt so genau
+  einen Weg frei.
+
+Angeschlossen wird die Kreuzungsweiche über ihre Enden `<Name>.a` bis `<Name>.d` in
+`[[link]]`; `a` und `b` liegen auf der einen Seite, `c` und `d` auf der anderen. Jede
+Fahrstraße über die Kreuzungsweiche verlangt alle Zungenpaare; den Flankenschutz bilden die
+Signale und Weichen vor den anderen Enden (REQ-PLN-021). Beispiel: `examples/dkw.toml`.
+
+| Schlüssel | Typ | Bedeutung |
+|-----------|-----|-----------|
+| `name` | Text | Name; zugleich Name des Abschnitts |
+| `kind` | `single` · `double` | EKW oder DKW |
+| `length_m` | Zahl | Länge der inneren Gleise |
+| `curve_speed_kmh` | Zahl, Vorgabe 40 | Geschwindigkeit im Bogen |
+
+## `[[coupling]]` – gekoppelte Weichen
+
+Zwei Weichen an einem gemeinsamen Antrieb, z. B. die beiden Weichen einer Weichenverbindung
+(REQ-TOP-017). Sie laufen immer gemeinsam um; eine Fahrstraße über die eine verlangt die
+andere in der gekoppelten Lage, und Einzelstellen bewegt beide (REQ-IXL-026). Gekoppelte
+Weichen gehören demselben Stellbereich an und dürfen nicht im Annäherungsabschnitt einer
+Bereichsgrenze liegen.
+
+| Schlüssel | Typ | Bedeutung |
+|-----------|-----|-----------|
+| `points` | zwei Weichennamen | Die gekoppelten Weichen |
+| `inverted` | bool, Vorgabe `false` | Gegenläufig: liegt die erste links, liegt die zweite rechts |
 
 ## `[[tvd]]` – Gleisfreimeldeabschnitt
 
@@ -165,7 +206,7 @@ der Zielzustand). Abbildung:
 | Knoten mit einer Kante: `Ende` / sonst | Prellbock / Netzgrenze |
 | `Signal` mit `Signal_Real_Aktiv_Schirm` | `Hauptsignal`, `Hauptsperrsignal`, `Zugdeckungssignal` → Hauptsignal; `Mehrabschnitts(sperr)signal` → Mehrabschnittssignal; `Vorsignal(wiederholer)` → Vorsignal; `Sperrsignal` → Rangiersignal; `Signalsystem` Ks oder HV; `Signal_Funktion` `Block_Signal` → Selbstblock |
 | `BUE_Anlage` | Bahnübergang |
-| `W_Kr_Gsp_Komponente` mit `Kreuzung` und zwei Lagen | Kreuzung (Kreuzungsweichen: Fehler) |
+| `W_Kr_Gsp_Komponente` mit `Kreuzung` und zwei Lagen | Kreuzung (Kreuzungsweichen: Fehler; der Export lehnt Netze mit Kreuzungsweichen oder gekoppelten Weichen ab) |
 | `FMA_Komponente` (`ID_FMAgrenze`), `FMA_Anlage` → `Gleis_Abschnitt` | Freimeldegrenze, Name des Abschnitts |
 
 Hauptsignale müssen wie in jedem rail-it-Netz an einer Freimeldegrenze stehen (REQ-PLN-010);

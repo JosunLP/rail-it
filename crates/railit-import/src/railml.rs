@@ -26,7 +26,9 @@
 //! Was railML nicht ausdrückt, steht in Attributen und Elementen des Namensraums
 //! [`RAILIT_NAMESPACE`]: Signalsystem (`railit:system="hv"`), Selbstblocksignale
 //! (`railit:auto="true"`), Grenzen zu Nachbarbereichen (`railit:kind="border"`,
-//! `railit:initial`), Stellbereiche und Betriebsstellen (`railit:operation`).
+//! `railit:initial`), Stellbereiche, Betriebsstellen, Kreuzungsweichen (`railit:slip`, aus
+//! Weichen, Gleisen und Kreuzung nach den Namen von `TopologyBuilder::add_slip`) und
+//! gekoppelte Weichen (`railit:coupling`) in `railit:operation`.
 //!
 //! Elemente werden über ihren lokalen Namen erkannt; der railML-Namensraum (3.2 oder 3.3) ist
 //! daher gleichgültig.
@@ -38,8 +40,8 @@ use roxmltree::{Document, Node};
 
 use railit_topology::{
     DEFAULT_DIVERGING_SPEED, Direction, ElementRef, Length, NodeRef, Point, PointId, PointPosition,
-    Port, PortRef, SignalKind, SignalSystem, Speed, TerminalKind, Topology, TopologyBuilder,
-    TrackId, TvdId, TvdMember, Validated,
+    Port, PortRef, SignalKind, SignalSystem, SlipKind, Speed, TerminalKind, Topology,
+    TopologyBuilder, TrackId, TvdId, TvdMember, Validated,
 };
 
 use crate::{Diagnostic, ImportError, metres, model_error};
@@ -309,6 +311,7 @@ pub fn parse_with_warnings(source: &str) -> Result<(Validated, Vec<String>), Imp
     add_level_crossings(&mut r, &mut b);
     add_crossings(&mut r, &mut b);
     add_tvds(&mut r, &mut b, &graph, &points, &detectors);
+    add_couplings(&mut r, &mut b);
     add_operation(&mut r, &mut b);
 
     let Reader {
@@ -1073,6 +1076,64 @@ fn add_tvds(
     }
 }
 
+/// Kreuzungsweichen und Kopplungen aus `railit:operation` (REQ-TOP-017).
+fn add_couplings(r: &mut Reader<'_, '_>, b: &mut TopologyBuilder) {
+    let ours =
+        |n: &Node<'_, '_>| n.is_element() && n.tag_name().namespace() == Some(RAILIT_NAMESPACE);
+    for slip in r
+        .doc
+        .descendants()
+        .filter(|n| ours(n) && local(n) == "slip")
+    {
+        let name = attr(slip, "name").unwrap_or_default().to_string();
+        let ctx = format!("railit:slip „{name}“");
+        let kind = match attr(slip, "kind") {
+            Some("single") => SlipKind::Single,
+            Some("double") => SlipKind::Double,
+            other => {
+                r.errors.push(diag(
+                    ctx,
+                    format!("kind „{}“ ist unbekannt", other.unwrap_or_default()),
+                ));
+                continue;
+            }
+        };
+        if let Err(e) = b.recognize_slip(&name, kind) {
+            r.errors.push(model_error(ctx, &e));
+        }
+    }
+    for c in r
+        .doc
+        .descendants()
+        .filter(|n| ours(n) && local(n) == "coupling")
+    {
+        let first = attr(c, "first").unwrap_or_default();
+        let second = attr(c, "second").unwrap_or_default();
+        let ctx = format!("railit:coupling „{first}“ – „{second}“");
+        let inverted = match attr(c, "inverted") {
+            Some("true") => true,
+            Some("false") | None => false,
+            Some(other) => {
+                r.errors.push(diag(
+                    ctx,
+                    format!("inverted „{other}“ ist kein Wahrheitswert"),
+                ));
+                continue;
+            }
+        };
+        match (b.lookup(first), b.lookup(second)) {
+            (Some(ElementRef::Point(x)), Some(ElementRef::Point(y))) => {
+                if let Err(e) = b.couple_points(x, y, inverted) {
+                    r.errors.push(model_error(ctx, &e));
+                }
+            }
+            _ => r
+                .errors
+                .push(diag(ctx, "beide Angaben müssen Weichen sein")),
+        }
+    }
+}
+
 /// Stellbereiche und Betriebsstellen aus `railit:operation`.
 fn add_operation(r: &mut Reader<'_, '_>, b: &mut TopologyBuilder) {
     let ours =
@@ -1487,10 +1548,35 @@ fn write_signals(out: &mut String, net: &Topology) {
 }
 
 fn write_operation(out: &mut String, net: &Topology) {
-    if net.areas().len() == 0 && net.stations().len() == 0 {
+    if net.areas().len() == 0 && net.stations().len() == 0 && net.couplings().len() == 0 {
         return;
     }
     let _ = writeln!(out, "  <railit:operation>");
+    // Kreuzungsweichen (REQ-TOP-017) koppeln ihre Weichen selbst; übrige Kopplungen einzeln.
+    for x in net.slips() {
+        let kind = match x.kind {
+            SlipKind::Single => "single",
+            SlipKind::Double => "double",
+        };
+        let _ = writeln!(
+            out,
+            "    <railit:slip name=\"{}\" kind=\"{kind}\"/>",
+            esc(&x.name)
+        );
+    }
+    for c in net.couplings() {
+        if net.slips().any(|x| x.points.contains(&c.points[0])) {
+            continue;
+        }
+        let name = |p| net.point(p).map_or("", |x| x.name.as_str());
+        let _ = writeln!(
+            out,
+            "    <railit:coupling first=\"{}\" second=\"{}\" inverted=\"{}\"/>",
+            esc(name(c.points[0])),
+            esc(name(c.points[1])),
+            c.inverted
+        );
+    }
     for (_, area) in net.areas() {
         let _ = write!(out, "    <railit:area name=\"{}\">", esc(&area.name));
         for t in &area.tvds {

@@ -1,0 +1,182 @@
+# Bahnhofskopf mit doppelter Kreuzungsweiche DKW1: Eine Diagonale von Gleis 2 (unten links)
+# nach Gleis 3 (oben rechts) kreuzt das Hauptgleis 1.
+#
+# Die DKW hat die Enden a, b (Westen) und c, d (Osten). Gerade führen a–c (Hauptgleis) und
+# b–d (Diagonale), die Bögen a–d und b–c (REQ-TOP-017). Die Zungenpaare eines Endes
+# (DKW1a/DKW1b, DKW1c/DKW1d) hängen gegenläufig an einem Antrieb; jede Fahrstraße über die DKW
+# verlangt deshalb alle vier Weichen.
+#
+#                                   d ◀P3── m3 ──N3▶ ◀F3── o3 ── GO3
+#                                 ╱
+#   GW1 ── w1 ──A1▶ a ═══ DKW1 ═ c ◀P1── m1 ──N1▶ ◀F1── o1 ── GO1
+#                   ╱
+#   GW2 ── w2 ──A2▶ b
+
+[network]
+name = "DKW-Kopf"
+
+[[terminal]]
+name = "GW1"
+kind = "boundary"
+
+[[terminal]]
+name = "GW2"
+kind = "boundary"
+
+[[terminal]]
+name = "GO1"
+kind = "boundary"
+
+[[terminal]]
+name = "GO3"
+kind = "boundary"
+
+[[track]]
+name = "w1"
+length_m = 800
+
+[[track]]
+name = "w2"
+length_m = 800
+
+[[track]]
+name = "m1"
+length_m = 400
+
+[[track]]
+name = "m3"
+length_m = 400
+
+[[track]]
+name = "o1"
+length_m = 800
+
+[[track]]
+name = "o3"
+length_m = 800
+
+[[slip]]
+name = "DKW1"
+kind = "double"
+length_m = 40
+curve_speed_kmh = 40
+
+[[link]]
+from = "GW1.end"
+to = "w1.a"
+
+[[link]]
+from = "w1.b"
+to = "DKW1.a"
+
+[[link]]
+from = "DKW1.c"
+to = "m1.a"
+
+[[link]]
+from = "m1.b"
+to = "o1.a"
+
+[[link]]
+from = "o1.b"
+to = "GO1.end"
+
+[[link]]
+from = "GW2.end"
+to = "w2.a"
+
+[[link]]
+from = "w2.b"
+to = "DKW1.b"
+
+[[link]]
+from = "DKW1.d"
+to = "m3.a"
+
+[[link]]
+from = "m3.b"
+to = "o3.a"
+
+[[link]]
+from = "o3.b"
+to = "GO3.end"
+
+[[signal]]
+name = "A1"
+track = "w1"
+position_m = 800
+direction = "a_to_b"
+kind = "main"
+
+[[signal]]
+name = "A2"
+track = "w2"
+position_m = 800
+direction = "a_to_b"
+kind = "main"
+
+[[signal]]
+name = "P1"
+track = "m1"
+position_m = 0
+direction = "b_to_a"
+kind = "main"
+
+[[signal]]
+name = "P3"
+track = "m3"
+position_m = 0
+direction = "b_to_a"
+kind = "main"
+
+[[signal]]
+name = "N1"
+track = "m1"
+position_m = 400
+direction = "a_to_b"
+kind = "main"
+
+[[signal]]
+name = "N3"
+track = "m3"
+position_m = 400
+direction = "a_to_b"
+kind = "main"
+
+[[signal]]
+name = "F1"
+track = "o1"
+position_m = 0
+direction = "b_to_a"
+kind = "main"
+
+[[signal]]
+name = "F3"
+track = "o3"
+position_m = 0
+direction = "b_to_a"
+kind = "main"
+
+[[tvd]]
+name = "TW1"
+elements = ["w1"]
+
+[[tvd]]
+name = "TW2"
+elements = ["w2"]
+
+[[tvd]]
+name = "TM1"
+elements = ["m1"]
+
+[[tvd]]
+name = "TM3"
+elements = ["m3"]
+
+[[tvd]]
+name = "TO1"
+elements = ["o1"]
+
+[[tvd]]
+name = "TO3"
+elements = ["o3"]

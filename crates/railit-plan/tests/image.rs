@@ -81,10 +81,12 @@ fn sample() -> Plan {
             PointDef {
                 name: "W1".into(),
                 tvd: tvd(1),
+                coupled: None,
             },
             PointDef {
                 name: "W2".into(),
                 tvd: tvd(4),
+                coupled: None,
             },
         ],
         signals: vec![

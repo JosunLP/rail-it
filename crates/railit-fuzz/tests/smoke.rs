@@ -6,6 +6,7 @@ use proptest::prelude::*;
 const BEISPIELSTADT: &str = include_str!("../../../examples/beispielstadt.toml");
 const NORDBAHN: &str = include_str!("../../../examples/nordbahn.toml");
 const FAHRPLAN: &str = include_str!("../../../examples/nordbahn-fahrplan.toml");
+const DKW: &str = include_str!("../../../examples/dkw.toml");
 const ABZWEIG: &str = include_str!("../../railit-import/tests/data/abzweig.railml");
 
 fn images() -> Vec<Vec<u8>> {
@@ -22,6 +23,8 @@ fn images() -> Vec<Vec<u8>> {
     {
         out.push(a.compiled.image);
     }
+    let net = railit_import::toml_format::parse(DKW).unwrap().topology;
+    out.push(railit_planning::compile(&net, None).unwrap().image);
     out
 }
 
@@ -32,6 +35,7 @@ fn seeds_pass() {
     }
     railit_fuzz::toml_network(BEISPIELSTADT.as_bytes());
     railit_fuzz::toml_network(NORDBAHN.as_bytes());
+    railit_fuzz::toml_network(DKW.as_bytes());
     railit_fuzz::railml_network(ABZWEIG.as_bytes());
     railit_fuzz::timetable(FAHRPLAN.as_bytes());
     railit_fuzz::journal(b"");

@@ -65,6 +65,8 @@ pub struct Layout {
     pub areas: Vec<AreaShape>,
     /// Betriebsstellen (Beschriftung).
     pub stations: Vec<MarkShape>,
+    /// Kreuzungsweichen (Beschriftung in ihrer Mitte).
+    pub slips: Vec<MarkShape>,
 }
 
 /// Gleis als Linienzug.
@@ -78,6 +80,8 @@ pub struct TrackShape {
     pub area: Option<String>,
     /// Linienzug von links nach rechts.
     pub line: Vec<Pos>,
+    /// Kreuzungsweiche, zu der das Gleis gehört.
+    pub slip: Option<String>,
 }
 
 /// Weiche: Spitze, Verzweigungspunkt und beide Stränge.
@@ -97,6 +101,8 @@ pub struct PointShape {
     pub left: Pos,
     /// Ende des rechten Strangs.
     pub right: Pos,
+    /// Kreuzungsweiche, zu der die Weiche (das Zungenpaar) gehört.
+    pub slip: Option<String>,
 }
 
 /// Netzende.
@@ -167,6 +173,29 @@ pub struct AreaShape {
     pub x0: i32,
     /// Rechter Rand.
     pub x1: i32,
+}
+
+/// Breite einer Kreuzungsweiche.
+pub const SLIP_WIDTH: i32 = 2 * POINT_WIDTH;
+
+/// Spur der Enden `a`, `b`, `c`, `d` einer Kreuzungsweiche relativ zu `a`: Das Stammgleis
+/// `a`–`c` liegt waagerecht, die Diagonale `b`–`d` kreuzt es von unten links nach oben rechts.
+const SLIP_LANES: [i32; 4] = [0, 1, 0, -1];
+
+/// Lage einer Kreuzungsweiche im Spurplan.
+#[derive(Copy, Clone, Debug)]
+struct SlipPlaced {
+    /// Die Enden `a`, `b` liegen links.
+    ab_left: bool,
+    /// Spuren der Enden `a` … `d`.
+    lanes: [i32; 4],
+}
+
+impl SlipPlaced {
+    /// Liegt Ende `end` rechts?
+    const fn right(&self, end: usize) -> bool {
+        (end >= 2) == self.ab_left
+    }
 }
 
 /// Ausrichtung eines Knotens.
@@ -280,6 +309,20 @@ pub fn layout(topo: &Topology) -> Layout {
     let mut order: Vec<NodeRef> = Vec::new();
     let mut lane_base = 0;
 
+    // Kreuzungsweichen werden als Block gelegt; ihre inneren Knoten nimmt die Suche nicht auf.
+    let slips: Vec<&railit_topology::Slip> = topo.slips().collect();
+    let slip_ends: Vec<[PortRef; 4]> = slips.iter().map(|x| x.ends).collect();
+    let mut slip_of: BTreeMap<NodeRef, usize> = BTreeMap::new();
+    for (i, x) in slips.iter().enumerate() {
+        for t in &x.tracks {
+            slip_of.insert(NodeRef::Track(*t), i);
+        }
+        for p in &x.points {
+            slip_of.insert(NodeRef::Point(*p), i);
+        }
+    }
+    let mut slip_placed: Vec<Option<SlipPlaced>> = vec![None; slips.len()];
+
     // Startknoten: Netzenden in Reihenfolge, danach alle übrigen Knoten (Teilnetze ohne Ende).
     let mut starts: Vec<NodeRef> = topo
         .terminals()
@@ -287,7 +330,7 @@ pub fn layout(topo: &Topology) -> Layout {
         .collect();
     starts.extend(topo.tracks().map(|(id, _)| NodeRef::Track(id)));
     for start in starts {
-        if placed.contains_key(&start) {
+        if placed.contains_key(&start) || slip_of.contains_key(&start) {
             continue;
         }
         let first = order.len();
@@ -313,13 +356,43 @@ pub fn layout(topo: &Topology) -> Layout {
                 let Some(other) = topo.linked(PortRef::new(node, port)) else {
                     continue;
                 };
+                let from_left = right_side(here.orient, port);
+                // Spur am verlassenen Port.
+                let lane_out = here.lane + leg_offset(topo, node, port, here.orient);
+                if let Some(&i) = slip_of.get(&other.node) {
+                    // Kreuzungsweiche als Ganzes legen, dann von ihren Enden weitersuchen.
+                    if slip_placed[i].is_some() {
+                        continue;
+                    }
+                    let Some(end) = slip_ends[i].iter().position(|e| *e == other) else {
+                        continue;
+                    };
+                    let offset = lane_out - SLIP_LANES[end];
+                    let placement = SlipPlaced {
+                        ab_left: (end < 2) == from_left,
+                        lanes: SLIP_LANES.map(|l| l + offset),
+                    };
+                    slip_placed[i] = Some(placement);
+                    for (j, e) in slip_ends[i].iter().enumerate() {
+                        let Some(next) = topo.linked(*e) else {
+                            continue;
+                        };
+                        if placed.contains_key(&next.node) || slip_of.contains_key(&next.node) {
+                            continue;
+                        }
+                        let orient = orientation(next.node, next.port, placement.right(j));
+                        let lane =
+                            placement.lanes[j] - leg_offset(topo, next.node, next.port, orient);
+                        placed.insert(next.node, Placed { orient, lane });
+                        queue.push_back(next.node);
+                    }
+                    continue;
+                }
                 if placed.contains_key(&other.node) {
                     continue;
                 }
-                let from_left = right_side(here.orient, port);
                 let orient = orientation(other.node, other.port, from_left);
-                // Spur am verlassenen Port und Spur des neuen Knotens (bei Weichen: Spitze).
-                let lane_out = here.lane + leg_offset(topo, node, port, here.orient);
+                // Spur des neuen Knotens (bei Weichen: Spitze).
                 let lane = lane_out - leg_offset(topo, other.node, other.port, orient);
                 placed.insert(other.node, Placed { orient, lane });
                 queue.push_back(other.node);
@@ -330,49 +403,99 @@ pub fn layout(topo: &Topology) -> Layout {
             .iter()
             .filter_map(|n| placed.get(n))
             .map(|p| p.lane + 1)
+            .chain(
+                slip_placed
+                    .iter()
+                    .flatten()
+                    .flat_map(|x| x.lanes.map(|l| l + 1)),
+            )
             .max()
-            .unwrap_or(lane_base);
+            .unwrap_or(lane_base)
+            .max(lane_base);
         lane_base = max_lane + 1;
     }
 
     // Längsachse: längster Pfad über alle Verbindungen von links nach rechts.
     let mut xs: BTreeMap<NodeRef, i32> = order.iter().map(|n| (*n, 0)).collect();
-    for _ in 0..order.len().max(1) {
+    let mut slip_x: Vec<i32> = vec![0; slips.len()];
+    // Ende einer gelegten Kreuzungsweiche: (Weiche, Ende, rechts?).
+    let slip_end = |port: PortRef| -> Option<(usize, usize, bool)> {
+        let i = *slip_of.get(&port.node)?;
+        let end = slip_ends[i].iter().position(|e| *e == port)?;
+        let placement = slip_placed[i]?;
+        Some((i, end, placement.right(end)))
+    };
+    for _ in 0..(order.len() + slips.len()).max(1) {
         let mut changed = false;
+        // (linker Port, rechter Nachbar-Port, benötigtes x des Nachbarn)
+        let mut edges: Vec<(PortRef, i32)> = Vec::new();
         for &node in &order {
             let Some(here) = placed.get(&node).copied() else {
                 continue;
             };
             for &port in ports(node) {
-                if !right_side(here.orient, port) {
-                    continue;
+                if right_side(here.orient, port) {
+                    edges.push((PortRef::new(node, port), xs[&node] + width(topo, node)));
                 }
-                let Some(other) = topo.linked(PortRef::new(node, port)) else {
-                    continue;
-                };
-                let Some(there) = placed.get(&other.node) else {
-                    continue;
-                };
-                if right_side(there.orient, other.port) {
-                    continue; // widersprüchlich ausgerichtet (Schleife): ohne Bedingung
+            }
+        }
+        for (i, x) in slip_ends.iter().enumerate() {
+            let Some(placement) = slip_placed[i] else {
+                continue;
+            };
+            for (end, port) in x.iter().enumerate() {
+                if placement.right(end) {
+                    edges.push((*port, slip_x[i] + SLIP_WIDTH));
                 }
-                let need = xs[&node] + width(topo, node);
-                if xs[&other.node] < need {
-                    xs.insert(other.node, need);
+            }
+        }
+        for (from, need) in edges {
+            let Some(other) = topo.linked(from) else {
+                continue;
+            };
+            if let Some((i, _, right)) = slip_end(other) {
+                if !right && slip_x[i] < need {
+                    slip_x[i] = need;
                     changed = true;
                 }
+                continue;
+            }
+            let Some(there) = placed.get(&other.node) else {
+                continue;
+            };
+            if right_side(there.orient, other.port) {
+                continue; // widersprüchlich ausgerichtet (Schleife): ohne Bedingung
+            }
+            if xs.get(&other.node).is_some_and(|x| *x < need) {
+                xs.insert(other.node, need);
+                changed = true;
             }
         }
         if !changed {
             break;
         }
     }
-    let min_lane = placed.values().map(|p| p.lane).min().unwrap_or(0);
+    let min_lane = placed
+        .values()
+        .map(|p| p.lane)
+        .chain(slip_placed.iter().flatten().flat_map(|x| x.lanes))
+        .min()
+        .unwrap_or(0);
     let lane_y = |lane: i32| MARGIN + (lane - min_lane) * LANE;
     let gx = |v: i32| MARGIN + v;
 
     // Lage eines Ports.
+    let slip_pos = |i: usize, end: usize| -> Pos {
+        let Some(placement) = slip_placed.get(i).copied().flatten() else {
+            return [0, 0];
+        };
+        let x = slip_x[i] + if placement.right(end) { SLIP_WIDTH } else { 0 };
+        [gx(x), lane_y(placement.lanes[end])]
+    };
     let port_pos = |node: NodeRef, port: Port| -> Pos {
+        if let Some((i, end, _)) = slip_end(PortRef::new(node, port)) {
+            return slip_pos(i, end);
+        }
         let Some(p) = placed.get(&node) else {
             return [0, 0];
         };
@@ -397,7 +520,10 @@ pub fn layout(topo: &Topology) -> Layout {
     let track_end = |node: NodeRef, port: Port| -> Pos {
         let mine = port_pos(node, port);
         match topo.linked(PortRef::new(node, port)) {
-            Some(other) if matches!(other.node, NodeRef::Point(_) | NodeRef::Terminal(_)) => {
+            Some(other)
+                if matches!(other.node, NodeRef::Point(_) | NodeRef::Terminal(_))
+                    || slip_end(other).is_some() =>
+            {
                 [port_pos(other.node, other.port)[0], mine[1]]
             }
             Some(other)
@@ -444,6 +570,7 @@ pub fn layout(topo: &Topology) -> Layout {
             tvd: tvd_name(TvdMember::Track(id)),
             area: area_of(TvdMember::Track(id)),
             line,
+            slip: None,
         });
     }
 
@@ -476,8 +603,18 @@ pub fn layout(topo: &Topology) -> Layout {
             fork: [fork_x, tip[1]],
             left: leg(Port::Left),
             right: leg(Port::Right),
+            slip: None,
         });
     }
+    let slip_labels = slip_shapes(
+        topo,
+        &slips,
+        &slip_placed,
+        &slip_pos,
+        &mut tracks,
+        &mut track_ends,
+        &mut points,
+    );
 
     let mut terminals = Vec::new();
     for (id, t) in topo.terminals() {
@@ -540,6 +677,7 @@ pub fn layout(topo: &Topology) -> Layout {
 
     let crossings = topo
         .crossings()
+        .filter(|c| !slips.iter().any(|x| c.name == format!("{}.x", x.name)))
         .filter_map(|c| {
             let [(ta, pa), (tb, pb)] = c.legs;
             let (a, _) = along(ta, pa.as_mm())?;
@@ -624,7 +762,14 @@ pub fn layout(topo: &Topology) -> Layout {
         .max()
         .unwrap_or(0)
         + MARGIN;
-    let height = placed.values().map(|p| lane_y(p.lane)).max().unwrap_or(0) + MARGIN;
+    let height = placed
+        .values()
+        .map(|p| p.lane)
+        .chain(slip_placed.iter().flatten().flat_map(|x| x.lanes))
+        .map(lane_y)
+        .max()
+        .unwrap_or(0)
+        + MARGIN;
     // Beschriftung der Betriebsstellen braucht oben Platz: alles nach unten schieben.
     let shift = (MARGIN + 10
         - stations
@@ -646,11 +791,95 @@ pub fn layout(topo: &Topology) -> Layout {
         borders,
         areas,
         stations,
+        slips: slip_labels,
     };
     if shift > 0 {
         shift_down(&mut layout, shift);
     }
     layout
+}
+
+/// Gleise und Zungenpaare der Kreuzungsweichen: gerade Linien zwischen ihren Enden. Liefert
+/// die Beschriftungen.
+#[allow(clippy::too_many_arguments)]
+fn slip_shapes(
+    topo: &Topology,
+    slips: &[&railit_topology::Slip],
+    placed: &[Option<SlipPlaced>],
+    pos: &dyn Fn(usize, usize) -> Pos,
+    tracks: &mut Vec<TrackShape>,
+    track_ends: &mut BTreeMap<railit_types::TrackId, (Pos, Pos, bool)>,
+    points: &mut Vec<PointShape>,
+) -> Vec<MarkShape> {
+    let tvd_name = |member: TvdMember| {
+        topo.tvd_of(member)
+            .and_then(|t| topo.tvd(t))
+            .map(|t| t.name.clone())
+    };
+    let area_of = |member: TvdMember| {
+        topo.tvd_of(member).and_then(|t| {
+            topo.area_of_tvd(t)
+                .and_then(|a| topo.area(a))
+                .map(|a| a.name.clone())
+        })
+    };
+    let mut labels = Vec::new();
+    for (i, x) in slips.iter().enumerate() {
+        if placed.get(i).copied().flatten().is_none() {
+            continue;
+        }
+        let at = |end: usize| pos(i, end);
+        // Gleise: a–c, b–d, Bogen a–d, Bogen b–c (siehe `Slip::tracks`).
+        for (t, (from, to)) in x.tracks.iter().zip([(0, 2), (1, 3), (0, 3), (1, 2)]) {
+            let (a, b) = (at(from), at(to));
+            let (start, end) = if a[0] <= b[0] { (a, b) } else { (b, a) };
+            track_ends.insert(*t, (a, b, true));
+            tracks.push(TrackShape {
+                name: topo.track(*t).map(|t| t.name.clone()).unwrap_or_default(),
+                tvd: tvd_name(TvdMember::Track(*t)),
+                area: area_of(TvdMember::Track(*t)),
+                line: vec![start, end],
+                slip: Some(x.name.clone()),
+            });
+        }
+        // Zungenpaare: Spitze am Ende, links gerade, rechts in den Bogen.
+        let ends: &[usize] = if x.points.len() == 4 {
+            &[0, 1, 2, 3]
+        } else {
+            &[0, 3]
+        };
+        for (p, &end) in x.points.iter().zip(ends) {
+            let (straight, curve) = match end {
+                0 => (2, 3),
+                1 => (3, 2),
+                2 => (0, 1),
+                _ => (1, 0),
+            };
+            let tip = at(end);
+            let towards = |other: usize| {
+                let o = at(other);
+                [tip[0] + (o[0] - tip[0]) / 3, tip[1] + (o[1] - tip[1]) / 3]
+            };
+            let left = towards(straight);
+            let right = towards(curve);
+            points.push(PointShape {
+                name: topo.point(*p).map(|p| p.name.clone()).unwrap_or_default(),
+                tvd: tvd_name(TvdMember::Point(*p)),
+                area: area_of(TvdMember::Point(*p)),
+                tip,
+                fork: tip,
+                left,
+                right,
+                slip: Some(x.name.clone()),
+            });
+        }
+        let (a, c) = (at(0), at(2));
+        labels.push(MarkShape {
+            name: x.name.clone(),
+            at: [i32::midpoint(a[0], c[0]), a[1] - 12],
+        });
+    }
+    labels
 }
 
 fn shift_down(l: &mut Layout, dy: i32) {
@@ -669,7 +898,12 @@ fn shift_down(l: &mut Layout, dy: i32) {
     for s in &mut l.signals {
         s.at[1] += dy;
     }
-    for m in l.level_crossings.iter_mut().chain(l.stations.iter_mut()) {
+    for m in l
+        .level_crossings
+        .iter_mut()
+        .chain(l.stations.iter_mut())
+        .chain(l.slips.iter_mut())
+    {
         m.at[1] += dy;
     }
     for b in &mut l.borders {

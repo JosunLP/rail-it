@@ -67,6 +67,31 @@ Ein Hauptsignal muss an einer Gleisfreimeldegrenze stehen – in der Praxis am G
 Validierung meldet Signale an anderen Stellen (REQ-PLN-010).
 :::
 
+## Kreuzungen und Kreuzungsweichen
+
+Eine **Kreuzung** ohne bewegliche Teile (`[[crossing]]`) verbindet keine Gleise; beide
+Kreuzungsstellen liegen im selben Gleisfreimeldeabschnitt (`examples/kreuzung.toml`).
+
+Eine **Kreuzungsweiche** beschreibt `[[slip]]` als Ganzes; rail-it legt Zungenpaare, innere
+Gleise, Kreuzung, Kopplungen und Abschnitt selbst an (`examples/dkw.toml`):
+
+```toml
+[[slip]]
+name = "DKW1"
+kind = "double"            # single (EKW) oder double (DKW)
+length_m = 40
+curve_speed_kmh = 40
+
+[[link]]
+from = "w1.b"
+to = "DKW1.a"              # Enden a, b auf der einen, c, d auf der anderen Seite
+```
+
+Gerade führen `a`–`c` und `b`–`d` über die Kreuzung, die Bögen `a`–`d` und (nur DKW) `b`–`c`.
+Die Zungenpaare `DKW1a` … `DKW1d` lassen sich wie Weichen bedienen; jedes nimmt das gekoppelte
+Zungenpaar seines Endes mit. Zwei beliebige Weichen an einem gemeinsamen Antrieb, etwa eine
+Weichenverbindung, koppelt `[[coupling]]` (siehe [Referenz](../referenz/netzformat#coupling-gekoppelte-weichen)).
+
 ## Gleisfreimeldung
 
 Jedes Gleis und jede Weiche gehört zu genau einem Gleisfreimeldeabschnitt; Lücken weist die

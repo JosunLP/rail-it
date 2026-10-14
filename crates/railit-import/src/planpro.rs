@@ -1469,11 +1469,17 @@ impl Micro {
 /// Betriebsstellen).
 ///
 /// # Errors
-/// Beschreibung, wenn das Netz Stellbereiche, Grenzen zu Nachbarbereichen oder
-/// ETCS-Halt-Tafeln hat, die PlanPro hier nicht abbildet.
+/// Beschreibung, wenn das Netz Stellbereiche, Grenzen zu Nachbarbereichen,
+/// ETCS-Halt-Tafeln oder gekoppelte Weichen (Kreuzungsweichen) hat, die PlanPro hier nicht
+/// abbildet.
 pub fn export(net: &Topology) -> Result<(String, Vec<String>), String> {
     if net.areas().len() > 0 {
         return Err("Netze mit Stellbereichen lassen sich nicht nach PlanPro ausgeben".into());
+    }
+    if net.couplings().len() > 0 {
+        return Err(
+            "Kreuzungsweichen und gekoppelte Weichen gibt der PlanPro-Export noch nicht aus".into(),
+        );
     }
     let mut warnings = Vec::new();
     if net.stations().len() > 0 {

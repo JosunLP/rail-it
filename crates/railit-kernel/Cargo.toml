@@ -47,5 +47,9 @@ required-features = ["alloc"]
 name = "takeover"
 required-features = ["alloc"]
 
+[[test]]
+name = "coupling"
+required-features = ["alloc"]
+
 [lints]
 workspace = true

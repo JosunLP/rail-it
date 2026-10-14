@@ -60,7 +60,7 @@ pub fn to_svg(layout: &Layout) -> String {
                 line(&mut out, *a, *b, "track");
             }
         }
-        if let (Some(a), Some(b)) = (t.line.first(), t.line.last()) {
+        if let (Some(a), Some(b), None) = (t.line.first(), t.line.last(), &t.slip) {
             text(
                 &mut out,
                 [i32::midpoint(a[0], b[0]), b[1] + 18],
@@ -73,7 +73,12 @@ pub fn to_svg(layout: &Layout) -> String {
         line(&mut out, p.tip, p.fork, "track");
         line(&mut out, p.fork, p.left, "track");
         line(&mut out, p.fork, p.right, "track");
-        text(&mut out, [p.fork[0] - 8, p.fork[1] - 10], "name", &p.name);
+        if p.slip.is_none() {
+            text(&mut out, [p.fork[0] - 8, p.fork[1] - 10], "name", &p.name);
+        }
+    }
+    for x in &layout.slips {
+        text(&mut out, [x.at[0] - 14, x.at[1]], "name", &x.name);
     }
     for t in &layout.terminals {
         let [x, y] = t.at;
@@ -113,21 +118,26 @@ pub fn to_svg(layout: &Layout) -> String {
             &s.name,
         );
     }
+    marks(&mut out, layout);
+    out.push_str("</svg>\n");
+    out
+}
+
+/// Kreuzungen und Bahnübergänge.
+fn marks(out: &mut String, layout: &Layout) {
     for c in &layout.crossings {
         let [a, b] = c.at;
-        line(&mut out, a, b, "crossing-link");
+        line(out, a, b, "crossing-link");
         for [x, y] in [a, b] {
-            line(&mut out, [x - 7, y - 7], [x + 7, y + 7], "crossing");
-            line(&mut out, [x - 7, y + 7], [x + 7, y - 7], "crossing");
+            line(out, [x - 7, y - 7], [x + 7, y + 7], "crossing");
+            line(out, [x - 7, y + 7], [x + 7, y - 7], "crossing");
         }
-        text(&mut out, [a[0] - 34, a[1] - 10], "name", &c.name);
+        text(out, [a[0] - 34, a[1] - 10], "name", &c.name);
     }
     for l in &layout.level_crossings {
         let [x, y] = l.at;
-        line(&mut out, [x - 6, y - 14], [x - 6, y + 14], "lx");
-        line(&mut out, [x + 6, y - 14], [x + 6, y + 14], "lx");
-        text(&mut out, [x + 10, y - 16], "name", &l.name);
+        line(out, [x - 6, y - 14], [x - 6, y + 14], "lx");
+        line(out, [x + 6, y - 14], [x + 6, y + 14], "lx");
+        text(out, [x + 10, y - 16], "name", &l.name);
     }
-    out.push_str("</svg>\n");
-    out
 }

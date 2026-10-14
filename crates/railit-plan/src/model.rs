@@ -15,8 +15,8 @@ use sha2::{Digest, Sha256};
 use crate::error::PlanError;
 use crate::format::{
     BORDER_INITIAL, END_BORDER, END_BOUNDARY, END_BUFFER_STOP, END_SIGNAL, FLAG_SIGNED,
-    FLANK_POINT, FLANK_SIGNAL, H_BODY_LEN, H_BORDER_OFF, H_BORDERS, H_CONFLICT_OFF, H_FLAGS,
-    H_LX_TVD_OFF, H_LXS, H_NAMES_LEN, H_NAMES_OFF, H_POINT_TVD_OFF, H_POINTS, H_POOL_OFF,
+    FLANK_POINT, FLANK_SIGNAL, H_BODY_LEN, H_BORDER_OFF, H_BORDERS, H_CONFLICT_OFF, H_COUPLING_OFF,
+    H_FLAGS, H_LX_TVD_OFF, H_LXS, H_NAMES_LEN, H_NAMES_OFF, H_POINT_TVD_OFF, H_POINTS, H_POOL_OFF,
     H_POOL_WORDS, H_ROUTE_OFF, H_ROUTES, H_SIGNAL_OFF, H_SIGNALS, H_TVD_FLAGS_OFF, H_TVDS,
     H_VERSION, HEADER_LEN, MAGIC, NONE, TVD_ENTRY, VERSION, encode_point,
 };
@@ -29,6 +29,8 @@ pub struct PointDef {
     pub name: String,
     /// Gleisfreimeldeabschnitt, in dem die Weiche liegt.
     pub tvd: TvdId,
+    /// Gekoppelte Weiche und ob die Kopplung gegenläufig ist (REQ-PLN-021).
+    pub coupled: Option<(PointId, bool)>,
 }
 
 /// Signal im Plan.
@@ -206,6 +208,7 @@ impl Plan {
                 .map(|id| PointDef {
                     name: view.point_name(id).unwrap_or_default().into(),
                     tvd: view.point_tvd(id).unwrap_or(TvdId::new(u32::MAX)),
+                    coupled: view.point_coupling(id),
                 })
                 .collect(),
             signals: ids(view.signal_count())
@@ -385,6 +388,19 @@ impl Plan {
             w.u32(p.tvd.raw());
         }
 
+        let coupling_off = w.pos()?;
+        for p in &self.points {
+            w.u32(match p.coupled {
+                None => NONE,
+                Some((q, inverted)) => q
+                    .raw()
+                    .checked_mul(2)
+                    .ok_or(PlanError::TooLarge)?
+                    .checked_add(u32::from(inverted))
+                    .ok_or(PlanError::TooLarge)?,
+            });
+        }
+
         let signal_off = w.pos()?;
         for s in &self.signals {
             w.u32(s.kind.code());
@@ -472,6 +488,7 @@ impl Plan {
             (H_FLAGS, if signed { FLAG_SIGNED } else { 0 }),
             (H_BORDERS, Writer::len(self.borders.len())?),
             (H_BORDER_OFF, border_off),
+            (H_COUPLING_OFF, coupling_off),
         ];
         w.buf
             .get_mut(..4)

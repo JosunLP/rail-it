@@ -96,6 +96,20 @@ pub enum TopologyError {
         /// Abschnitte der beiden Kreuzungsstellen (bzw. Gleis, wenn beide darauf liegen).
         tvds: Vec<String>,
     },
+    /// Zwei Weichen können nicht gekoppelt werden.
+    InvalidCoupling {
+        /// Die beiden Weichen.
+        points: [String; 2],
+        /// Grund.
+        reason: &'static str,
+    },
+    /// Eine Kreuzungsweiche ist nicht wie vorgesehen aufgebaut.
+    InvalidSlip {
+        /// Kreuzungsweiche.
+        slip: String,
+        /// Grund.
+        reason: String,
+    },
     /// Ein Stellbereich hat keine Abschnitte.
     EmptyArea {
         /// Bereich.
@@ -144,6 +158,7 @@ impl TopologyError {
                 "REQ-TOP-006"
             }
             Self::CrossingTvd { .. } => "REQ-TOP-016",
+            Self::InvalidCoupling { .. } | Self::InvalidSlip { .. } => "REQ-TOP-017",
             Self::EmptyArea { .. }
             | Self::TvdNotInArea { .. }
             | Self::TvdInMultipleAreas { .. } => "REQ-TOP-011",
@@ -208,6 +223,14 @@ impl fmt::Display for TopologyError {
                  selben Gleisfreimeldeabschnitt liegen (gefunden: {})",
                 tvds.join(", ")
             ),
+            Self::InvalidCoupling { points, reason } => write!(
+                f,
+                "Kopplung der Weichen „{}“ und „{}“: {reason}",
+                points[0], points[1]
+            ),
+            Self::InvalidSlip { slip, reason } => {
+                write!(f, "Kreuzungsweiche „{slip}“: {reason}")
+            }
             Self::EmptyArea { area } => write!(f, "Stellbereich „{area}“ ist leer"),
             Self::TvdNotInArea { tvd } => {
                 write!(

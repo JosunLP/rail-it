@@ -13,11 +13,47 @@ use railit_types::{
 
 use crate::error::{Report, TopologyError, Warning};
 use crate::model::{
-    Area, Crossing, DEFAULT_DIVERGING_SPEED, Direction, ElementRef, LevelCrossing, NodeRef,
-    Platform, Point, PortRef, Signal, SignalKind, SignalSystem, Station, Terminal, TerminalKind,
-    Track, TvdMember, TvdSection,
+    Area, Coupling, Crossing, DEFAULT_DIVERGING_SPEED, Direction, ElementRef, LevelCrossing,
+    NodeRef, Platform, Point, Port, PortRef, Signal, SignalKind, SignalSystem, Slip, SlipKind,
+    Station, Terminal, TerminalKind, Track, TvdMember, TvdSection,
 };
 use crate::topology::{Links, Topology};
+
+/// Namen der Weichen und der inneren Gleise einer Kreuzungsweiche.
+fn slip_names(name: &str, kind: SlipKind) -> (Vec<String>, Vec<String>) {
+    let (letters, tracks): (&[&str], usize) = match kind {
+        SlipKind::Double => (&["a", "b", "c", "d"], 4),
+        SlipKind::Single => (&["a", "d"], 3),
+    };
+    (
+        letters.iter().map(|l| format!("{name}{l}")).collect(),
+        (1..=tracks).map(|i| format!("{name}.{i}")).collect(),
+    )
+}
+
+/// Aufbau einer Kreuzungsweiche: (Weiche, Strang, Gleis, Gleisport). Weichen und Gleise in
+/// der Reihenfolge von [`slip_names`]; links gerade, rechts in den Bogen. Gleise: `a`–`c`,
+/// `b`–`d`, Bogen `a`–`d`, Bogen `b`–`c`.
+fn slip_links(kind: SlipKind) -> &'static [(usize, Port, usize, Port)] {
+    match kind {
+        SlipKind::Double => &[
+            (0, Port::Left, 0, Port::A),
+            (0, Port::Right, 2, Port::A),
+            (1, Port::Left, 1, Port::A),
+            (1, Port::Right, 3, Port::A),
+            (2, Port::Left, 0, Port::B),
+            (2, Port::Right, 3, Port::B),
+            (3, Port::Left, 1, Port::B),
+            (3, Port::Right, 2, Port::B),
+        ],
+        SlipKind::Single => &[
+            (0, Port::Left, 0, Port::A),
+            (0, Port::Right, 2, Port::A),
+            (1, Port::Left, 1, Port::B),
+            (1, Port::Right, 2, Port::B),
+        ],
+    }
+}
 
 /// Erfolgreich validiertes Netz samt Warnungen.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +94,8 @@ pub struct TopologyBuilder {
     tvds: Vec<TvdSection>,
     level_crossings: Vec<LevelCrossing>,
     crossings: Vec<Crossing>,
+    couplings: Vec<Coupling>,
+    slips: Vec<Slip>,
     links: Links,
     names: BTreeMap<String, ElementRef>,
     areas: Vec<Area>,
@@ -74,7 +112,10 @@ impl TopologyBuilder {
     }
 
     fn check_name(&self, name: &str) -> Result<(), TopologyError> {
-        if self.names.contains_key(name) || self.crossings.iter().any(|c| c.name == name) {
+        if self.names.contains_key(name)
+            || self.crossings.iter().any(|c| c.name == name)
+            || self.slips.iter().any(|x| x.name == name)
+        {
             return Err(TopologyError::DuplicateName {
                 name: name.to_string(),
             });
@@ -371,6 +412,215 @@ impl TopologyBuilder {
         Ok(())
     }
 
+    /// Koppelt zwei Weichen an einen gemeinsamen Antrieb (REQ-TOP-017, siehe [`Coupling`]).
+    ///
+    /// # Errors
+    /// Unbekannte Weiche, dieselbe Weiche zweimal oder eine Weiche, die schon gekoppelt ist.
+    pub fn couple_points(
+        &mut self,
+        first: PointId,
+        second: PointId,
+        inverted: bool,
+    ) -> Result<(), TopologyError> {
+        let a = self.point(first)?.name.clone();
+        let b = self.point(second)?.name.clone();
+        let reason = if first == second {
+            Some("mit sich selbst gekoppelt")
+        } else if self
+            .couplings
+            .iter()
+            .any(|c| c.points.contains(&first) || c.points.contains(&second))
+        {
+            Some("bereits mit einer anderen Weiche gekoppelt")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Err(TopologyError::InvalidCoupling {
+                points: [a, b],
+                reason,
+            });
+        }
+        self.couplings.push(Coupling {
+            points: [first, second],
+            inverted,
+        });
+        Ok(())
+    }
+
+    /// Fügt eine Kreuzungsweiche hinzu (REQ-TOP-017, siehe [`Slip`]): die Weichen
+    /// `<Name>a` … `<Name>d` (EKW: `a`, `d`), die inneren Gleise `<Name>.1` … `<Name>.4` mit
+    /// der Länge `length`, die Kreuzung `<Name>.x` in ihrer Mitte, die Kopplungen und den
+    /// Gleisfreimeldeabschnitt `<Name>`. Geliefert werden die Ports der Enden `a` … `d`.
+    ///
+    /// # Errors
+    /// Doppelter Name, Länge unter 2 mm oder zu viele Elemente.
+    pub fn add_slip(
+        &mut self,
+        name: impl Into<String>,
+        kind: SlipKind,
+        length: Length,
+        curve_speed: Speed,
+    ) -> Result<[PortRef; 4], TopologyError> {
+        let name = name.into();
+        let (point_names, track_names) = slip_names(&name, kind);
+        let crossing = format!("{name}.x");
+        // Erst alle Namen prüfen, damit ein Fehler kein halbes Element hinterlässt.
+        for n in core::iter::once(&name)
+            .chain(&point_names)
+            .chain(&track_names)
+            .chain(core::iter::once(&crossing))
+        {
+            self.check_name(n)?;
+        }
+        let half = Length::from_mm(length.as_mm() / 2);
+        if half == Length::ZERO {
+            return Err(TopologyError::ZeroLength {
+                track: track_names.first().cloned().unwrap_or_default(),
+            });
+        }
+        let mut tracks = Vec::new();
+        for n in &track_names {
+            tracks.push(self.add_track(n.clone(), length)?);
+        }
+        let mut points = Vec::new();
+        for n in &point_names {
+            let p = self.add_point(n.clone())?;
+            self.set_point_diverging(p, PointPosition::Right, curve_speed)?;
+            points.push(p);
+        }
+        for &(p, pp, t, tp) in slip_links(kind) {
+            let (Some(&p), Some(&t)) = (points.get(p), tracks.get(t)) else {
+                return Err(TopologyError::TooManyElements { kind: "Weiche" });
+            };
+            self.connect(
+                PortRef::new(NodeRef::Point(p), pp),
+                PortRef::new(NodeRef::Track(t), tp),
+            )?;
+        }
+        let (Some(&s1), Some(&s2)) = (tracks.first(), tracks.get(1)) else {
+            return Err(TopologyError::TooManyElements { kind: "Gleis" });
+        };
+        self.add_crossing(crossing, [(s1, half), (s2, half)])?;
+        let members: Vec<TvdMember> = tracks
+            .iter()
+            .map(|t| TvdMember::Track(*t))
+            .chain(points.iter().map(|p| TvdMember::Point(*p)))
+            .collect();
+        self.add_tvd(name.clone(), &members)?;
+        self.recognize_slip(&name, kind)?;
+        self.slip_ends(&name)
+            .ok_or_else(|| TopologyError::InvalidSlip {
+                slip: name,
+                reason: "nicht angelegt".into(),
+            })
+    }
+
+    /// Erkennt eine Kreuzungsweiche aus bereits angelegten Elementen nach den Namen von
+    /// [`Self::add_slip`] (Import aus railML), prüft ihren Aufbau, koppelt die Weichen und
+    /// übernimmt sie.
+    ///
+    /// # Errors
+    /// [`TopologyError::InvalidSlip`], wenn ein Element fehlt oder anders verbunden ist.
+    pub fn recognize_slip(&mut self, name: &str, kind: SlipKind) -> Result<(), TopologyError> {
+        let invalid = |reason: String| TopologyError::InvalidSlip {
+            slip: name.into(),
+            reason,
+        };
+        let (point_names, track_names) = slip_names(name, kind);
+        if kind == SlipKind::Single {
+            for extra in [format!("{name}b"), format!("{name}c"), format!("{name}.4")] {
+                if self.lookup(&extra).is_some() {
+                    return Err(invalid(format!(
+                        "„{extra}“ gehört nicht zu einer einfachen Kreuzungsweiche"
+                    )));
+                }
+            }
+        }
+        let mut points = Vec::new();
+        for n in point_names {
+            match self.lookup(&n) {
+                Some(ElementRef::Point(p)) => points.push(p),
+                _ => return Err(invalid(format!("Weiche „{n}“ fehlt"))),
+            }
+        }
+        let mut tracks = Vec::new();
+        for n in track_names {
+            match self.lookup(&n) {
+                Some(ElementRef::Track(t)) => tracks.push(t),
+                _ => return Err(invalid(format!("Gleis „{n}“ fehlt"))),
+            }
+        }
+        let point_port = |i: usize, port: Port| {
+            points
+                .get(i)
+                .map(|p| PortRef::new(NodeRef::Point(*p), port))
+                .ok_or_else(|| invalid("unvollständig".into()))
+        };
+        let track_port = |i: usize, port: Port| {
+            tracks
+                .get(i)
+                .map(|t| PortRef::new(NodeRef::Track(*t), port))
+                .ok_or_else(|| invalid("unvollständig".into()))
+        };
+        for &(p, pp, t, tp) in slip_links(kind) {
+            let here = point_port(p, pp)?;
+            if self.links.slot(here).copied().flatten() != Some(track_port(t, tp)?) {
+                return Err(invalid(format!(
+                    "Weiche „{}“: Strang {pp} ist nicht wie bei einer Kreuzungsweiche verbunden",
+                    self.node_name(here.node).unwrap_or_default(),
+                )));
+            }
+        }
+        let straight = [track_port(0, Port::A)?.node, track_port(1, Port::A)?.node];
+        let crossing = format!("{name}.x");
+        let crossed = self.crossings.iter().any(|c| {
+            let legs = c.legs.map(|(t, _)| NodeRef::Track(t));
+            c.name == crossing && (legs == straight || legs == [straight[1], straight[0]])
+        });
+        if !crossed {
+            return Err(invalid(format!(
+                "Kreuzung „{crossing}“ der geraden Gleise fehlt"
+            )));
+        }
+        let ends = if kind == SlipKind::Double {
+            [
+                point_port(0, Port::Tip)?,
+                point_port(1, Port::Tip)?,
+                point_port(2, Port::Tip)?,
+                point_port(3, Port::Tip)?,
+            ]
+        } else {
+            [
+                point_port(0, Port::Tip)?,
+                track_port(1, Port::A)?,
+                track_port(0, Port::B)?,
+                point_port(1, Port::Tip)?,
+            ]
+        };
+        match points.as_slice() {
+            [a, b, c, d] => {
+                self.couple_points(*a, *b, true)?;
+                self.couple_points(*c, *d, true)?;
+            }
+            [a, d] => self.couple_points(*a, *d, false)?,
+            _ => {}
+        }
+        self.slips.push(Slip {
+            name: name.into(),
+            kind,
+            ends,
+            points,
+            tracks,
+        });
+        Ok(())
+    }
+
+    /// Übernimmt eine Kreuzungsweiche, deren Elemente bereits angelegt sind (Teilnetz).
+    pub(crate) fn record_slip(&mut self, slip: Slip) {
+        self.slips.push(slip);
+    }
+
     /// Fügt einen Gleisfreimeldeabschnitt hinzu.
     ///
     /// # Errors
@@ -445,6 +695,11 @@ impl TopologyBuilder {
         Ok(())
     }
 
+    /// Ports der Enden `a` … `d` der Kreuzungsweiche `name`, sofern bereits hinzugefügt.
+    pub fn slip_ends(&self, name: &str) -> Option<[PortRef; 4]> {
+        self.slips.iter().find(|s| s.name == name).map(|s| s.ends)
+    }
+
     /// Element mit dem fachlichen Namen `name`, sofern bereits hinzugefügt.
     pub fn lookup(&self, name: &str) -> Option<ElementRef> {
         self.names.get(name).copied()
@@ -510,6 +765,7 @@ impl TopologyBuilder {
         self.check_crossings(&track_tvds, &mut errors);
 
         let tvd_area = self.check_areas_and_stations(&mut errors);
+        self.check_couplings(&point_tvds, &tvd_area, &mut errors);
 
         // REQ-TOP-010: Zusammenhang (nur Warnung).
         let mut warnings = Vec::new();
@@ -534,6 +790,8 @@ impl TopologyBuilder {
             tvds: self.tvds,
             level_crossings: self.level_crossings,
             crossings: self.crossings,
+            couplings: self.couplings,
+            slips: self.slips,
             links: self.links,
             names: self.names,
             track_tvd: single(track_tvds),
@@ -584,6 +842,41 @@ impl TopologyBuilder {
                     } else {
                         vec![name(a), name(b)]
                     },
+                });
+            }
+        }
+    }
+
+    /// REQ-TOP-017: Gekoppelte Weichen gehören demselben Stellbereich an; ein Antrieb hängt
+    /// an genau einem Sicherheitskern.
+    fn check_couplings(
+        &self,
+        point_tvds: &[Vec<TvdId>],
+        tvd_area: &[Option<AreaId>],
+        errors: &mut Vec<TopologyError>,
+    ) {
+        if self.areas.is_empty() {
+            return;
+        }
+        let area = |p: PointId| {
+            p.index()
+                .and_then(|i| point_tvds.get(i))
+                .and_then(|l| l.first())
+                .and_then(|t| t.index())
+                .and_then(|i| tvd_area.get(i).copied().flatten())
+        };
+        for c in &self.couplings {
+            let [a, b] = c.points;
+            if area(a) != area(b) {
+                let name = |p: PointId| {
+                    p.index()
+                        .and_then(|i| self.points.get(i))
+                        .map(|x| x.name.clone())
+                        .unwrap_or_default()
+                };
+                errors.push(TopologyError::InvalidCoupling {
+                    points: [name(a), name(b)],
+                    reason: "in verschiedenen Stellbereichen",
                 });
             }
         }

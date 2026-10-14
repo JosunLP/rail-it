@@ -17,7 +17,7 @@ use railit_types::{AreaId, LxId, PointId, SignalId, TerminalId, TrackId, TvdId};
 
 use crate::builder::TopologyBuilder;
 use crate::error::{Report, TopologyError};
-use crate::model::{NodeRef, Port, PortRef, TerminalKind, TvdMember};
+use crate::model::{NodeRef, Port, PortRef, Slip, TerminalKind, TvdMember};
 use crate::topology::Topology;
 
 /// Grenze eines Teilnetzes zu einem Nachbarbereich.
@@ -234,6 +234,34 @@ impl Topology {
             let legs = c.legs.map(|(t, at)| track_map.get(&t).map(|l| (*l, at)));
             if let [Some(x), Some(y)] = legs {
                 b.add_crossing(c.name.clone(), [x, y]).map_err(err)?;
+            }
+        }
+
+        // Kopplungen: Beide Weichen liegen im selben Bereich (REQ-TOP-017).
+        for c in self.couplings() {
+            let [x, y] = c.points.map(|p| point_map.get(&p).copied());
+            if let (Some(x), Some(y)) = (x, y) {
+                b.couple_points(x, y, c.inverted).map_err(err)?;
+            }
+        }
+        for s in self.slips() {
+            let ports = s
+                .ends
+                .map(|p| local_node(p.node).map(|n| PortRef::new(n, p.port)));
+            let tracks: Option<Vec<TrackId>> =
+                s.tracks.iter().map(|t| track_map.get(t).copied()).collect();
+            let points: Option<Vec<PointId>> =
+                s.points.iter().map(|p| point_map.get(p).copied()).collect();
+            if let ([Some(a), Some(bb), Some(c), Some(d)], Some(tracks), Some(points)) =
+                (ports, tracks, points)
+            {
+                b.record_slip(Slip {
+                    name: s.name.clone(),
+                    kind: s.kind,
+                    ends: [a, bb, c, d],
+                    points,
+                    tracks,
+                });
             }
         }
 

@@ -14,11 +14,11 @@ use crate::error::PlanError;
 use crate::format::{
     BORDER_INITIAL, BORDER_WORDS, DIGEST_LEN, END_BORDER, END_BOUNDARY, END_BUFFER_STOP,
     END_SIGNAL, FLAG_SIGNED, FLANK_POINT, FLANK_SIGNAL, FLANK_WORDS, H_BODY_LEN, H_BORDER_OFF,
-    H_BORDERS, H_CONFLICT_OFF, H_FLAGS, H_LX_TVD_OFF, H_LXS, H_NAMES_LEN, H_NAMES_OFF,
-    H_POINT_TVD_OFF, H_POINTS, H_POOL_OFF, H_POOL_WORDS, H_ROUTE_OFF, H_ROUTES, H_SIGNAL_OFF,
-    H_SIGNALS, H_TVD_FLAGS_OFF, H_TVDS, H_VERSION, HEADER_LEN, MAGIC, NONE, ROUTE_LEN,
-    SIGNAL_WORDS, SIGNATURE_LEN, TVD_ENTRY, VERSION, decode_point, r, read_u32, read_u64,
-    read_word,
+    H_BORDERS, H_CONFLICT_OFF, H_COUPLING_OFF, H_FLAGS, H_LX_TVD_OFF, H_LXS, H_NAMES_LEN,
+    H_NAMES_OFF, H_POINT_TVD_OFF, H_POINTS, H_POOL_OFF, H_POOL_WORDS, H_ROUTE_OFF, H_ROUTES,
+    H_SIGNAL_OFF, H_SIGNALS, H_TVD_FLAGS_OFF, H_TVDS, H_VERSION, HEADER_LEN, MAGIC, NONE,
+    ROUTE_LEN, SIGNAL_WORDS, SIGNATURE_LEN, TVD_ENTRY, VERSION, decode_point, r, read_u32,
+    read_u64, read_word,
 };
 
 /// Ziel einer Fahrstraße.
@@ -110,6 +110,7 @@ pub struct PlanView<'a> {
     conflict_off: usize,
     conflict_words: usize,
     point_tvd_off: usize,
+    coupling_off: usize,
     signal_off: usize,
     tvd_flags_off: usize,
     lx_tvd_off: usize,
@@ -197,6 +198,7 @@ impl<'a> PlanView<'a> {
             conflict_off: to_usize(h(H_CONFLICT_OFF)?)?,
             conflict_words: words_for(routes),
             point_tvd_off: to_usize(h(H_POINT_TVD_OFF)?)?,
+            coupling_off: to_usize(h(H_COUPLING_OFF)?)?,
             signal_off: to_usize(h(H_SIGNAL_OFF)?)?,
             tvd_flags_off: to_usize(h(H_TVD_FLAGS_OFF)?)?,
             lx_tvd_off: to_usize(h(H_LX_TVD_OFF)?)?,
@@ -210,6 +212,7 @@ impl<'a> PlanView<'a> {
         view.check_section("Fahrstraßen", view.route_off, mul(routes, ROUTE_LEN)?)?;
         view.check_section("Pool", view.pool_off, mul(view.pool_words, 4)?)?;
         view.check_section("Weichen-TVD", view.point_tvd_off, mul(points, 4)?)?;
+        view.check_section("Kopplungen", view.coupling_off, mul(points, 4)?)?;
         view.check_section(
             "Signale",
             view.signal_off,
@@ -311,6 +314,25 @@ impl<'a> PlanView<'a> {
                     what: "TVD einer Weiche",
                     index,
                 });
+            }
+        }
+        // REQ-PLN-021: Kopplungen verweisen auf eine andere Weiche und sind symmetrisch.
+        for index in 0..self.points {
+            let bad = PlanError::InvalidReference {
+                what: "Kopplung einer Weiche",
+                index,
+            };
+            let word = read_word(self.bytes, self.coupling_off, index).ok_or(bad)?;
+            if word == NONE {
+                continue;
+            }
+            let id = PointId::from_index(index).ok_or(PlanError::TooLarge)?;
+            let (partner, inverted) = (PointId::new(word >> 1), word & 1 == 1);
+            if partner == id
+                || partner.index().is_none_or(|p| p >= self.points)
+                || self.point_coupling(partner) != Some((id, inverted))
+            {
+                return Err(bad);
             }
         }
         for index in 0..self.lxs {
@@ -471,6 +493,18 @@ impl<'a> PlanView<'a> {
                 return Err(bad("Flankenschutz-Eintrag")(index));
             }
 
+            // REQ-PLN-021: Zu jeder gekoppelten Weiche ist die Partnerweiche in der
+            // gekoppelten Lage verlangt.
+            let required = || {
+                all_points().chain(view.flank().filter_map(|f| match f.protection {
+                    Protection::Point(p, pos) => Some((p, pos)),
+                    Protection::Signal(_) => None,
+                }))
+            };
+            if !self.couplings_covered(required) {
+                return Err(bad("Kopplung nicht verlangt")(index));
+            }
+
             // Bahnübergänge.
             for (i, lx) in view.level_crossings().enumerate() {
                 let tvd = self.lx_tvd(lx);
@@ -521,6 +555,9 @@ impl<'a> PlanView<'a> {
                 }
             }
             let points = || self.border_approach_points(id);
+            if !self.couplings_covered(points) {
+                return Err(bad);
+            }
             for (i, (p, _)) in points().enumerate() {
                 if p.index().is_none_or(|x| x >= self.points)
                     || points().skip(i.saturating_add(1)).any(|(o, _)| o == p)
@@ -531,6 +568,20 @@ impl<'a> PlanView<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Verlangt die Liste zu jeder gekoppelten Weiche auch die Partnerweiche in der
+    /// gekoppelten Lage?
+    fn couplings_covered<I>(&self, list: impl Fn() -> I) -> bool
+    where
+        I: Iterator<Item = (PointId, PointPosition)>,
+    {
+        list().all(|(p, pos)| {
+            self.point_coupling(p).is_none_or(|(q, inverted)| {
+                let want = if inverted { pos.other() } else { pos };
+                list().any(|x| x == (q, want))
+            })
+        })
     }
 
     fn border_word(&self, id: BorderId, word: usize) -> Option<u32> {
@@ -890,6 +941,16 @@ impl<'a> PlanView<'a> {
             return None;
         }
         read_word(self.bytes, self.point_tvd_off, index).map(TvdId::new)
+    }
+
+    /// Gekoppelte Weiche und ob die Kopplung gegenläufig ist (REQ-PLN-021).
+    pub fn point_coupling(&self, id: PointId) -> Option<(PointId, bool)> {
+        let index = id.index()?;
+        if index >= self.points {
+            return None;
+        }
+        let word = read_word(self.bytes, self.coupling_off, index)?;
+        (word != NONE).then(|| (PointId::new(word >> 1), word & 1 == 1))
     }
 
     /// Gleisfreimeldeabschnitt, in dem ein Bahnübergang liegt.

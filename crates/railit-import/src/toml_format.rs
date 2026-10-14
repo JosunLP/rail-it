@@ -59,8 +59,8 @@ use serde::Deserialize;
 
 use railit_topology::{
     DEFAULT_DIVERGING_SPEED, Direction, ElementRef, Length, NodeRef, PointPosition, Port, PortRef,
-    SignalKind, SignalSystem, Speed, TerminalKind, TopologyBuilder, TopologyError, TvdMember,
-    Validated,
+    SignalKind, SignalSystem, SlipKind, Speed, TerminalKind, TopologyBuilder, TopologyError,
+    TvdMember, Validated,
 };
 
 use crate::{Diagnostic, ImportError};
@@ -85,6 +85,10 @@ struct Document {
     level_crossing: Vec<LevelCrossingEntry>,
     #[serde(default)]
     crossing: Vec<CrossingEntry>,
+    #[serde(default)]
+    slip: Vec<SlipEntry>,
+    #[serde(default)]
+    coupling: Vec<CouplingEntry>,
     #[serde(default)]
     area: Vec<AreaEntry>,
     #[serde(default)]
@@ -192,6 +196,31 @@ struct CrossingLeg {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct SlipEntry {
+    name: String,
+    kind: SlipKindEntry,
+    length_m: f64,
+    #[serde(default)]
+    curve_speed_kmh: Option<u16>,
+}
+
+#[derive(Copy, Clone, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SlipKindEntry {
+    Single,
+    Double,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CouplingEntry {
+    points: [String; 2],
+    #[serde(default)]
+    inverted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LinkEntry {
     from: String,
     to: String,
@@ -248,6 +277,8 @@ pub fn parse(source: &str) -> Result<Validated, ImportError> {
     add_terminals(&mut b, doc.terminal, &mut errors);
     add_tracks(&mut b, doc.track, &mut errors);
     add_points(&mut b, doc.point, &mut errors);
+    add_slips(&mut b, doc.slip, &mut errors);
+    add_couplings(&mut b, &doc.coupling, &mut errors);
     add_links(&mut b, &doc.link, &mut errors);
     add_signals(&mut b, doc.signal, &mut errors);
     add_tvds(&mut b, doc.tvd, &mut errors);
@@ -338,6 +369,52 @@ fn add_points(b: &mut TopologyBuilder, entries: Vec<PointEntry>, errors: &mut Ve
                 .map_or(DEFAULT_DIVERGING_SPEED, Speed::from_kmh);
             if let Err(e) = b.set_point_diverging(id, pos, speed) {
                 errors.push(model_error(context, &e));
+            }
+        }
+    }
+}
+
+fn add_slips(b: &mut TopologyBuilder, entries: Vec<SlipEntry>, errors: &mut Vec<Diagnostic>) {
+    for x in entries {
+        let context = format!("slip „{}“", x.name);
+        let Some(length) = metres(x.length_m) else {
+            errors.push(invalid_metres(context, "length_m", x.length_m));
+            continue;
+        };
+        let kind = match x.kind {
+            SlipKindEntry::Single => SlipKind::Single,
+            SlipKindEntry::Double => SlipKind::Double,
+        };
+        let speed = x
+            .curve_speed_kmh
+            .map_or(DEFAULT_DIVERGING_SPEED, Speed::from_kmh);
+        if let Err(e) = b.add_slip(x.name, kind, length, speed) {
+            errors.push(model_error(context, &e));
+        }
+    }
+}
+
+fn add_couplings(b: &mut TopologyBuilder, entries: &[CouplingEntry], errors: &mut Vec<Diagnostic>) {
+    for c in entries {
+        let context = format!("coupling ({} – {})", c.points[0], c.points[1]);
+        let ids = c.points.clone().map(|name| match b.lookup(&name) {
+            Some(ElementRef::Point(id)) => Ok(id),
+            _ => Err(format!("„{name}“ ist keine bekannte Weiche")),
+        });
+        match ids {
+            [Ok(x), Ok(y)] => {
+                if let Err(e) = b.couple_points(x, y, c.inverted) {
+                    errors.push(model_error(context, &e));
+                }
+            }
+            [x, y] => {
+                for message in [x.err(), y.err()].into_iter().flatten() {
+                    errors.push(Diagnostic {
+                        context: context.clone(),
+                        message,
+                        requirement: None,
+                    });
+                }
             }
         }
     }
@@ -549,6 +626,16 @@ fn resolve_port(b: &TopologyBuilder, spec: &str) -> Result<PortRef, String> {
     let (name, port) = spec
         .rsplit_once('.')
         .ok_or_else(|| format!("„{spec}“ hat nicht die Form <element>.<port>"))?;
+    if let Some(ends) = b.slip_ends(name) {
+        let index = ["a", "b", "c", "d"]
+            .iter()
+            .position(|x| *x == port)
+            .ok_or_else(|| format!("„{port}“ ist kein Ende einer Kreuzungsweiche (a, b, c, d)"))?;
+        return ends
+            .get(index)
+            .copied()
+            .ok_or_else(|| format!("„{port}“ fehlt"));
+    }
     let port = Port::parse(port)
         .ok_or_else(|| format!("„{port}“ ist kein Port (erlaubt: a, b, tip, left, right, end)"))?;
     let node = match b.lookup(name) {

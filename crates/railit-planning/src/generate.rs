@@ -300,7 +300,9 @@ fn explore(
 
         match entry.node {
             NodeRef::Terminal(t) => {
-                if let Some((end, name)) = terminal_end(net, t, borders) {
+                if let Some((end, name)) = terminal_end(net, t, borders)
+                    && feasible(net, &frame.points)
+                {
                     drafts.push(finish(frame, end, name));
                 }
             }
@@ -311,7 +313,9 @@ fn explore(
                     Direction::BToA
                 };
                 if let Some(&end) = ends.get(&(t, direction)) {
-                    drafts.push(finish(frame, RouteEnd::Signal(end), signal_name(net, end)));
+                    if feasible(net, &frame.points) {
+                        drafts.push(finish(frame, RouteEnd::Signal(end), signal_name(net, end)));
+                    }
                 } else {
                     frame.exit = PortRef::new(entry.node, exit_port(direction));
                     stack.push(frame);
@@ -331,6 +335,15 @@ fn explore(
             }
         }
     }
+}
+
+/// REQ-PLN-021: Ein Weg, der gekoppelte Weichen gegen ihre Kopplung verlangt, existiert
+/// nicht.
+fn feasible(net: &Topology, points: &[(PointId, PointPosition)]) -> bool {
+    points.iter().all(|(p, pos)| {
+        net.coupled(*p, *pos)
+            .is_none_or(|(q, qpos)| points.iter().all(|(x, xpos)| *x != q || *xpos == qpos))
+    })
 }
 
 /// REQ-PLN-015: Durchrutschweg hinter dem Zielsignal bis zur ersten Gleisfreimeldegrenze
@@ -478,6 +491,12 @@ fn approach(
         tvds.push(tvd);
     }
     points.extend(o_points);
+    if let Some((p, _)) = points.iter().find(|(p, _)| net.coupling_of(*p).is_some()) {
+        return Err(format!(
+            "gekoppelte Weiche „{}“ im Annäherungsabschnitt",
+            point_name(net, *p)
+        ));
+    }
     Ok(BorderDef {
         name: t.name.clone(),
         initial,
@@ -492,14 +511,27 @@ fn approach(
 /// REQ-PLN-016: Flankenschutz für die Weiche `point`, deren Strang `pos` die Fahrstraße
 /// benutzt: Suche vom anderen Strang weg nach einem zur Weiche gerichteten Signal (Schutz-
 /// signal) oder einer gegen die Weiche umstellbaren Weiche (Schutzweiche).
+///
+/// REQ-PLN-021: `coupled` enthält die Lagen, die die Fahrstraße über Kopplungen an Weichen
+/// außerhalb ihres Fahr- und Durchrutschwegs erzwingt. Liegt eine solche Weiche so, dass
+/// sie in den Flankenweg führt (z. B. das zweite Zungenpaar einer Kreuzungsweiche), geht die
+/// Suche über ihre Spitze weiter.
 fn flank_for(
     net: &Topology,
     point: PointId,
     pos: PointPosition,
+    coupled: &BTreeMap<PointId, PointPosition>,
 ) -> Result<Vec<Protection>, String> {
     let mut out = Vec::new();
     let start = PortRef::new(NodeRef::Point(point), branch_port(other(pos)));
-    search_flank(net, start, 0, &mut vec![NodeRef::Point(point)], &mut out)?;
+    search_flank(
+        net,
+        start,
+        0,
+        &mut vec![NodeRef::Point(point)],
+        coupled,
+        &mut out,
+    )?;
     Ok(out)
 }
 
@@ -508,6 +540,7 @@ fn search_flank(
     from: PortRef,
     depth: usize,
     visited: &mut Vec<NodeRef>,
+    coupled: &BTreeMap<PointId, PointPosition>,
     out: &mut Vec<Protection>,
 ) -> Result<(), String> {
     if depth > 16 {
@@ -563,6 +596,7 @@ fn search_flank(
                     PortRef::new(entry.node, Port::Left),
                     depth + 1,
                     visited,
+                    coupled,
                     out,
                 )?;
                 return search_flank(
@@ -570,6 +604,7 @@ fn search_flank(
                     PortRef::new(entry.node, Port::Right),
                     depth + 1,
                     visited,
+                    coupled,
                     out,
                 );
             }
@@ -580,6 +615,11 @@ fn search_flank(
                 } else {
                     PointPosition::Right
                 };
+                if coupled.get(&q) == Some(&came_from) {
+                    // Durch Kopplung in den Flankenweg gelegt: weiter über die Spitze.
+                    port = PortRef::new(entry.node, Port::Tip);
+                    continue;
+                }
                 out.push(Protection::Point(q, other(came_from)));
                 return Ok(());
             }
@@ -763,11 +803,12 @@ fn complete(
         .chain(&d.overlap_points)
         .map(|(p, _)| *p)
         .collect();
+    let coupled = couple_route(net, d, name, errors);
     for (p, pos) in d.points.clone().into_iter().chain(d.overlap_points.clone()) {
         let Some(protects) = net.tvd_of(TvdMember::Point(p)) else {
             continue;
         };
-        match flank_for(net, p, pos) {
+        match flank_for(net, p, pos, &coupled) {
             Ok(protections) => {
                 for protection in protections {
                     let duplicate = d.flank.iter().any(|f| f.protection == protection);
@@ -796,6 +837,8 @@ fn complete(
         }
     }
 
+    couple_flank(net, d, name, errors);
+
     // Bahnübergänge: alle im Fahrweg, im Durchrutschweg nur innerhalb seiner Länge.
     for t in &d.tracks {
         for (lx, _) in net.level_crossings_on(*t) {
@@ -816,6 +859,98 @@ fn complete(
             {
                 d.level_crossings.push(lx);
             }
+        }
+    }
+}
+
+/// REQ-PLN-021: Partnerweichen der gekoppelten Weichen in Fahr- und Durchrutschweg, in
+/// Reihenfolge des Fahrwegs, als Flankenschutz-Einträge. Liefert ihre erzwungenen Lagen.
+fn couple_route(
+    net: &Topology,
+    d: &mut Draft,
+    name: &str,
+    errors: &mut Vec<PlanningError>,
+) -> BTreeMap<PointId, PointPosition> {
+    let mut coupled = BTreeMap::new();
+    for (p, pos) in d.points.clone().into_iter().chain(d.overlap_points.clone()) {
+        let Some((q, qpos)) = net.coupled(p, pos) else {
+            continue;
+        };
+        let required = d
+            .points
+            .iter()
+            .chain(&d.overlap_points)
+            .find(|(x, _)| *x == q);
+        match required {
+            Some((_, have)) if *have != qpos => errors.push(PlanningError::Coupling {
+                route: name.into(),
+                point: point_name(net, q),
+                reason: "Fahr- oder Durchrutschweg verlangt die Weiche gegen ihre Kopplung".into(),
+            }),
+            Some(_) => {}
+            None => {
+                coupled.insert(q, qpos);
+                if let Some(protects) = net.tvd_of(TvdMember::Point(p)) {
+                    let protection = Protection::Point(q, qpos);
+                    if !d.flank.iter().any(|f| f.protection == protection) {
+                        d.flank.push(Flank {
+                            protection,
+                            protects,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    coupled
+}
+
+/// REQ-PLN-021: Schutzweichen, die gekoppelt sind, nehmen ihre Partnerweiche mit. Jede
+/// Weiche wird von der Fahrstraße in höchstens einer Lage verlangt.
+fn couple_flank(net: &Topology, d: &mut Draft, name: &str, errors: &mut Vec<PlanningError>) {
+    let mut i = 0;
+    while let Some(f) = d.flank.get(i).copied() {
+        i += 1;
+        let Protection::Point(p, pos) = f.protection else {
+            continue;
+        };
+        let in_route = |q: PointId| {
+            d.points
+                .iter()
+                .chain(&d.overlap_points)
+                .any(|(x, _)| *x == q)
+        };
+        if let Some((q, qpos)) = net.coupled(p, pos)
+            && !in_route(q)
+            && !d
+                .flank
+                .iter()
+                .any(|x| x.protection == Protection::Point(q, qpos))
+        {
+            d.flank.push(Flank {
+                protection: Protection::Point(q, qpos),
+                protects: f.protects,
+            });
+        }
+    }
+    let mut positions: BTreeMap<PointId, PointPosition> = BTreeMap::new();
+    let flank_points = d.flank.iter().filter_map(|f| match f.protection {
+        Protection::Point(p, pos) => Some((p, pos)),
+        Protection::Signal(_) => None,
+    });
+    for (p, pos) in d
+        .points
+        .iter()
+        .chain(&d.overlap_points)
+        .copied()
+        .chain(flank_points)
+    {
+        if positions.insert(p, pos).is_some_and(|before| before != pos) {
+            errors.push(PlanningError::Coupling {
+                route: name.into(),
+                point: point_name(net, p),
+                reason: "Flankenschutz und Kopplung verlangen verschiedene Lagen".into(),
+            });
         }
     }
 }
@@ -923,6 +1058,14 @@ pub fn generate_with(net: &Topology, cfg: &PlanningConfig) -> Result<Plan, Plann
             Some(tvd) => points.push(PointDef {
                 name: p.name.clone(),
                 tvd,
+                coupled: net.coupling_of(id).map(|c| {
+                    let partner = if c.points[0] == id {
+                        c.points[1]
+                    } else {
+                        c.points[0]
+                    };
+                    (partner, c.inverted)
+                }),
             }),
             None => errors.push(PlanningError::Inconsistent(format!(
                 "Weiche „{}“ ohne Gleisfreimeldeabschnitt",

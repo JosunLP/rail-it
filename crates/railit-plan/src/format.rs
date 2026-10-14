@@ -1,4 +1,4 @@
-//! Binärformat des Plan-Images, Version 4.
+//! Binärformat des Plan-Images, Version 5.
 //!
 //! Alle Zahlen sind little-endian. Offsets sind Byte-Offsets ab Anfang des Images.
 //!
@@ -18,6 +18,8 @@
 //! │ TVD-Merkmale: n × u32            │   Bit 0: Einfahrabschnitt (an Netzgrenze)
 //! ├──────────────────────────────────┤ lx_tvd_off
 //! │ TVD je Bahnübergang: n × u32     │
+//! ├──────────────────────────────────┤ coupling_off
+//! │ Kopplung je Weiche: n × u32      │   seit v5
 //! ├──────────────────────────────────┤ border_off
 //! │ Grenzen: n × 8 × u32             │   Merkmale, Einfahrsignal, Annäherungsabschnitt
 //! │                                  │   (TVDs, Weichen) als Pool-Listen
@@ -46,7 +48,8 @@
 //! | 6 | Anzahl Fahrstraßen | 18 | Flags (Bit 0: signiert) |
 //! | 7 | Anzahl Bahnübergänge | 19 | Anzahl Grenzen |
 //! | | | 20 | `border_off` |
-//! | | | 21–23 | reserviert (0) |
+//! | | | 21 | `coupling_off` (seit v5) |
+//! | | | 22–23 | reserviert (0) |
 //! | 8 | `route_off` | | |
 //! | 9 | `pool_off` | | |
 //! | 10 | Anzahl Pool-Wörter | | |
@@ -61,6 +64,11 @@
 //!
 //! **Weicheneintrag** im Pool: `(Weichen-ID << 1) | Lage` mit Lage 0 = links, 1 = rechts.
 //!
+//! **Kopplung** je Weiche (seit v5): `u32::MAX` für eine ungekoppelte Weiche, sonst
+//! `(Partner-ID << 1) | gegenläufig`. Kopplungen sind symmetrisch; jede Fahrstraße und jeder
+//! Annäherungsabschnitt, der eine gekoppelte Weiche in eine Lage verlangt, verlangt auch die
+//! Partnerweiche in der gekoppelten Lage (REQ-PLN-021).
+//!
 //! **Flankenschutz-Eintrag** im Pool (3 × u32): Art (0 Weiche in Lage, 1 Signal in Halt),
 //! Weicheneintrag bzw. Signal-ID, geschützter TVD der Fahrstraße.
 //!
@@ -73,7 +81,7 @@
 /// Kennung am Anfang jedes Plan-Images.
 pub const MAGIC: [u8; 4] = *b"RPLN";
 /// Unterstützte Formatversion.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 /// Länge des Kopfs in Byte.
 pub const HEADER_LEN: usize = 96;
 /// Länge eines Fahrstraßeneintrags in Byte.
@@ -115,6 +123,7 @@ pub(crate) const H_NAMES_LEN: usize = 17;
 pub(crate) const H_FLAGS: usize = 18;
 pub(crate) const H_BORDERS: usize = 19;
 pub(crate) const H_BORDER_OFF: usize = 20;
+pub(crate) const H_COUPLING_OFF: usize = 21;
 
 /// Wortindex in einem Fahrstraßeneintrag.
 pub(crate) mod r {

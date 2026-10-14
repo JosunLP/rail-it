@@ -10,8 +10,8 @@ use railit_types::{
 };
 
 use crate::model::{
-    Area, AreaLink, Crossing, ElementRef, LevelCrossing, NodeRef, Point, PointPosition, Port,
-    PortRef, Signal, Station, Terminal, Track, TvdMember, TvdSection,
+    Area, AreaLink, Coupling, Crossing, ElementRef, LevelCrossing, NodeRef, Point, PointPosition,
+    Port, PortRef, Signal, Slip, Station, Terminal, Track, TvdMember, TvdSection,
 };
 
 /// Verbindungstabelle: pro Knoten und Port der verbundene Gegenport.
@@ -175,6 +175,8 @@ pub struct Topology {
     pub(crate) tvds: Vec<TvdSection>,
     pub(crate) level_crossings: Vec<LevelCrossing>,
     pub(crate) crossings: Vec<Crossing>,
+    pub(crate) couplings: Vec<Coupling>,
+    pub(crate) slips: Vec<Slip>,
     pub(crate) links: Links,
     pub(crate) names: BTreeMap<String, ElementRef>,
     pub(crate) track_tvd: Vec<Option<TvdId>>,
@@ -309,6 +311,26 @@ impl Topology {
                 .filter(move |(t, _)| *t == track)
                 .map(move |(_, at)| (c, *at))
         })
+    }
+
+    /// Alle Kopplungen von Weichen (REQ-TOP-017).
+    pub fn couplings(&self) -> impl ExactSizeIterator<Item = &Coupling> {
+        self.couplings.iter()
+    }
+
+    /// Kopplung, zu der Weiche `point` gehört.
+    pub fn coupling_of(&self, point: PointId) -> Option<&Coupling> {
+        self.couplings.iter().find(|c| c.points.contains(&point))
+    }
+
+    /// Partnerweiche und ihre Lage, wenn `point` in `pos` liegt.
+    pub fn coupled(&self, point: PointId, pos: PointPosition) -> Option<(PointId, PointPosition)> {
+        self.coupling_of(point)?.partner(point, pos)
+    }
+
+    /// Alle Kreuzungsweichen.
+    pub fn slips(&self) -> impl ExactSizeIterator<Item = &Slip> {
+        self.slips.iter()
     }
 
     /// Alle Bahnübergänge.

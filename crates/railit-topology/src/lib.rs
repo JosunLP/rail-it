@@ -47,9 +47,9 @@ pub use area::{AreaCut, CutBorder};
 pub use builder::{TopologyBuilder, Validated};
 pub use error::{Report, TopologyError, Warning};
 pub use model::{
-    Area, AreaLink, Crossing, DEFAULT_DIVERGING_SPEED, Direction, ElementRef, LevelCrossing,
-    NodeRef, Platform, Point, PointPosition, Port, PortRef, Signal, SignalKind, SignalSystem,
-    Station, Terminal, TerminalKind, Track, TvdMember, TvdSection,
+    Area, AreaLink, Coupling, Crossing, DEFAULT_DIVERGING_SPEED, Direction, ElementRef,
+    LevelCrossing, NodeRef, Platform, Point, PointPosition, Port, PortRef, Signal, SignalKind,
+    SignalSystem, Slip, SlipKind, Station, Terminal, TerminalKind, Track, TvdMember, TvdSection,
 };
 pub use topology::{Exit, Exits, Topology};
 

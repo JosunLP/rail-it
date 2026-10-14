@@ -1,0 +1,72 @@
+[scenario]
+name = "Doppelte Kreuzungsweiche: gekoppelte Zungenpaare und Flankenschutz"
+description = """
+Bahnhofskopf mit der DKW1 an der Kreuzung des Hauptgleises mit einer Diagonale. Die Zungenpaare eines Endes laufen
+gegenläufig gemeinsam um (REQ-TOP-017, REQ-IXL-026); jede Fahrstraße über die DKW verlangt alle
+vier Weichen und hält die Signale vor den anderen Enden als Flankenschutz in Halt
+(REQ-PLN-021). Die beiden Fahrten über die DKW schließen sich über ihren Abschnitt aus.
+Gegenprobe: Ein Zug, der das Halt zeigende Signal A2 überfährt, fährt die Weiche DKW1c auf.
+"""
+network = "../../examples/dkw.toml"
+
+[[step]]
+note = "Einzeln umgestellt läuft das Zungenpaar DKW1b gegenläufig mit DKW1a um"
+move_point = { point = "DKW1a", position = "right" }
+until = { point = { DKW1a = "right", DKW1b = "left" } }
+timeout_s = 20
+
+[[step]]
+note = "Fahrt über den Bogen a–d: alle vier Weichen in Lage"
+add_train = { name = "RE1", signal = "A1", length_m = 120, speed_kmh = 60 }
+set_route = "A1-N3"
+until = { route = { "A1-N3" = "proceed" } }
+timeout_s = 20
+expect = { point = { DKW1a = "right", DKW1b = "left", DKW1c = "left", DKW1d = "right" }, signal = { A2 = "stop", P1 = "stop" } }
+
+[[step]]
+note = "Die Fahrt über die Diagonale b–d ist feindlich, die Weiche unter der Fahrstraße verschlossen"
+set_route = "A2-N3"
+expect = { rejected = "conflict" }
+
+[[step]]
+move_point = { point = "DKW1b", position = "right" }
+expect = { rejected = "point_locked" }
+
+[[step]]
+note = "RE1 räumt die DKW"
+until = { tvd = { DKW1 = "clear", TM3 = "occupied" } }
+timeout_s = 120
+expect = { no_alarm = ["unauthorized_occupancy"] }
+
+[[step]]
+note = "RE1 fährt aus"
+set_route = "N3-GO3"
+until = { train = { RE1 = "left" } }
+timeout_s = 300
+
+[[step]]
+note = "Gerade Fahrt a–c: das andere Ende läuft gegenläufig mit"
+add_train = { name = "RB2", signal = "A1", length_m = 80, speed_kmh = 60 }
+set_route = "A1-N1"
+until = { route = { "A1-N1" = "proceed" } }
+timeout_s = 20
+expect = { point = { DKW1a = "left", DKW1b = "right", DKW1c = "left", DKW1d = "right" }, signal = { A2 = "stop", P3 = "stop" } }
+
+[[step]]
+set_route = "N1-GO1"
+until = { train = { RB2 = "left" } }
+timeout_s = 300
+expect = { no_alarm = ["unauthorized_occupancy", "signal_passed_at_danger"] }
+
+[[step]]
+note = "Gegenprobe: RE3 fährt gerade a–c, RB4 überfährt A2 und fährt über den Bogen b–c auf"
+add_train = { name = "RE3", signal = "A1", length_m = 200, speed_kmh = 30 }
+set_route = "A1-N1"
+until = { route = { "A1-N1" = "proceed" } }
+timeout_s = 20
+
+[[step]]
+add_train = { name = "RB4", signal = "A2", length_m = 80, speed_kmh = 40, ignore_signals = true }
+until = { sim_event = ["signal_passed_at_danger", "point_trailed"] }
+timeout_s = 120
+expect = { signal = { A2 = "stop" } }

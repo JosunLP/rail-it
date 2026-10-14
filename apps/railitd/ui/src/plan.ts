@@ -91,7 +91,7 @@ export class PlanView {
         class: 'track-hit',
         'data-tvd': t.tvd ?? '',
       }, tracks);
-      text(tracks, [(a[0] + b[0]) / 2, b[1] + 22], t.name, 'track-name');
+      if (!t.slip) text(tracks, [(a[0] + b[0]) / 2, b[1] + 22], t.name, 'track-name');
       if (t.tvd) {
         const list = this.tracks.get(t.tvd) ?? [];
         list.push(line);
@@ -105,13 +105,22 @@ export class PlanView {
       const left = segment(group, p.fork, p.left, 'track leg');
       const right = segment(group, p.fork, p.right, 'track leg');
       el('circle', { cx: p.fork[0], cy: p.fork[1], r: 14, class: 'point-hit' }, group);
-      text(group, [p.fork[0] - 10, p.fork[1] - 12], p.name, 'point-name');
+      if (p.slip) {
+        // Zungenpaar einer Kreuzungsweiche: nur der Buchstabe des Endes.
+        text(group, [p.tip[0] - 4, p.tip[1] + 22], p.name.slice(p.slip.length), 'point-name');
+      } else {
+        text(group, [p.fork[0] - 10, p.fork[1] - 12], p.name, 'point-name');
+      }
       if (p.tvd) {
         const list = this.tracks.get(p.tvd) ?? [];
         list.push(tip);
         this.tracks.set(p.tvd, list);
       }
       this.points.set(p.name, { group, left, right, tvd: p.tvd });
+    }
+
+    for (const x of layout.slips ?? []) {
+      text(tracks, [x.at[0] - 14, x.at[1]], x.name, 'point-name');
     }
 
     for (const t of layout.terminals) {

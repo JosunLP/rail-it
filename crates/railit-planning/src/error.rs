@@ -52,6 +52,15 @@ pub enum PlanningError {
         /// Grund.
         reason: String,
     },
+    /// Eine Fahrstraße widerspricht einer Kopplung von Weichen.
+    Coupling {
+        /// Fahrstraße.
+        route: String,
+        /// Weiche.
+        point: String,
+        /// Grund.
+        reason: String,
+    },
     /// Ein Vorsignal kündigt kein eindeutiges Hauptsignal an.
     DistantSignal {
         /// Vorsignal.
@@ -94,6 +103,7 @@ impl PlanningError {
             Self::UnprotectedFlank { .. } => "REQ-PLN-016",
             Self::DistantSignal { .. } => "REQ-PLN-017",
             Self::Border { .. } => "REQ-PLN-019",
+            Self::Coupling { .. } => "REQ-PLN-021",
             Self::Image(_) => "REQ-PLN-002",
         }
     }
@@ -136,6 +146,14 @@ impl fmt::Display for PlanningError {
             } => write!(
                 f,
                 "Fahrstraße „{route}“: Flanke der Weiche „{point}“ ist nicht schützbar ({reason})"
+            ),
+            Self::Coupling {
+                route,
+                point,
+                reason,
+            } => write!(
+                f,
+                "Fahrstraße „{route}“: gekoppelte Weiche „{point}“: {reason}"
             ),
             Self::DistantSignal { signal, reason } => {
                 write!(f, "Vorsignal „{signal}“: {reason}")

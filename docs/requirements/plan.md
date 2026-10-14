@@ -1,8 +1,9 @@
 # Anforderungen an Projektierung und Plan-Image (`REQ-PLN`)
 
 Umgesetzt in `crates/railit-plan` und `crates/railit-planning`. Das Plan-Image hat das
-Format v2 (Durchrutschwege, Flankenschutz, Bahnübergänge, Signalarten und -systeme). Nachweise in
-`crates/railit-plan/tests/image.rs` und `crates/railit-planning/tests/planning.rs`.
+Format v5 (Durchrutschwege, Flankenschutz, Bahnübergänge, Signalarten und -systeme, Grenzen,
+Längen, gekoppelte Weichen). Nachweise in `crates/railit-plan/tests/image.rs`,
+`crates/railit-planning/tests/planning.rs` und `crates/railit-planning/tests/slip.rs`.
 
 ## Plan-Image
 
@@ -28,3 +29,4 @@ Format v2 (Durchrutschwege, Flankenschutz, Bahnübergänge, Signalarten und -sys
 | REQ-PLN-018 | Bahnübergänge im Fahrweg und im Durchrutschweg (innerhalb der Durchrutschweglänge) gehören zur Fahrstraße. Die Geschwindigkeit einer Fahrstraße ist die kleinste Geschwindigkeit der abzweigend befahrenen Weichen (ohne solche Weichen: Streckengeschwindigkeit). | H-010, H-002 | `example_phase2_data`, `level_crossing_within_long_overlap` |
 | REQ-PLN-019 | Jeder Stellbereich wird für sich projektiert. Fahrstraßen können an einer Grenze enden. Je Grenze bestimmt die Projektierung den Annäherungsabschnitt (von der Grenze bis zum ersten nach innen gerichteten Hauptsignal, dem Einfahrsignal, samt dessen Durchrutschweg); vor dem Einfahrsignal liegt keine spitz befahrene Weiche. Ein Durchrutschweg darf keine Grenze überschreiten. Die Gegenprüfung leitet Grenzen und Annäherungsabschnitte unabhängig her. Format v3 enthält die Grenztabelle. | H-001, H-012 | `nordbahn_compiles_per_area`, `borders_need_an_entry_signal`, `inconsistent_border_data_is_rejected` |
 | REQ-PLN-020 | Beim Laden wird ein Plan-Image abgewiesen, wenn zwei Fahrstraßen mit demselben Startsignal nicht als feindlich eingetragen sind (REQ-PLN-012, Regel 1). Darauf stützt sich die lineare Invariantenprüfung (REQ-IXL-023): Jede eingestellte Fahrstraße rechtfertigt höchstens ihr eigenes Startsignal. | H-007 | `inconsistent_phase2_data_is_rejected` |
+| REQ-PLN-021 | Gekoppelte Weichen (REQ-TOP-017): Ein Weg, der gekoppelte Weichen gegen ihre Kopplung verlangt, ist keine Fahrstraße. Verlangt eine Fahrstraße eine gekoppelte Weiche in Fahr- oder Durchrutschweg, verlangt sie die Partnerweiche in der gekoppelten Lage als Flankenschutz; ebenso zu jeder gekoppelten Schutzweiche. Liegt eine so erzwungene Weiche zum Flankenweg hin, geht die Flankenschutzsuche über ihre Spitze hinaus weiter (z. B. über das zweite Zungenpaar einer DKW bis zum Signal vor dem anderen Ende). Gekoppelte Weichen im Annäherungsabschnitt einer Bereichsgrenze werden nicht projektiert. Das Plan-Image (v5) führt die Kopplung je Weiche; beim Laden wird es abgewiesen, wenn eine Kopplung nicht symmetrisch ist oder eine Fahrstraße bzw. ein Annäherungsabschnitt eine gekoppelte Weiche ohne ihre Partnerweiche in gekoppelter Lage verlangt. Die Gegenprüfung leitet Wege, Partner und Flankenschutz unabhängig aus einer Tabelle der zulässigen Lagenpaare her. | H-001, H-002, H-004 | `routes_over_a_double_slip_require_all_four_points`, `single_slip_has_one_curve`, `crossover_points_move_together`, `tampered_couplings_are_rejected`, `coupled_points_must_not_lie_in_an_approach`, Szenario 25 |

@@ -8,7 +8,8 @@
 //!   Kombinationen werden wie bei einem Zählwerk („Odometer“) aufgezählt,
 //! - eigene Herleitung von Durchrutschweg, Flankenschutz, Bahnübergängen, Geschwindigkeit
 //!   und Vorsignalen,
-//! - Mengen (`BTreeSet`) statt Bitsets für die Feindlichkeiten.
+//! - Mengen (`BTreeSet`) statt Bitsets für die Feindlichkeiten,
+//! - Kopplungen von Weichen als Tabelle aller zulässigen Lagenpaare statt als Abbildung.
 //!
 //! Erst wenn beide Verfahren exakt dasselbe liefern, gilt der Plan als geprüft.
 
@@ -292,11 +293,50 @@ fn expected_overlap(net: &Topology, end: SignalId, length_mm: u64) -> Result<Ove
     Ok(result)
 }
 
-/// Erwarteter Flankenschutz einer Weiche (eigene Implementierung).
+/// Zulässige Lagenpaare je gekoppelter Weiche: Weiche → (Partner, Lage → Partnerlage).
+type CouplingTable = BTreeMap<PointId, (PointId, [(PointPosition, PointPosition); 2])>;
+
+fn coupling_table(net: &Topology) -> CouplingTable {
+    let mut out = BTreeMap::new();
+    for c in net.couplings() {
+        let [x, y] = c.points;
+        let pairs = if c.inverted {
+            [
+                (PointPosition::Left, PointPosition::Right),
+                (PointPosition::Right, PointPosition::Left),
+            ]
+        } else {
+            [
+                (PointPosition::Left, PointPosition::Left),
+                (PointPosition::Right, PointPosition::Right),
+            ]
+        };
+        out.insert(x, (y, pairs));
+        out.insert(y, (x, pairs.map(|(a, b)| (b, a))));
+    }
+    out
+}
+
+/// Lage des Partners, wenn `point` in `pos` liegt.
+fn partner_of(
+    table: &CouplingTable,
+    point: PointId,
+    pos: PointPosition,
+) -> Option<(PointId, PointPosition)> {
+    let (partner, pairs) = table.get(&point)?;
+    pairs
+        .iter()
+        .find(|(mine, _)| *mine == pos)
+        .map(|(_, theirs)| (*partner, *theirs))
+}
+
+/// Erwarteter Flankenschutz einer Weiche (eigene Implementierung). `forced` sind die
+/// Lagen, die die Fahrstraße über Kopplungen erzwingt.
 fn expected_flank(
     net: &Topology,
     point: PointId,
     pos: PointPosition,
+    forced: &BTreeSet<(PointId, PointPosition)>,
 ) -> Result<Vec<Protection>, String> {
     let away = if pos == PointPosition::Left {
         Port::Right
@@ -360,11 +400,15 @@ fn expected_flank(
                     break;
                 }
                 (NodeRef::Point(q), entered) => {
-                    let protect = if entered == Port::Left {
-                        PointPosition::Right
+                    let (toward, protect) = if entered == Port::Left {
+                        (PointPosition::Left, PointPosition::Right)
                     } else {
-                        PointPosition::Left
+                        (PointPosition::Right, PointPosition::Left)
                     };
+                    if forced.contains(&(q, toward)) {
+                        port = PortRef::new(entry.node, Port::Tip);
+                        continue;
+                    }
                     found.push(Protection::Point(q, protect));
                     break;
                 }
@@ -475,7 +519,17 @@ fn check_elements(net: &Topology, plan: &Plan, problems: &mut Vec<String>) {
         "Bahnübergänge",
         problems,
     );
+    let table = coupling_table(net);
     for ((id, p), def) in net.points().zip(&plan.points) {
+        let coupled = table.get(&id).map(|(q, pairs)| {
+            (
+                *q,
+                pairs.contains(&(PointPosition::Left, PointPosition::Right)),
+            )
+        });
+        if coupled != def.coupled {
+            problems.push(format!("Kopplung der Weiche „{}“ weicht ab", p.name));
+        }
         if net.tvd_of(TvdMember::Point(id)) != Some(def.tvd) {
             problems.push(format!(
                 "Gleisfreimeldeabschnitt der Weiche „{}“ weicht ab",
@@ -520,6 +574,63 @@ fn check_elements(net: &Topology, plan: &Plan, problems: &mut Vec<String>) {
             problems.push(format!("Fahrstraßenname „{}“ ist nicht eindeutig", r.name));
         }
     }
+}
+
+/// Erwarteter Flankenschutz einer Fahrstraße mit geschütztem Abschnitt; `None`, wenn eine
+/// Flanke nicht schützbar ist.
+fn expected_route_flank(net: &Topology, r: &RouteDef) -> Option<Vec<(Protection, TvdId)>> {
+    // Kopplungen: erst die Partner der Weichen in Fahrweg und Durchrutschweg, dann der
+    // Flankenschutz je Weiche, zuletzt die Partner der Schutzweichen; Duplikate nur einmal.
+    let table = coupling_table(net);
+    let mut flank: Vec<(Protection, TvdId)> = Vec::new();
+    let mut forced = BTreeSet::new();
+    let route_points: BTreeSet<PointId> = r
+        .points
+        .iter()
+        .chain(&r.overlap_points)
+        .map(|(p, _)| *p)
+        .collect();
+    for (p, pos) in r.points.iter().chain(&r.overlap_points) {
+        let Some((q, qpos)) = partner_of(&table, *p, *pos) else {
+            continue;
+        };
+        if route_points.contains(&q) {
+            continue;
+        }
+        forced.insert((q, qpos));
+        if let Some(protects) = net.tvd_of(TvdMember::Point(*p))
+            && !flank.iter().any(|(x, _)| *x == Protection::Point(q, qpos))
+        {
+            flank.push((Protection::Point(q, qpos), protects));
+        }
+    }
+    for (p, pos) in r.points.iter().chain(&r.overlap_points) {
+        let Some(protects) = net.tvd_of(TvdMember::Point(*p)) else {
+            continue;
+        };
+        match expected_flank(net, *p, *pos, &forced) {
+            Ok(list) => {
+                for protection in list {
+                    if !flank.iter().any(|(x, _)| *x == protection) {
+                        flank.push((protection, protects));
+                    }
+                }
+            }
+            Err(_) => return None,
+        }
+    }
+    let mut i = 0;
+    while let Some((protection, protects)) = flank.get(i).copied() {
+        i += 1;
+        if let Protection::Point(p, pos) = protection
+            && let Some((q, qpos)) = partner_of(&table, p, pos)
+            && !route_points.contains(&q)
+            && !flank.iter().any(|(x, _)| *x == Protection::Point(q, qpos))
+        {
+            flank.push((Protection::Point(q, qpos), protects));
+        }
+    }
+    Some(flank)
 }
 
 /// Vergleicht die Zusatzdaten einer Fahrstraße mit der eigenen Herleitung.
@@ -578,23 +689,10 @@ fn check_details(
         fail("Länge des Durchrutschwegs");
     }
 
-    // Flankenschutz: je Weiche (Fahrweg, dann Durchrutschweg), Duplikate nur einmal.
-    let mut flank: Vec<(Protection, TvdId)> = Vec::new();
-    for (p, pos) in r.points.iter().chain(&r.overlap_points) {
-        let Some(protects) = net.tvd_of(TvdMember::Point(*p)) else {
-            continue;
-        };
-        match expected_flank(net, *p, *pos) {
-            Ok(list) => {
-                for protection in list {
-                    if !flank.iter().any(|(x, _)| *x == protection) {
-                        flank.push((protection, protects));
-                    }
-                }
-            }
-            Err(_) => fail("Flankenschutz"),
-        }
-    }
+    let Some(flank) = expected_route_flank(net, r) else {
+        fail("Flankenschutz");
+        return;
+    };
     let plan_flank: BTreeSet<String> = r
         .flank
         .iter()
@@ -636,6 +734,18 @@ fn check_routes(net: &Topology, cfg: PlanningConfig, plan: &Plan, problems: &mut
             enumerate(net, id, &mut walked, problems);
         }
     }
+    // Wege, die gekoppelte Weichen gegen ihre Kopplung verlangen, gibt es nicht.
+    let table = coupling_table(net);
+    walked.retain(|w| {
+        w.key.points.iter().all(|(p, pos)| {
+            partner_of(&table, *p, *pos).is_none_or(|(q, qpos)| {
+                w.key
+                    .points
+                    .iter()
+                    .all(|(x, xpos)| *x != q || *xpos == qpos)
+            })
+        })
+    });
     let mut expected: BTreeMap<Key, (usize, Vec<TrackId>)> = BTreeMap::new();
     for w in walked {
         let entry = expected.entry(w.key).or_insert((0, w.tracks));
