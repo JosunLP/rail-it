@@ -89,7 +89,9 @@ try {
 
     $sums = Join-Path $work 'rel\latest\download\SHA256SUMS'
     $text = Get-Content $sums -Raw
-    Set-Content -Path $sums -Value ('0' + $text.Substring(1))
+    # Das erste Zeichen wechselt in jedem Fall, auch bei einem Hash, der mit 0 beginnt.
+    $first = if ($text[0] -eq [char]'0') { '1' } else { '0' }
+    Set-Content -Path $sums -Value ($first + $text.Substring(1))
     $rejected = $false
     try { & $install install -Prefix $prefix } catch { $rejected = $true }
     Check $rejected 'verfälschte Prüfsumme abgewiesen'

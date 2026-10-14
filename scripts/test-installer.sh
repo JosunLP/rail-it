@@ -88,8 +88,11 @@ fi
 for bin in railit railitd railit-field railit-node; do check test ! -e "$prefix/bin/$bin"; done
 check test ! -e "$prefix/share/rail-it"
 
-# Verfälschte Prüfsumme wird abgewiesen.
-sed 's/^./0/' "$work/rel/latest/download/SHA256SUMS" > "$work/sums" && mv "$work/sums" "$work/rel/latest/download/SHA256SUMS"
+# Verfälschte Prüfsumme wird abgewiesen. Das erste Zeichen wechselt in jedem Fall (ein
+# Hash, der schon mit 0 beginnt, bliebe mit s/^./0/ unverändert).
+sed 's/^0/x/; s/^[1-9a-f]/0/; s/^x/1/' "$work/rel/latest/download/SHA256SUMS" > "$work/sums"
+check test "$(cut -c1 "$work/sums")" != "$(cut -c1 "$work/rel/latest/download/SHA256SUMS")"
+mv "$work/sums" "$work/rel/latest/download/SHA256SUMS"
 if sh "$install" --prefix "$prefix" >/dev/null 2>&1; then
   echo "FEHLGESCHLAGEN: verfälschte Prüfsumme angenommen" >&2
   exit 1
