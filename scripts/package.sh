@@ -27,7 +27,7 @@ done
 cp LICENSE README.md "$stage/"
 cp scripts/install.sh scripts/install.ps1 "$stage/"
 [ -f CHANGELOG.md ] && cp CHANGELOG.md "$stage/"
-cp examples/*.toml "$stage/examples/"
+cp examples/*.toml examples/*.ppxml "$stage/examples/"
 printf '%s\n' "$version" > "$stage/VERSION"
 
 cd dist

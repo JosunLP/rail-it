@@ -7,7 +7,7 @@
 //! | Ziel | Prüft |
 //! |------|-------|
 //! | [`plan_image`] | Plan-Image: Strukturprüfung, alle Zugriffe, Kern, Signalbilder, ETCS-Fahrerlaubnis auf jedem angenommenen Plan |
-//! | [`toml_network`], [`railml_network`] | Import, Validierung und Projektierung jedes angenommenen Netzes |
+//! | [`toml_network`], [`railml_network`], [`planpro_network`] | Import, Validierung und Projektierung jedes angenommenen Netzes |
 //! | [`timetable`] | Fahrplan |
 //! | [`journal`] | Prüfung der Hashkette eines Journals |
 //! | [`rasta`] | RaSTA-Verbindung nach dem Aufbau unter beliebigen PDUs |
@@ -209,6 +209,15 @@ pub fn toml_network(data: &[u8]) {
 pub fn railml_network(data: &[u8]) {
     if let Ok(text) = std::str::from_utf8(data)
         && let Ok(net) = railit_import::railml::parse(text)
+    {
+        compile(&net.topology);
+    }
+}
+
+/// PlanPro: Import, Validierung und Projektierung.
+pub fn planpro_network(data: &[u8]) {
+    if let Ok(text) = std::str::from_utf8(data)
+        && let Ok(net) = railit_import::planpro::parse(text)
     {
         compile(&net.topology);
     }

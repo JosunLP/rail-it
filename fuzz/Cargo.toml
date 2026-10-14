@@ -102,3 +102,10 @@ path = "fuzz_targets/field_server.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "planpro_network"
+path = "fuzz_targets/planpro_network.rs"
+test = false
+doc = false
+bench = false

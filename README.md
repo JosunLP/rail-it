@@ -42,7 +42,8 @@ Feldrechner mit Umschalter, Ausgabe erst nach Quittung, Übernahme des Betriebs 
 Bereitschaftsrechner, siehe [Übernahme](#übernahme)) und Phase 11 (Nachbarstellwerke: Grenzmeldungen
 zwischen den Stellbereichen über EULYNX SCI-ILS und RaSTA mit störbarer Strecke, auch zwischen
 getrennten Prozessen mit Umschalter je Stellbereich am Feldrechner, siehe
-[ETCS, EULYNX und railML](#etcs-eulynx-und-railml)) sind umgesetzt.
+[ETCS, EULYNX und railML](#etcs-eulynx-und-railml)) und Phase 12 (PlanPro: Import und Export
+deutscher Planungsdaten) sind umgesetzt.
 
 | Crate | Inhalt | |
 |-------|--------|---|
@@ -62,7 +63,7 @@ getrennten Prozessen mit Umschalter je Stellbereich am Feldrechner, siehe
 | `railit-sim` | Simulator: Weichen, Signale, Gleisfreimeldung, Bahnübergänge, Züge (auch mit ETCS), Störungen | |
 | `railit-ops` | Zugnummernmeldung, Fahrplan, Zuglenkung, Selbstblock, Disposition | |
 | `railit-runtime` | Zyklus Kerne ↔ Feld für mehrere Stellbereiche, Zustandsbild, Szenarien, Schlüssel | |
-| `railit-import` | rail-it-TOML, railML 3 (Import und Export) | |
+| `railit-import` | rail-it-TOML, railML 3 und PlanPro 1.9/1.10 (Import und Export) | |
 | `railit-layout` | Spurplan: schematische Geometrie aus der Topologie, SVG-Export | |
 | `railit-fuzz` | Fuzz-Ziele für alle Eingangsschnittstellen (mit `fuzz/` für cargo-fuzz) | |
 | `railit-field` | Feldrechner als eigener Prozess: simulierte Objektsteuerungen über RaSTA/UDP, Umschalter zwischen Haupt- und Bereitschaftsrechner, Steuerung der Simulation | |
@@ -226,6 +227,11 @@ railit scenario run tests/scenarios/22_nordbahn_sci_ils.toml
 railit scenario run --ils tests/scenarios/*.toml
 # Stellbereiche in getrennten Prozessen: railitd --areas Adorf,Strecke --ils-listen … \
 #   --ils-peer Bstadt=…  (siehe docs/leitfaden/stellbereiche.md)
+
+# PlanPro: Planung lesen, projektieren und fahren; Netz als PlanPro ausgeben
+railit net validate examples/abzweig.ppxml
+railit scenario run tests/scenarios/23_planpro_abzweig.toml
+railit net export examples/beispielstadt.toml --out beispielstadt.ppxml
 
 # Netz als railML 3 ausgeben und wieder einlesen
 railit net export examples/nordbahn.toml --out nordbahn.railml

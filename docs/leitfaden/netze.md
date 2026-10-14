@@ -2,7 +2,7 @@
 
 Ein Netz besteht aus **Gleisen**, **Weichen** und **Netzenden**, die über Ports verbunden sind,
 dazu **Signalen**, **Bahnübergängen** und **Gleisfreimeldeabschnitten**. rail-it liest es aus
-einem kompakten TOML-Format oder aus railML 3. Die vollständige Beschreibung aller Schlüssel
+einem kompakten TOML-Format, aus railML 3 oder aus PlanPro. Die vollständige Beschreibung aller Schlüssel
 steht in der [Referenz](/referenz/netzformat).
 
 ## Topologie mit Ports
@@ -100,6 +100,22 @@ railit plan compile netz.railml --out plan.rplan --key railit.key
 
 Der Import ergänzt und rät nichts: Was railML nicht eindeutig angibt, wird gemeldet. Ein
 exportiertes Netz liest rail-it unverändert wieder ein; der Plan ist bitgleich (REQ-TOP-014).
+
+## PlanPro
+
+Planungen deutscher Stellwerke liegen als PlanPro vor. rail-it liest PlanPro 1.9 und 1.10
+direkt und schreibt PlanPro 1.10:
+
+```sh
+railit net validate examples/abzweig.ppxml          # Warnungen nennen übergangene Objekte
+railit plan compile examples/abzweig.ppxml --out abzweig.rplan --key railit.key
+railit scenario run tests/scenarios/23_planpro_abzweig.toml
+railit net export examples/beispielstadt.toml --out beispielstadt.ppxml
+```
+
+Auch hier wird nichts geraten: Fehlt eine Wirkrichtung, eine Bezeichnung oder das
+Signalsystem, nennt der Import das PlanPro-Objekt (REQ-TOP-015). Die Abbildung steht in der
+[Referenz](../referenz/netzformat#planpro).
 
 ## Große Netze erzeugen
 

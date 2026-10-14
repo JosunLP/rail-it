@@ -195,7 +195,7 @@ rail-it ist als **generisches Produkt** angelegt. Für einen Einsatz sind zusät
 | Kani-Nachweise für den gesamten Kernzyklus (heute Eigenschaftstests und Fuzzing) | H-007 |
 | Sicherheitscode von RaSTA nach Zulassungsanforderung prüfen | H-014 |
 | Regelwerke `de-estw` und `etcs` mit den Regeln eines Betreibers | Teil 5 |
-| Import aus PlanPro; SCI-ILS zwischen Stellwerken auf getrennter Hardware prüfen (heute getrennte Prozesse über UDP, REQ-COM-010); Betriebsführung, ETCS und Bereitschaftsrechner bei verteilten Stellbereichen | Konzept 18, H-012 |
+| PlanPro-Import gegen Planungen realer Anlagen prüfen (Signalstandort und Freimeldegrenze, Kreuzungen, Gleissperren); SCI-ILS zwischen Stellwerken auf getrennter Hardware prüfen (heute getrennte Prozesse über UDP, REQ-COM-010); Betriebsführung, ETCS und Bereitschaftsrechner bei verteilten Stellbereichen | Konzept 18, H-012 |
 | Prüfung gegen reale EULYNX-Objektsteuerungen und ETCS-Fahrzeuggeräte | H-010, H-014 |
 | Ergonomische Prüfung des Bedienplatzes mit Bedienern; ggf. zweikanalige sichere Anzeige | H-016 |
 

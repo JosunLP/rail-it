@@ -1,0 +1,37 @@
+[scenario]
+name = "PlanPro: Abzweig aus einer Planung"
+description = """
+Das Netz kommt aus einer PlanPro-Planung (examples/abzweig.ppxml): Kanten und Knoten, Weiche
+W1 mit Stammgleis links und 60 km/h im abzweigenden Strang, Achszählpunkte mit ihren
+Freimeldeabschnitten, ein Bahnübergang. Ein Zug fährt aus dem Westen über den abzweigenden
+Strang an den Prellbock, ein zweiter fährt danach geradeaus über den Bahnübergang nach Osten.
+"""
+network = "../../examples/abzweig.ppxml"
+
+[[step]]
+note = "Einfahrt in das Stumpfgleis: W1 läuft nach rechts"
+add_train = { name = "RB1", signal = "A", length_m = 60, speed_kmh = 50 }
+set_route = "A-Pb3"
+until = { route = { "A-Pb3" = "proceed" } }
+timeout_s = 20
+expect = { point = { W1 = "right" }, picture = { A = "Ks2 Zs3(6)" } }
+
+[[step]]
+note = "RB1 erreicht das Stumpfgleis"
+until = { tvd = { X = "occupied" }, train = { RB1 = "arrived" } }
+timeout_s = 200
+expect = { no_alarm = ["unauthorized_occupancy", "signal_passed_at_danger"] }
+
+[[step]]
+note = "Durchfahrt nach Osten über den Bahnübergang: W1 läuft zurück nach links"
+add_train = { name = "RE2", signal = "A", length_m = 120, speed_kmh = 80 }
+set_route = "A-GO"
+until = { route = { "A-GO" = "proceed" } }
+timeout_s = 30
+expect = { lx = { "BÜ Feldweg" = "closed" }, point = { W1 = "left" } }
+
+[[step]]
+note = "RE2 verlässt das Netz, der Bahnübergang öffnet"
+until = { train = { RE2 = "left" }, lx = { "BÜ Feldweg" = "open" } }
+timeout_s = 300
+expect = { no_alarm = ["unauthorized_occupancy", "signal_passed_at_danger"], safe_state = false }

@@ -659,6 +659,18 @@ fn route_and_overlap_lengths() {
     );
 }
 
+/// REQ-TOP-015: Ein über PlanPro ausgetauschtes Netz ergibt ein bitgleiches Plan-Image.
+#[test]
+fn planpro_roundtrip_yields_identical_plans() {
+    let original = railit_import::toml_format::parse(EXAMPLE).unwrap().topology;
+    let (xml, _) = railit_import::planpro::export(&original).unwrap();
+    let back = railit_import::planpro::parse(&xml).unwrap().topology;
+    assert_eq!(
+        compile(&original, None).unwrap().image,
+        compile(&back, None).unwrap().image
+    );
+}
+
 /// REQ-TOP-014: Ein über railML 3 ausgetauschtes Netz ergibt bitgleiche Plan-Images.
 #[test]
 fn railml_roundtrip_yields_identical_plans() {

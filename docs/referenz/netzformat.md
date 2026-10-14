@@ -136,6 +136,30 @@ platforms = [{ name = "1", signals = ["N1", "P1"] }, { name = "2", signals = ["N
 - Stellbereiche ohne Abschnitte, Abschnitte in keinem oder mehreren Bereichen,
 - Bahnsteige mit Signalen, an denen keine Fahrstraße endet.
 
+## PlanPro
+
+`railit net export netz.toml --out netz.ppxml` (oder `--planpro`) schreibt das Netz als
+PlanPro 1.10 (`LST_Zustand` mit TOP_Knoten, TOP_Kante, W_Kr_Gsp_Element/-Komponente, Signal,
+BUE_Anlage, FMA_Komponente, FMA_Anlage, Gleis_Abschnitt; ohne Geometrie). Alle Befehle lesen
+PlanPro 1.9 und 1.10 (`.ppxml`, `.planpro`), auch Planungen mit `LST_Planung` (gelesen wird
+der Zielzustand). Abbildung:
+
+| PlanPro | rail-it |
+|---------|---------|
+| `TOP_Kante` (`TOP_Laenge`, `Kantenname`) | Gleis; Achszählpunkte teilen es (`Name/1`, `Name/2`) |
+| `TOP_Knoten` mit `Spitze`/`Links`/`Rechts` | Weiche; Name aus `W_Kr_Gsp_Element`, abzweigender Strang gegenüber `Stammgleis`, Geschwindigkeit aus `Geschwindigkeit_L`/`_R` |
+| Knoten mit einer Kante: `Ende` / sonst | Prellbock / Netzgrenze |
+| `Signal` mit `Signal_Real_Aktiv_Schirm` | `Hauptsignal`, `Hauptsperrsignal`, `Zugdeckungssignal` → Hauptsignal; `Mehrabschnitts(sperr)signal` → Mehrabschnittssignal; `Vorsignal(wiederholer)` → Vorsignal; `Sperrsignal` → Rangiersignal; `Signalsystem` Ks oder HV; `Signal_Funktion` `Block_Signal` → Selbstblock |
+| `BUE_Anlage` | Bahnübergang |
+| `FMA_Komponente` (`ID_FMAgrenze`), `FMA_Anlage` → `Gleis_Abschnitt` | Freimeldegrenze, Name des Abschnitts |
+
+Hauptsignale müssen wie in jedem rail-it-Netz an einer Freimeldegrenze stehen (REQ-PLN-010);
+liegt die Grenze in der Planung einige Meter hinter dem Signal, meldet die Projektierung das.
+Fiktive Signale, Gleissperren und Signale ohne Lichtsignalschirm werden mit Warnung
+übergangen; Kreuzungen und andere Signalsysteme sind Fehler. Stellbereiche und Betriebsstellen
+kennt der Export nicht. Hin und zurück entsteht ein bitgleicher Plan (REQ-TOP-015).
+Beispiel: `examples/abzweig.ppxml`.
+
 ## railML 3
 
 `railit net export netz.toml --out netz.railml` schreibt dasselbe Netz als railML 3; alle

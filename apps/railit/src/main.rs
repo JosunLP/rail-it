@@ -406,11 +406,14 @@ enum NetCommand {
     },
     /// Schreibt ein gültiges Netz als railML 3.
     Export {
-        /// Netzbeschreibung: rail-it-TOML oder railML 3.
+        /// Netzbeschreibung: rail-it-TOML, railML 3 oder PlanPro.
         file: PathBuf,
-        /// Zieldatei; ohne Angabe Standardausgabe.
+        /// Zieldatei; ohne Angabe Standardausgabe. Endung `.ppxml`: PlanPro, sonst railML 3.
         #[arg(long)]
         out: Option<PathBuf>,
+        /// PlanPro 1.10 statt railML 3 ausgeben.
+        #[arg(long)]
+        planpro: bool,
     },
 }
 
@@ -742,7 +745,9 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Net(NetCommand::Validate { file }) => net::validate(&file, output),
         Command::Net(NetCommand::Info { file }) => net::info(&file, output),
-        Command::Net(NetCommand::Export { file, out }) => net::export(&file, out.as_deref()),
+        Command::Net(NetCommand::Export { file, out, planpro }) => {
+            net::export(&file, out.as_deref(), planpro)
+        }
         Command::Net(NetCommand::Generate {
             stations,
             lx_every,

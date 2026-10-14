@@ -106,6 +106,7 @@ proptest! {
         let _ = railit_fuzz::plan_image(&data);
         railit_fuzz::toml_network(&data);
         railit_fuzz::railml_network(&data);
+        railit_fuzz::planpro_network(&data);
         railit_fuzz::timetable(&data);
         railit_fuzz::journal(&data);
         railit_fuzz::rasta(&data);
@@ -115,6 +116,31 @@ proptest! {
         railit_fuzz::node_wire(&data);
         railit_fuzz::mirror_state(&data);
         railit_fuzz::field_server(&data);
+    }
+}
+
+const PLANPRO: &str = include_str!("../../../examples/abzweig.ppxml");
+
+proptest! {
+    /// Verfälschte PlanPro-Planung: Import und Projektierung melden höchstens Fehler.
+    #[test]
+    fn mutated_planpro(
+        cuts in proptest::collection::vec((any::<proptest::sample::Index>(), any::<proptest::sample::Index>()), 0..3),
+        flips in proptest::collection::vec((any::<proptest::sample::Index>(), 1u8..=255), 0..3),
+    ) {
+        let mut data = PLANPRO.as_bytes().to_vec();
+        for (a, b) in cuts {
+            let (a, b) = (a.index(data.len()), b.index(data.len()));
+            let (lo, hi) = (a.min(b), a.max(b));
+            // Kurze Stücke entfernen: einzelne Werte und Elemente fallen weg.
+            let hi = hi.min(lo + 80);
+            data.drain(lo..hi);
+        }
+        for (i, b) in flips {
+            let at = i.index(data.len());
+            data[at] ^= b;
+        }
+        railit_fuzz::planpro_network(&data);
     }
 }
 

@@ -4,13 +4,16 @@
 //!
 //! - **rail-it-TOML** (siehe [`toml_format`]), das kompakte Format für handgeschriebene
 //!   Netze, Tests und Beispiele;
-//! - **railML 3** (siehe [`railml`]), Import und Export der Infrastruktur.
+//! - **railML 3** (siehe [`railml`]), Import und Export der Infrastruktur;
+//! - **PlanPro** 1.9 und 1.10 (siehe [`planpro`]), das deutsche Planungsformat für ESTW,
+//!   Import und Export der Topologie und der Außenanlagen.
 //!
-//! PlanPro folgt (Konzept, Abschnitt 6). [`parse`] wählt das Format nach der Dateiendung.
+//! [`parse`] wählt das Format nach der Dateiendung.
 //!
 //! Jeder Importer meldet **alle** Fehler auf einmal, jeweils mit Fundstelle.
 
 pub mod generate;
+pub mod planpro;
 pub mod railml;
 pub mod toml_format;
 
@@ -82,25 +85,45 @@ pub enum Format {
     Toml,
     /// railML 3.
     RailMl,
+    /// PlanPro.
+    PlanPro,
 }
 
 impl Format {
-    /// Format nach der Dateiendung: `.xml` und `.railml` sind railML, alles andere TOML.
+    /// Format nach der Dateiendung: `.xml` und `.railml` sind railML, `.ppxml` und
+    /// `.planpro` PlanPro, alles andere TOML.
     pub fn of_path(path: &str) -> Self {
-        let railml = std::path::Path::new(path)
+        let ext = std::path::Path::new(path)
             .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("xml") || e.eq_ignore_ascii_case("railml"));
-        if railml { Self::RailMl } else { Self::Toml }
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase);
+        match ext.as_deref() {
+            Some("xml" | "railml") => Self::RailMl,
+            Some("ppxml" | "planpro") => Self::PlanPro,
+            _ => Self::Toml,
+        }
     }
 }
 
 /// Liest eine Netzbeschreibung im Format, das die Dateiendung von `path` angibt.
 ///
 /// # Errors
-/// Wie [`toml_format::parse`] bzw. [`railml::parse`].
+/// Wie [`toml_format::parse`], [`railml::parse`] bzw. [`planpro::parse`].
 pub fn parse(path: &str, source: &str) -> Result<railit_topology::Validated, ImportError> {
+    parse_with_warnings(path, source).map(|(v, _)| v)
+}
+
+/// Wie [`parse`], gibt zusätzlich die Warnungen des Imports zurück (übergangene Elemente).
+///
+/// # Errors
+/// Wie [`parse`].
+pub fn parse_with_warnings(
+    path: &str,
+    source: &str,
+) -> Result<(railit_topology::Validated, Vec<String>), ImportError> {
     match Format::of_path(path) {
-        Format::Toml => toml_format::parse(source),
-        Format::RailMl => railml::parse(source),
+        Format::Toml => toml_format::parse(source).map(|v| (v, Vec::new())),
+        Format::RailMl => railml::parse_with_warnings(source),
+        Format::PlanPro => planpro::parse_with_warnings(source),
     }
 }

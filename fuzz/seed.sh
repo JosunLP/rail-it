@@ -2,6 +2,9 @@
 # Startkorpus für cargo-fuzz aus den Beispielen (aus dem Wurzelverzeichnis aufrufen).
 set -eu
 railit=${RAILIT:-target/release/railit}
+mkdir -p fuzz/corpus/planpro_network
+cp examples/abzweig.ppxml fuzz/corpus/planpro_network/
+"$railit" net export examples/beispielstadt.toml --out fuzz/corpus/planpro_network/beispielstadt.ppxml
 mkdir -p fuzz/corpus/plan_image fuzz/corpus/toml_network fuzz/corpus/railml_network \
          fuzz/corpus/timetable fuzz/corpus/journal
 cp examples/beispielstadt.toml examples/nordbahn.toml fuzz/corpus/toml_network/

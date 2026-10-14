@@ -1,6 +1,6 @@
 # rail-it – Konzept einer Engine für Netz- und Stellwerkmanagement
 
-> Status: **v0.13** (Phasen 0 bis 11 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
+> Status: **v0.14** (Phasen 0 bis 12 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
 >
 > v0.2 arbeitet die Grundsatzentscheidungen aus Abschnitt 2 ein: vollständiger Netz- und
 > Bahnbetrieb, deutsches ESTW **und** europäisches System (ETCS/EULYNX), Server **und**
@@ -197,7 +197,7 @@ auf ein Minimum beschränkt und werden einzeln begründet.
 | Zweck | Format | Begründung |
 |-------|--------|------------|
 | Austausch Infrastruktur, Stellwerk, Fahrplan | **railML 3.x** | Europäischer Standard. Deckt Infrastruktur, Interlocking und Fahrplan ab und ist mit RailTopoModel kompatibel. |
-| Deutsche Projektierungsdaten | **PlanPro** (Import) | Datenmodell der DB für ESTW- und DSTW-Planung. Ohne PlanPro gibt es keine realen deutschen Anlagen. |
+| Deutsche Projektierungsdaten | **PlanPro** (Import und Export, 1.9 und 1.10) | Datenmodell der DB für ESTW- und DSTW-Planung. Ohne PlanPro gibt es keine realen deutschen Anlagen. Umgesetzt in Phase 12 (`railit_import::planpro`): Topologie, Weichen, Signale, Bahnübergänge und Gleisfreimeldung; Rundreise mit bitgleichem Plan (REQ-TOP-015). |
 | Handgeschriebene Netze, Tests, Beispiele | **rail-it-TOML** | railML ist zu ausführlich, um Testfälle von Hand zu schreiben. Das TOML ist kompakt, gut zu diffen und gut zu reviewen. |
 | Eingabe des Kerns | **Plan-Image `.rplan`** | Eigenes Binärformat mit Versionsheader, Hash und Ed25519-Signatur. Wird ohne Kopie gelesen und funktioniert auf Embedded ohne Parser. |
 | API | **Protobuf** (gRPC) und JSON-Abbildung | Typsicherer, versionierter Vertrag mit generierbaren Clients in allen Sprachen. |
@@ -914,7 +914,7 @@ besetzt werden.
 | Lints | `clippy` mit `unwrap_used`, `expect_used`, `panic`, `indexing_slicing` und `arithmetic_side_effects` auf `deny` in allen Crates mit SIL 4 |
 | Tests | `cargo test`, `proptest` (Invarianten), deklarative Szenarien |
 | Formal | `kani` (Bounded Model Checking): umgesetzt für Voter, Watchdog, Ausgabepuffer, Bitmengen, Zeit, MD4, RaSTA-Empfang, Telegramm-Paketierung (REQ-SAF-006). Offen: Kernzyklus |
-| Robustheit | `cargo-fuzz`: umgesetzt für Plan-Image (bis in Kern und Fahrerlaubnis), rail-it-TOML, railML 3, Fahrplan, Journal, RaSTA, EULYNX SCI, Binärprotokoll des sicheren Rechners, Spiegel mit beliebigem übertragenem Zustand (REQ-SAF-007). Offen: `cargo-mutants` |
+| Robustheit | `cargo-fuzz`: umgesetzt für Plan-Image (bis in Kern und Fahrerlaubnis), rail-it-TOML, railML 3, PlanPro, Fahrplan, Journal, RaSTA, EULYNX SCI, SCI-ILS, Binärprotokoll des sicheren Rechners, Spiegel mit beliebigem übertragenem Zustand (REQ-SAF-007). Offen: `cargo-mutants` |
 | Lieferkette | `cargo-deny` (Lizenzen, Advisories), `cargo-audit`, SBOM, gepinnte Toolchain |
 | Toolchain | Langfristig eine qualifizierte Toolchain (z. B. Ferrocene) für die Crates mit SIL 4 |
 
@@ -945,7 +945,7 @@ Daraus folgen diese Regeln:
 | **1 – Minimaler Kern** | Plan-Image (signiert), Fahrstraßengenerator mit unabhängiger Gegenprüfung, Kern mit Weichen, Signalen und TVD inkl. Teilauflösung und Zeitverschluss, Simulator, Szenarien, `railitd` mit REST-API, CLI | Bahnhof „Beispielstadt“ (`examples/beispielstadt.toml`) fährt sicher in der Simulation, bedienbar über die CLI | ✔ |
 | **2 – ESTW vollständig** | Durchrutschwege, Flankenschutz, Hilfshandlungen mit Zählwerk, Signalbegriffe Ks und H/V (`railit-movement`), BÜ, Erkennung unerlaubter Besetzungen, Journal und Replay | Fachlich vollständiges Einzelstellwerk nach `de-estw` | ✔ |
 | **3 – Netz & Betrieb** | Mehrere Stellbereiche, Streckenblock, Zugnummern, Fahrplan, Zuglenkung, Disposition, gRPC-Vertrag, Rollen, mTLS, Audit | Betrieb eines Netzes mit mehreren Bahnhöfen in der Simulation („Nordbahn“, `examples/nordbahn.toml` mit Fahrplan `examples/nordbahn-fahrplan.toml`) | ✔ |
-| **4 – Europa** | ETCS Level 2 (MA-Erzeugung, RBC-Funktion), EULYNX SCI-P/-LS/-TDS/-LX über RaSTA zu simulierten Objektsteuerungen, Import und Export von railML 3 | Mischbetrieb ESTW/ETCS in der Simulation (Szenarien 16 bis 19); Feldanbindung bereit für Prüfstände | ✔ (PlanPro-Import offen; SCI-ILS in Phase 11) |
+| **4 – Europa** | ETCS Level 2 (MA-Erzeugung, RBC-Funktion), EULYNX SCI-P/-LS/-TDS/-LX über RaSTA zu simulierten Objektsteuerungen, Import und Export von railML 3 | Mischbetrieb ESTW/ETCS in der Simulation (Szenarien 16 bis 19); Feldanbindung bereit für Prüfstände | ✔ (PlanPro in Phase 12, SCI-ILS in Phase 11) |
 | **5 – Sicherheit & Embedded** | Redundante Kanäle, Voter, Watchdog, Cortex-R-Runtime, Kani-Nachweise, Fuzzing, Safety Case, Rückverfolgbarkeit | Kandidat für das Labor mit [Sicherheitsnachweis](safety/safety-case.md) (Szenarien 20, 21) | ✔ (Hardware, Einbindung des sicheren Rechners in `railitd` offen) |
 | **6 – UI** | Spurplan-UI als API-Client mit sicherer Anzeige- und Bestätigungskette | Bedienplatz unter `/ui/` mit automatisch berechnetem Spurplan, Anzeigeüberwachung und Prüfcode (Abschnitt 14.3) | ✔ (ergonomische Prüfung mit Bedienern offen) |
 | **7 – Betriebsreife** | Sicherer Rechner im Dienst (Knoten, Spiegel, Zustandsabgleich), robuste RaSTA-Wiederholung, signiertes Journal, Bedienplatz für Netz und Betrieb, Leistungsmessung | Verteilte Einsatzvariante lauffähig (`railit-node`, `railitd --node`), alle Szenarien über Knoten; Journal und Audit gesiegelt; Leistungsziele bei 5000 Elementen in der CI gemessen | ✔ (Zielhardware offen) |
@@ -953,6 +953,7 @@ Daraus folgen diese Regeln:
 | **9 – Mitlesen & Rückschau** | Mitleser für wachsende Journale, Rückschau im Dienst und im Bedienplatz, Bereitschaftsrechner über den Journalstrom | Ein zweiter Rechner zeigt den Zustand des Hauptrechners laufend geprüft an; jeder Zeitpunkt lässt sich am Bedienplatz zurückschauen | ✔ |
 | **10 – Übernahme** | Feldrechner mit Umschalter (`railit-field`), Ausgabe erst nach Quittung, Übernahme des mitgelesenen Zustands im Kern und im Dienst | Fällt der Hauptrechner aus, übernimmt der Bereitschaftsrechner den Betrieb – mit dem mitgelesenen Zustand, solange die Zusage des Hauptrechners das deckt | ✔ (Zeitbedingungen auf Zielhardware, Umschalter in realer Feldtechnik offen) |
 | **11 – Nachbarstellwerke** | Grenzmeldungen als EULYNX-SCI-ILS-Telegramme über RaSTA, je Paar benachbarter Stellbereiche eine Verbindung mit störbarer Strecke; Stellbereiche in getrennten Prozessen über UDP mit Umschalter je Bereich am Feldrechner; Dienst, CLI, Szenarien, Fuzzing | Die Stellbereiche sprechen wie getrennte Stellwerke miteinander; gestörte Verbindungen halten den Erlaubniswechsel sicher an (Szenario 22, REQ-COM-009) | ✔ (auch in getrennten Prozessen; Betriebsführung, ETCS und Bereitschaftsrechner verteilt offen) |
+| **12 – Deutsche Planungsdaten** | Import und Export von PlanPro (1.9, 1.10): Knoten-Kanten-Modell, Weichen mit Stammgleis und Geschwindigkeit, Signale nach Art und System, Bahnübergänge, Achszählpunkte mit Freimeldeabschnitten; dieselbe Validierung wie railML | Eine PlanPro-Planung lässt sich prüfen, projektieren und betreiben (Szenario 23); Rundreise mit bitgleichem Plan (REQ-TOP-015) | ✔ (Prüfung gegen Planungen realer Anlagen offen) |
 
 **Umgesetzte Crates (Stand Phase 7):** `railit-types`, `railit-topology`, `railit-plan`,
 `railit-planning`, `railit-rules`, `railit-kernel`, `railit-safety` (Kanäle, Voter, Watchdog),
@@ -960,7 +961,7 @@ Daraus folgen diese Regeln:
 `railit-etcs` (RBC-Funktion), `railit-rasta`, `railit-adapters` (EULYNX SCI), `railit-journal`
 (mit Auditprotokoll), `railit-sim`, `railit-ops` (Zugnummernmeldung, Fahrplan, Zuglenkung,
 Disposition), `railit-runtime` (mehrere Stellbereiche, Szenario-Runner,
-Schlüsselverwaltung, redundante Kanäle), `railit-import` (rail-it-TOML, railML 3),
+Schlüsselverwaltung, redundante Kanäle), `railit-import` (rail-it-TOML, railML 3, PlanPro),
 `railit-fuzz` (Fuzz-Ziele), `railit-layout` (Spurplan) sowie die Anwendungen `railit`,
 `railit-node` (Knoten des sicheren Rechners), `railit-field` (Feldrechner mit Umschalter) und `railitd` (REST, gRPC, TLS/mTLS, Rollen, Feldanbindung über EULYNX, Bedienplatz, Bereitschaftsrechner mit Übernahme). Das Regelwerk `de-estw` ist
 noch das Lehrregelwerk `GenericRules` mit den Zeiten aus Phase 2 (Auflösezeit des

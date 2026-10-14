@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use railit_import::{Format, ImportError, railml, toml_format};
+use railit_import::{Format, ImportError, planpro, railml};
 use railit_topology::{
     Direction, NodeRef, Port, PortRef, SignalKind, SignalSystem, TerminalKind, Topology, TvdMember,
     Validated,
@@ -19,10 +19,10 @@ fn load_with_warnings(
 ) -> Result<Result<(Validated, Vec<String>), ImportError>, String> {
     let source = std::fs::read_to_string(file)
         .map_err(|e| format!("{} kann nicht gelesen werden: {e}", file.display()))?;
-    Ok(match Format::of_path(&file.to_string_lossy()) {
-        Format::Toml => toml_format::parse(&source).map(|v| (v, Vec::new())),
-        Format::RailMl => railml::parse_with_warnings(&source),
-    })
+    Ok(railit_import::parse_with_warnings(
+        &file.to_string_lossy(),
+        &source,
+    ))
 }
 
 /// Liest und importiert eine Netzbeschreibung.
@@ -30,8 +30,9 @@ fn load(file: &Path) -> Result<Result<Validated, ImportError>, String> {
     load_with_warnings(file).map(|r| r.map(|(v, _)| v))
 }
 
-/// Schreibt ein gültiges Netz als railML 3 nach `out` (ohne `out`: Standardausgabe).
-pub(crate) fn export(file: &Path, out: Option<&Path>) -> ExitCode {
+/// Schreibt ein gültiges Netz als railML 3 oder PlanPro nach `out` (ohne `out`:
+/// Standardausgabe). Das Format folgt `planpro` bzw. der Endung von `out`.
+pub(crate) fn export(file: &Path, out: Option<&Path>, planpro_format: bool) -> ExitCode {
     let validated = match load(file) {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
@@ -40,7 +41,19 @@ pub(crate) fn export(file: &Path, out: Option<&Path>) -> ExitCode {
         }
         Err(msg) => return fail_usage(&msg),
     };
-    let xml = match railml::export(&validated.topology) {
+    let planpro_format = planpro_format
+        || out.is_some_and(|o| Format::of_path(&o.to_string_lossy()) == Format::PlanPro);
+    let result = if planpro_format {
+        planpro::export(&validated.topology).map(|(xml, warnings)| {
+            for w in warnings {
+                eprintln!("Warnung: {w}");
+            }
+            xml
+        })
+    } else {
+        railml::export(&validated.topology)
+    };
+    let xml = match result {
         Ok(xml) => xml,
         Err(msg) => {
             eprintln!("Fehler: {msg}");
