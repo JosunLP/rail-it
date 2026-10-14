@@ -802,7 +802,8 @@ pub struct UdpIls {
 }
 
 impl UdpIls {
-    /// Lauscht auf `listen`; `peers` nennt je Bereich eines anderen Prozesses seine Adresse.
+    /// Lauscht auf `listen`; `peers` nennt je Bereich eines anderen Prozesses seine Adressen
+    /// (eine je Rechner: Haupt- und Bereitschaftsrechner).
     ///
     /// # Errors
     /// Socketfehler.
@@ -843,10 +844,12 @@ impl UdpIls {
         }
     }
 
-    /// Abgehende PDUs von `net` versenden.
+    /// Abgehende PDUs von `net` versenden – an alle Adressen des Empfängerbereichs: Hat er
+    /// einen Bereitschaftsrechner, erreicht ihn die PDU ebenso; antworten kann nur, wer führt
+    /// (REQ-COM-010).
     pub fn send(&mut self, net: &mut IlsNet) {
         for (area, pdu) in net.take_outgoing() {
-            if let Some((_, addr)) = self.peers.iter().find(|(n, _)| *n == area) {
+            for (_, addr) in self.peers.iter().filter(|(n, _)| *n == area) {
                 // Verlust ist für RaSTA ein gewöhnlicher Fall.
                 let _ = self.socket.send_to(&pdu, addr);
             }

@@ -368,6 +368,22 @@ impl Ops {
         std::mem::take(&mut self.handovers)
     }
 
+    /// Nach der Übernahme durch einen Bereitschaftsrechner: Züge, deren Einsetzzeit schon
+    /// vorbei ist, hat der ausgefallene Rechner eingesetzt; sie werden nicht noch einmal
+    /// eingesetzt. Ihre Nummern trägt der Fahrdienstleiter neu ein (REQ-OPS-006).
+    pub fn assume_started(&mut self, now: Tick) {
+        let started: Vec<String> = self
+            .timetable
+            .trains
+            .iter()
+            .filter(|run| run.enter.as_ref().is_some_and(|e| e.at <= now))
+            .map(|run| run.number.clone())
+            .collect();
+        for train in started {
+            self.trains.entry(train).or_default().spawned = true;
+        }
+    }
+
     /// Übergabe ließ sich nicht senden.
     pub fn handover_failed(&mut self, train: &str, reason: String) {
         self.events.push(OpsEvent::HandoverFailed {

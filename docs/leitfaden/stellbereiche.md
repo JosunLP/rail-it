@@ -97,9 +97,32 @@ Jeder Dienst braucht am Feldrechner eine eigene RaSTA-Kennung (`--field-id`); zw
 derselben Kennung stören sich gegenseitig die Verbindungen.
 
 Fällt ein Dienst aus, melden seine Nachbarn die Grenze gestört und nehmen Fahrten über sie
-zurück; am Feldrechner wird sein Bereich nach der Umschaltzeit frei, sodass ein
-Bereitschaftsrechner für das ganze Netz ihn übernehmen kann (REQ-COM-010). Einen
-Bereitschaftsrechner je Teil des Netzes gibt es noch nicht.
+zurück; am Feldrechner wird sein Bereich nach der Umschaltzeit frei (REQ-COM-010).
+
+Jeder Dienst kann einen eigenen **Bereitschaftsrechner** haben: mit denselben `--areas`, einer
+eigenen `--field-id` und einer eigenen SCI-ILS-Adresse. Die Nachbarn nennen dann beide
+Adressen (`--ils-peer Strecke=… --ils-peer Strecke=…`) und senden an beide; antworten kann nur,
+wer führt. Übernimmt der Bereitschaftsrechner, baut sich die Verbindung zu ihm neu auf, und
+der Erlaubniswechsel geht mit den mitgelesenen laufenden Nummern weiter:
+
+```sh
+railit-field --network nordbahn.toml --listen 127.0.0.1:7900 --control 127.0.0.1:7901 \
+             --interlocking 0A000001 --interlocking 0A000002 --interlocking 0A000003 &
+
+# West: Haupt- und Bereitschaftsrechner
+railitd … --field-id 0A000001 --areas Adorf,Strecke --ils-listen 127.0.0.1:7510 \
+        --ils-peer Bstadt=127.0.0.1:7511 --journal west.journal --standby-gate-ms 8000 &
+railitd … --field-id 0A000002 --areas Adorf,Strecke --ils-listen 127.0.0.1:7512 \
+        --ils-peer Bstadt=127.0.0.1:7511 --standby http://127.0.0.1:7410 --takeover-after-ms 500 &
+
+# Ost kennt beide Rechner des Westens
+railitd … --field-id 0A000003 --areas Bstadt --ils-listen 127.0.0.1:7511 \
+        --ils-peer Strecke=127.0.0.1:7510 --ils-peer Strecke=127.0.0.1:7512 &
+```
+
+Die Betriebsführung des Bereitschaftsrechners setzt die Züge nicht noch einmal ein, die der
+Hauptrechner schon eingesetzt hat; deren Nummern trägt der Fahrdienstleiter nach der Übernahme
+neu ein.
 
 ### Fahrplan und Zuglenkung über Prozessgrenzen
 

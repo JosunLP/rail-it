@@ -378,3 +378,42 @@ fn trains_are_spawned_on_time() {
     ops.spawn_failed("RE1", "besetzt".into());
     assert_eq!(ops.train_at("AA"), None);
 }
+
+/// REQ-OPS-006: Ein Bereitschaftsrechner, der übernimmt, setzt die Züge nicht noch einmal ein,
+/// die der ausgefallene Rechner schon eingesetzt hat; spätere setzt er rechtzeitig ein.
+#[test]
+fn takeover_does_not_spawn_running_trains_again() {
+    let f = Fixture::new();
+    let tt = Timetable::parse(FAHRPLAN).unwrap();
+    let mut ops = Ops::new(f.net(), OpsConfig::default(), tt).unwrap();
+    let view = View::default();
+    ops.assume_started(secs(5));
+    assert!(ops.plan(secs(5), &view).spawns.is_empty());
+    let spawns = ops.plan(secs(10), &view).spawns;
+    assert_eq!(spawns.len(), 1);
+    assert_eq!(spawns[0].train, "RE1");
+}
+
+/// REQ-OPS-006: Mit Bereichen in anderen Prozessen setzt die Betriebsführung nur Züge in
+/// eigenen Bereichen ein und nimmt Zugnummern nur an eigenen Signalen an.
+#[test]
+fn only_local_trains_are_spawned_and_described() {
+    let f = Fixture::new();
+    let tt = Timetable::parse(FAHRPLAN).unwrap();
+    // Reihenfolge der Pläne: Adorf, Bstadt, Strecke – nur Adorf rechnet hier.
+    let net = f.net().with_local_areas(1);
+    assert_eq!(net.area_name(0), Some("Adorf"));
+    let mut ops = Ops::new(net, OpsConfig::default(), tt).unwrap();
+    let view = View::default();
+    assert!(
+        ops.plan(Tick::ZERO, &view).spawns.is_empty(),
+        "RE2 beginnt in Bstadt"
+    );
+    assert_eq!(ops.plan(secs(10), &view).spawns.len(), 1);
+    assert!(ops.describe("X1", "AA").is_ok());
+    assert!(
+        ops.describe("X2", "BP1")
+            .unwrap_err()
+            .contains("anderen Prozess")
+    );
+}

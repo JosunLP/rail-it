@@ -359,3 +359,194 @@ fn standby_restarts_without_a_promise() {
     assert_eq!(h["standby"]["phase"]["warm"], false, "{h}");
     assert_eq!(route_phase(&s, "A-N1"), "idle");
 }
+
+const NORDBAHN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/nordbahn.toml");
+
+fn free_udp() -> String {
+    std::net::UdpSocket::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .to_string()
+}
+
+fn holds(url: &str, address: &str) -> bool {
+    let (area, _) = address.split_once('>').unwrap();
+    let (_, state) = get(&format!("{url}/v1/state"));
+    state["areas"].as_array().is_some_and(|areas| {
+        areas.iter().any(|a| {
+            a["name"] == area
+                && a["borders"].as_array().is_some_and(|b| {
+                    b.iter()
+                        .any(|b| b["name"] == address && b["holding"] == true)
+                })
+        })
+    })
+}
+
+fn ils_up(url: &str) -> bool {
+    get(&format!("{url}/v1/ils"))
+        .1
+        .as_array()
+        .is_some_and(|l| !l.is_empty() && l.iter().all(|x| x["up"] == true))
+}
+
+/// Feldrechner der Nordbahn für drei Stellwerke: (Prozess, UDP-Adresse, URL der Steuerung).
+fn nordbahn_field() -> (Process, String, String) {
+    let mut cmd = Command::new(field_binary());
+    cmd.args([
+        "--network",
+        NORDBAHN,
+        "--listen",
+        "127.0.0.1:0",
+        "--control",
+        "127.0.0.1:0",
+    ]);
+    for id in ["0A000001", "0A000002", "0A000003"] {
+        cmd.args(["--interlocking", id]);
+    }
+    cmd.env_remove("RAILIT_FIELD_TOKEN");
+    let field = Process::spawn(cmd, "railit-field: ");
+    let (udp, control) = field.line.split_once(' ').unwrap();
+    let (udp, control) = (
+        udp.strip_prefix("udp://").unwrap().to_string(),
+        control.to_string(),
+    );
+    (field, udp, control)
+}
+
+/// Pläne der Nordbahn je Stellbereich (unsigniert).
+fn nordbahn_plans() -> PathBuf {
+    let net = railit_import::toml_format::parse(&std::fs::read_to_string(NORDBAHN).unwrap())
+        .unwrap()
+        .topology;
+    let dir = tmp("split-standby");
+    let _ = std::fs::create_dir_all(&dir);
+    let cfg = railit_planning::PlanningConfig::default();
+    for a in railit_planning::compile_areas(&net, None, &cfg).unwrap() {
+        std::fs::write(dir.join(format!("{}.rplan", a.name)), a.compiled.image).unwrap();
+    }
+    dir
+}
+
+/// `railitd` für einen Teil der Nordbahn am gemeinsamen Feldrechner.
+fn split_railitd(plans: &std::path::Path, udp: &str, control: &str, args: &[&str]) -> Process {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_railitd"));
+    cmd.args([
+        "--network",
+        NORDBAHN,
+        "--allow-unsigned",
+        "--listen",
+        "127.0.0.1:0",
+        "--plan",
+        plans.to_str().unwrap(),
+        "--field",
+        "remote",
+        "--field-addr",
+        udp,
+        "--field-control",
+        control,
+    ])
+    .args(["--token", TOKEN])
+    .args(args)
+    .env_remove("RAILIT_TOKEN");
+    Process::spawn(cmd, "railitd: ")
+}
+
+/// REQ-COM-010, REQ-SVC-012: Bereitschaftsrechner für einen Teil des Netzes. Stellwerk West
+/// (Adorf, Strecke) hat Haupt- und Bereitschaftsrechner, Stellwerk Ost (Bstadt) kennt beide
+/// Adressen. Fällt der Hauptrechner aus, übernimmt der Bereitschaftsrechner warm am
+/// Feldrechner, SCI-ILS baut sich zu ihm neu auf, und der Erlaubniswechsel mit Ost geht weiter.
+#[test]
+fn standby_takes_over_a_part_of_the_network() {
+    let (field, udp, control) = nordbahn_field();
+    let udp = udp.as_str();
+    let dir = nordbahn_plans();
+    // Bei mehreren Stellbereichen ist das Journal ein Verzeichnis.
+    let journal = tmp("split-standby-west.journal");
+    let _ = std::fs::remove_dir_all(&journal);
+    let (west_ils, standby_ils, east_ils) = (free_udp(), free_udp(), free_udp());
+    let east_peer = format!("Bstadt={east_ils}");
+    let spawn = |args: &[&str]| split_railitd(&dir, udp, &control, args);
+    let mut west = spawn(&[
+        "--field-id",
+        "0A000001",
+        "--areas",
+        "Adorf,Strecke",
+        "--ils-listen",
+        &west_ils,
+        "--ils-peer",
+        &east_peer,
+        "--journal",
+        journal.to_str().unwrap(),
+        "--standby-gate-ms",
+        "8000",
+    ]);
+    let east = spawn(&[
+        "--field-id",
+        "0A000003",
+        "--areas",
+        "Bstadt",
+        "--ils-listen",
+        &east_ils,
+        "--ils-peer",
+        &format!("Strecke={west_ils}"),
+        "--ils-peer",
+        &format!("Strecke={standby_ils}"),
+    ]);
+    let (w, e) = (west.line.clone(), east.line.clone());
+    wait("West und Ost verbunden", || {
+        ils_up(&w) && ils_up(&e) && holds(&w, "Strecke>Bstadt")
+    });
+    let standby = spawn(&[
+        "--field-id",
+        "0A000002",
+        "--areas",
+        "Adorf,Strecke",
+        "--ils-listen",
+        &standby_ils,
+        "--ils-peer",
+        &east_peer,
+        "--standby",
+        &w,
+        "--standby-token",
+        TOKEN,
+        "--takeover-after-ms",
+        "500",
+    ]);
+    let s = standby.line.clone();
+    wait("Bereitschaftsrechner liest beide Bereiche mit", || {
+        let h = health(&s);
+        h["standby"]["areas"]
+            .as_array()
+            .is_some_and(|a| a.len() == 2 && a.iter().all(|x| x["cycles"].as_u64() > Some(0)))
+    });
+
+    west.kill();
+    drop(west);
+    wait("Bereitschaftsrechner führt", || {
+        health(&s)["role"] == "primary"
+    });
+    let h = health(&s);
+    assert_eq!(h["standby"]["phase"]["warm"], true, "{h}");
+    assert!(holds(&s, "Strecke>Bstadt"), "Erlaubnis übernommen");
+    wait("SCI-ILS zum Bereitschaftsrechner", || {
+        ils_up(&s) && ils_up(&e)
+    });
+
+    // Richtungswechsel mit dem neuen Rechner.
+    assert_eq!(
+        post(&format!("{s}/v1/borders/Strecke%3EAdorf/request"), None).0,
+        200
+    );
+    wait("Strecke hält Strecke>Adorf", || holds(&s, "Strecke>Adorf"));
+    assert_eq!(
+        post(&format!("{e}/v1/borders/Bstadt%3EStrecke/request"), None).0,
+        200
+    );
+    wait("Erlaubnis wechselt nach Ost", || {
+        holds(&e, "Bstadt>Strecke")
+    });
+    assert!(!holds(&s, "Strecke>Bstadt"));
+    drop((field, standby, east));
+}

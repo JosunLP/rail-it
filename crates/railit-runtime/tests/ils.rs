@@ -475,4 +475,61 @@ mod split {
         let re2 = snap.trains.iter().find(|t| t.number == "RE2").unwrap();
         assert_eq!(re2.next_stop.as_deref(), Some("Adorf/2"), "{re2:?}");
     }
+
+    /// REQ-COM-010: Bereitschaftsrechner für einen Teil des Netzes. Der Nachbar kennt beide
+    /// Adressen des westlichen Stellwerks; fällt der Hauptrechner aus, übernimmt der
+    /// Bereitschaftsrechner dessen Zustand, die SCI-ILS-Verbindung baut sich zu ihm neu auf,
+    /// und der Erlaubniswechsel geht mit den übernommenen laufenden Nummern weiter.
+    #[test]
+    fn standby_takes_over_a_part_of_the_network() {
+        let any: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let free = || {
+            let s = std::net::UdpSocket::bind(any).unwrap();
+            s.local_addr().unwrap()
+        };
+        let (aw, aws, ae) = (free(), free(), free());
+        let mut west = part(&["Adorf", "Strecke"]);
+        let mut standby = part(&["Adorf", "Strecke"]);
+        let mut east = part(&["Bstadt"]);
+        west.use_ils_udp(aw, vec![("Bstadt".into(), ae)]).unwrap();
+        standby
+            .use_ils_udp(aws, vec![("Bstadt".into(), ae)])
+            .unwrap();
+        east.use_ils_udp(ae, vec![("Strecke".into(), aw), ("Strecke".into(), aws)])
+            .unwrap();
+        run(&mut west, &mut east, 80, true);
+        assert!(holds(&west, "Strecke>Bstadt"));
+        let seq = |rt: &Runtime<Simulator>, address: &str| {
+            let (area, border) = rt.find_border(address).unwrap();
+            rt.state_of(area).unwrap().borders()[border.index().unwrap()].seq()
+        };
+        let before = seq(&west, "Strecke>Bstadt");
+
+        // Der Hauptrechner fällt aus; der Bereitschaftsrechner übernimmt seinen Zustand.
+        let states: Vec<OwnedState> = (0..2).map(|a| west.state_of(a).unwrap().clone()).collect();
+        let now = west.now();
+        drop(west);
+        standby.take_over(&states, now, "Übernahme").unwrap();
+        assert!(holds(&standby, "Strecke>Bstadt"));
+        let mut up = false;
+        for _ in 0..200 {
+            assert_eq!(standby.cycle_addressed(&[]).safe_state, None);
+            assert_eq!(east.cycle_addressed(&[]).safe_state, None);
+            std::thread::sleep(std::time::Duration::from_micros(300));
+            up = standby.ils_links().iter().all(|l| l.up) && east.ils_links()[0].up;
+            if up {
+                break;
+            }
+        }
+        assert!(up, "SCI-ILS baut sich zum Bereitschaftsrechner nicht auf");
+
+        // Richtungswechsel mit dem neuen Rechner.
+        request(&mut standby, 1, "Strecke>Adorf");
+        run(&mut standby, &mut east, 40, true);
+        request(&mut east, 2, "Bstadt>Strecke");
+        run(&mut standby, &mut east, 80, true);
+        assert!(holds(&east, "Bstadt>Strecke"), "Erlaubnis nicht gewechselt");
+        assert!(!holds(&standby, "Strecke>Bstadt"));
+        assert!(seq(&standby, "Strecke>Bstadt") > before);
+    }
 }

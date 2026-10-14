@@ -142,17 +142,13 @@ struct Args {
     borders: BordersArg,
     /// Nur diese Stellbereiche rechnen (kommagetrennt); die übrigen rechnen in anderen
     /// Prozessen und sind über SCI-ILS auf UDP angebunden (`--ils-listen`, `--ils-peer`).
-    #[arg(
-        long,
-        value_delimiter = ',',
-        requires = "ils_listen",
-        conflicts_with = "standby"
-    )]
+    #[arg(long, value_delimiter = ',', requires = "ils_listen")]
     areas: Vec<String>,
     /// UDP-Adresse für SCI-ILS zu den Stellbereichen anderer Prozesse.
     #[arg(long, value_name = "ADRESSE", requires = "areas")]
     ils_listen: Option<SocketAddr>,
-    /// Adresse eines Nachbarbereichs in einem anderen Prozess: `BEREICH=ADRESSE` (je Bereich).
+    /// Adresse eines Nachbarbereichs in einem anderen Prozess: `BEREICH=ADRESSE` (je Bereich
+    /// und Rechner; hat der Nachbar einen Bereitschaftsrechner, beide Adressen).
     #[arg(long = "ils-peer", value_name = "BEREICH=ADRESSE", requires = "areas")]
     ils_peers: Vec<String>,
     /// Kanäle je Stellbereich: 1 (ohne Vergleich), 2 (2-von-2) oder 3 (2-von-3).

@@ -92,29 +92,30 @@ fn watch(
     if let Err(e) = prepare(&mut rt) {
         tracing::error!(e, "Übernahme: Vorbereitung gescheitert");
     }
+    // Zeitbasis: letzter Zyklus des Hauptrechners plus die Zeit seither.
+    let last_ms = standby.areas().iter().map(|a| a.last_ms).max().unwrap_or(0);
+    let silence = standby
+        .last_activity()
+        .map_or(Duration::ZERO, |t| t.elapsed());
+    let now =
+        Tick::from_millis(last_ms.saturating_add(u64::try_from(silence.as_millis()).unwrap_or(0)));
+    // Die Züge des Fahrplans, die schon fahren, hat der Hauptrechner eingesetzt.
+    if let Some(ops) = rt.ops_mut() {
+        ops.assume_started(now);
+    }
     let warm = match &states {
-        Some(states) => {
-            // Zeitbasis: letzter Zyklus des Hauptrechners plus die Zeit seither.
-            let last_ms = standby.areas().iter().map(|a| a.last_ms).max().unwrap_or(0);
-            let silence = standby
-                .last_activity()
-                .map_or(Duration::ZERO, |t| t.elapsed());
-            let now = Tick::from_millis(
-                last_ms.saturating_add(u64::try_from(silence.as_millis()).unwrap_or(0)),
-            );
-            match rt.take_over(states, now, &detail) {
-                Ok(out) => {
-                    if let Some((area, reason)) = out.safe_state {
-                        tracing::error!(area, ?reason, "Übernahme: sicherer Zustand");
-                    }
-                    true
+        Some(states) => match rt.take_over(states, now, &detail) {
+            Ok(out) => {
+                if let Some((area, reason)) = out.safe_state {
+                    tracing::error!(area, ?reason, "Übernahme: sicherer Zustand");
                 }
-                Err(e) => {
-                    tracing::error!(e, "Übernahme gescheitert: Neustart");
-                    false
-                }
+                true
             }
-        }
+            Err(e) => {
+                tracing::error!(e, "Übernahme gescheitert: Neustart");
+                false
+            }
+        },
         None => false,
     };
     tracing::warn!(warm, detail, "Bereitschaftsrechner führt");

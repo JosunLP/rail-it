@@ -25,7 +25,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-OPS-003 | H-013 | `crates/railit-ops/src/ops.rs` | `ars_departs_on_time_and_requests_permissions`<br>`ars_waits_for_permission_and_follows_platform_changes`<br>`crates/railit-ops/tests/ops.rs`<br>Szenario 14 |
 | REQ-OPS-004 | H-013 | `crates/railit-ops/src/ops.rs` | `auto_signals_clear_for_any_described_train`<br>`crates/railit-ops/tests/ops.rs` |
 | REQ-OPS-005 | H-013 | `crates/railit-ops/src/ops.rs` | `ars_waits_for_permission_and_follows_platform_changes`<br>`timetable_and_dispatching_over_api`<br>Szenario 15 |
-| REQ-OPS-006 | H-013 | `crates/railit-adapters/src/ils.rs`<br>`crates/railit-ops/src/net.rs`<br>`crates/railit-ops/src/ops.rs`<br>`crates/railit-runtime/src/runtime.rs` | `trains_are_handed_over_eastwards`<br>`trains_are_handed_over_westwards`<br>`handover_telegram_roundtrip`<br>`handover_waits_for_the_link`<br>`sci_ils`<br>`crates/railit-runtime/tests/ils.rs` |
+| REQ-OPS-006 | H-013 | `crates/railit-adapters/src/ils.rs`<br>`crates/railit-ops/src/net.rs`<br>`crates/railit-ops/src/ops.rs`<br>`crates/railit-runtime/src/runtime.rs` | `trains_are_handed_over_eastwards`<br>`trains_are_handed_over_westwards`<br>`handover_telegram_roundtrip`<br>`handover_waits_for_the_link`<br>`only_local_trains_are_spawned_and_described`<br>`takeover_does_not_spawn_running_trains_again`<br>`sci_ils`<br>`crates/railit-ops/tests/ops.rs`<br>`crates/railit-runtime/tests/ils.rs` |
 
 ## [dienst.md](../requirements/dienst.md)
 
@@ -133,7 +133,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-COM-007 | H-005, H-014 | `crates/railit-rasta/src/lib.rs` | `twenty_percent_loss_does_not_break_the_connection`<br>`both_directions_deliver_in_order_prefixes`<br>`crates/railit-rasta/tests/rasta.rs`<br>Szenario 18 |
 | REQ-COM-008 | H-014, H-015 | `apps/railit-field/src/main.rs`<br>`apps/railitd/src/field.rs`<br>`crates/railit-adapters/src/ils.rs`<br>`crates/railit-adapters/src/net.rs`<br>`crates/railit-fuzz/src/lib.rs` | `leader_connects_and_controls_the_field`<br>`remote_field_over_rasta`<br>`field_network_must_match`<br>`apps/railitd/tests/field.rs`<br>`crates/railit-adapters/tests/net.rs` |
 | REQ-COM-009 | H-012, H-014 | – | `telegram_roundtrip_and_rejects`<br>`interrupted_link_delivers_nothing_and_recovers`<br>`corruption_is_never_delivered`<br>`permission_stays_exclusive_over_disturbed_ils`<br>`direction_change_waits_for_the_link`<br>`all_scenarios_pass_over_sci_ils`<br>`borders_over_sci_ils`<br>`sci_ils`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-runtime/tests/ils.rs`<br>`crates/railit-runtime/tests/scenarios.rs`<br>Szenario 22 |
-| REQ-COM-010 | H-012, H-014 | `crates/railit-adapters/src/net.rs` | `split_processes_exchange_over_the_network`<br>`border_between_processes`<br>`areas_in_separate_processes`<br>`switch_per_area`<br>`ils_net`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-adapters/tests/net.rs`<br>`crates/railit-runtime/tests/ils.rs` |
+| REQ-COM-010 | H-012, H-014 | `crates/railit-adapters/src/ils.rs`<br>`crates/railit-adapters/src/net.rs` | `split_processes_exchange_over_the_network`<br>`border_between_processes`<br>`areas_in_separate_processes`<br>`switch_per_area`<br>`standby_takes_over_a_part_of_the_network`<br>`ils_net`<br>`apps/railitd/tests/api.rs`<br>`apps/railitd/tests/field.rs`<br>`crates/railit-adapters/tests/net.rs`<br>`crates/railit-runtime/tests/ils.rs` |
 
 ## [plan.md](../requirements/plan.md)
 
