@@ -526,11 +526,16 @@ impl Simulator {
                         .now
                         .checked_add(self.cfg.point_move_time)
                         .unwrap_or(self.now);
-                    if let Some(p) = point.index().and_then(|i| self.points.get_mut(i))
-                        && !p.disturbed
-                        && (p.position != position || p.moving.is_some())
-                    {
-                        p.moving = Some((position, until));
+                    // Gekoppelte Weichen hängen an einem Antrieb und laufen gemeinsam um
+                    // (REQ-TOP-017).
+                    let partner = self.net.coupled(point, position);
+                    for (point, position) in core::iter::once((point, position)).chain(partner) {
+                        if let Some(p) = point.index().and_then(|i| self.points.get_mut(i))
+                            && !p.disturbed
+                            && (p.position != position || p.moving.is_some())
+                        {
+                            p.moving = Some((position, until));
+                        }
                     }
                 }
                 Command::SetSignal { signal, aspect } => {

@@ -1,0 +1,42 @@
+[scenario]
+name = "DKW über EULYNX: je Ende ein Antrieb"
+description = """
+Der DKW-Kopf mit Objektsteuerungen über EULYNX und RaSTA. Die gekoppelten Zungenpaare eines
+Endes hängen an einem Antrieb und damit an einem Feldelement (DKW1a, DKW1c); Stellbefehle an
+DKW1b und DKW1d gehen in gekoppelter Lage an diese Antriebe, ihre Lagemeldung gilt für beide
+Zungenpaare (REQ-TOP-017, REQ-IXL-026). Fällt die Verbindung zur Objektsteuerung der Weichen aus,
+nimmt der Kern die Fahrt über die DKW zurück.
+"""
+network = "../../examples/dkw.toml"
+field = "eulynx"
+
+[[step]]
+note = "Verbindungen stehen nach dem Anlauf"
+until = { link_up = { "OC-Weichen" = true, "OC-Signale" = true, "OC-Gleisfrei" = true } }
+timeout_s = 5
+
+[[step]]
+note = "Einzeln gestellt: Der Antrieb von DKW1c legt auch DKW1d um"
+move_point = { point = "DKW1d", position = "left" }
+until = { point = { DKW1c = "right", DKW1d = "left" } }
+timeout_s = 20
+
+[[step]]
+note = "Fahrt über den Bogen b–c: beide Antriebe in Lage"
+add_train = { name = "RE1", signal = "A2", length_m = 120, speed_kmh = 60 }
+set_route = "A2-N1"
+until = { route = { "A2-N1" = "proceed" } }
+timeout_s = 20
+expect = { point = { DKW1a = "left", DKW1b = "right", DKW1c = "right", DKW1d = "left" } }
+
+[[step]]
+note = "Objektsteuerung der Weichen fällt aus: keine Lagemeldung, die Fahrt fällt auf Halt"
+link = { controller = "OC-Weichen", down = true }
+until = { signal = { A2 = "stop" } }
+timeout_s = 10
+
+[[step]]
+note = "Verbindung wieder da: Die Fahrstraße bleibt zurückgenommen, die Weichen melden wieder"
+link = { controller = "OC-Weichen" }
+until = { link_up = { "OC-Weichen" = true }, point = { DKW1b = "right", DKW1d = "left" } }
+timeout_s = 10

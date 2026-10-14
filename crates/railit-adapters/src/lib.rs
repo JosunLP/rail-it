@@ -20,7 +20,7 @@ pub mod sci;
 
 use std::collections::{HashMap, VecDeque};
 
-use railit_kernel::{Aspect, Command, Input};
+use railit_kernel::{Aspect, Command, Input, PointReport};
 use railit_rasta::{Config, Connection, MAX_PDU, Received, Role, State};
 use railit_sim::Simulator;
 use railit_topology::ElementRef;
@@ -112,6 +112,76 @@ pub(crate) enum Element {
 /// Angebundene Elemente einer Objektsteuerung mit ihren SCI-Kennungen.
 pub(crate) type Elements = Vec<(String, Element)>;
 
+/// Antriebe gekoppelter Weichen (REQ-TOP-017): Zwei gekoppelte Weichen hängen an **einem**
+/// Feldelement, benannt nach der ersten Weiche der Kopplung. Stellbefehle an die zweite gehen
+/// in gekoppelter Lage an dieses Element; seine Lagemeldung gilt für beide.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Drives {
+    /// Zweite Weiche → (Antrieb = erste Weiche, gegenläufig).
+    secondary: HashMap<PointId, (PointId, bool)>,
+    /// Erste Weiche → (zweite Weiche, gegenläufig).
+    primary: HashMap<PointId, (PointId, bool)>,
+}
+
+const fn flip(pos: railit_types::PointPosition, inverted: bool) -> railit_types::PointPosition {
+    if inverted { pos.other() } else { pos }
+}
+
+impl Drives {
+    pub(crate) fn new(net: &railit_topology::Topology) -> Self {
+        let mut d = Self::default();
+        for c in net.couplings() {
+            let [a, b] = c.points;
+            d.secondary.insert(b, (a, c.inverted));
+            d.primary.insert(a, (b, c.inverted));
+        }
+        d
+    }
+
+    /// Hat die Weiche kein eigenes Feldelement?
+    pub(crate) fn is_secondary(&self, point: PointId) -> bool {
+        self.secondary.contains_key(&point)
+    }
+
+    /// Stellbefehl als Element und SCI-Nachricht; Befehle an die zweite Weiche einer Kopplung
+    /// gehen an den gemeinsamen Antrieb.
+    pub(crate) fn message_of(&self, cmd: Command) -> Option<(Element, Message)> {
+        match cmd {
+            Command::MovePoint { point, position } => {
+                let (drive, pos) = self
+                    .secondary
+                    .get(&point)
+                    .map_or((point, position), |&(a, inv)| (a, flip(position, inv)));
+                Some((Element::Point(drive), Message::MovePoint(pos)))
+            }
+            other => message_of(other),
+        }
+    }
+
+    /// Meldungen für den Kern aus dem Zustand eines Elements; die Lage eines Antriebs gilt
+    /// für beide gekoppelten Weichen.
+    pub(crate) fn inputs_of(&self, e: Element, m: Message) -> impl Iterator<Item = Input> {
+        let partner = match (e, m) {
+            (Element::Point(p), Message::PointPosition(report)) => {
+                self.primary.get(&p).map(|&(b, inv)| Input::Point {
+                    point: b,
+                    report: match report {
+                        PointReport::Left => {
+                            PointReport::from(flip(railit_types::PointPosition::Left, inv))
+                        }
+                        PointReport::Right => {
+                            PointReport::from(flip(railit_types::PointPosition::Right, inv))
+                        }
+                        other => other,
+                    },
+                })
+            }
+            _ => None,
+        };
+        input_of(e, m).into_iter().chain(partner)
+    }
+}
+
 /// Objektsteuerung eines Netzes: je Elementart eine.
 pub(crate) struct OcLayout {
     pub(crate) name: String,
@@ -127,11 +197,13 @@ pub(crate) struct OcLayout {
 /// Beschreibung, wenn ein Elementname keine gültige SCI-Kennung ist (höchstens 20 Byte
 /// UTF-8 ohne `_`, das als Füllzeichen dient).
 pub(crate) fn layout(net: &railit_topology::Topology) -> Result<Vec<OcLayout>, String> {
+    let drives = Drives::new(net);
     let groups: [(&str, Protocol, Elements); 4] = [
         (
             "OC-Weichen",
             Protocol::P,
             net.points()
+                .filter(|(id, _)| !drives.is_secondary(*id))
                 .map(|(id, p)| (p.name.clone(), Element::Point(id)))
                 .collect(),
         ),
@@ -268,6 +340,7 @@ pub struct LinkStatus {
 pub struct EulynxField {
     sim: Simulator,
     controllers: Vec<ObjectController>,
+    drives: Drives,
     now: u64,
 }
 
@@ -358,9 +431,11 @@ impl EulynxField {
                 bad_telegrams: 0,
             });
         }
+        let drives = Drives::new(sim.topology());
         Ok(Self {
             sim,
             controllers,
+            drives,
             now: 0,
         })
     }
@@ -499,9 +574,12 @@ impl EulynxField {
             .iter()
             .filter(|c| c.ixl.is_up())
             .flat_map(|c| {
-                c.elements
-                    .iter()
-                    .filter_map(|(_, e)| c.status.get(e).and_then(|m| input_of(*e, *m)))
+                c.elements.iter().flat_map(|(_, e)| {
+                    c.status
+                        .get(e)
+                        .into_iter()
+                        .flat_map(|m| self.drives.inputs_of(*e, *m))
+                })
             })
             .collect()
     }
@@ -510,7 +588,7 @@ impl EulynxField {
     pub fn apply(&mut self, commands: &[Command]) {
         let t = rasta_now(self.now);
         for cmd in commands {
-            let Some((element, message)) = message_of(*cmd) else {
+            let Some((element, message)) = self.drives.message_of(*cmd) else {
                 continue;
             };
             let Some(c) = self

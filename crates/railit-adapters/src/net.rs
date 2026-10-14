@@ -38,8 +38,8 @@ use serde::Serialize;
 
 use crate::sci::{Message, Protocol, Telegram};
 use crate::{
-    Element, Elements, INTERLOCKING_ID, LinkFaults, LinkStatus, area_layout, command_of, input_of,
-    message_of, rasta_now, status_of,
+    Drives, Element, Elements, INTERLOCKING_ID, LinkFaults, LinkStatus, area_layout, command_of,
+    rasta_now, status_of,
 };
 
 /// RaSTA-Kennung des Hauptrechners (Vorgabe).
@@ -473,6 +473,7 @@ struct ClientOc {
 pub struct FieldClient {
     id: u32,
     ocs: Vec<ClientOc>,
+    drives: Drives,
 }
 
 impl FieldClient {
@@ -514,7 +515,11 @@ impl FieldClient {
                 bad_telegrams: 0,
             })
             .collect();
-        Ok(Self { id, ocs })
+        Ok(Self {
+            id,
+            ocs,
+            drives: Drives::new(net),
+        })
     }
 
     /// RaSTA-Kennung dieses Stellwerks.
@@ -580,9 +585,12 @@ impl FieldClient {
             .iter()
             .filter(|oc| oc.conn.is_up())
             .flat_map(|oc| {
-                oc.elements
-                    .iter()
-                    .filter_map(|(_, e)| oc.status.get(e).and_then(|m| input_of(*e, *m)))
+                oc.elements.iter().flat_map(|(_, e)| {
+                    oc.status
+                        .get(e)
+                        .into_iter()
+                        .flat_map(|m| self.drives.inputs_of(*e, *m))
+                })
             })
             .collect()
     }
@@ -591,7 +599,7 @@ impl FieldClient {
     pub fn apply(&mut self, now_ms: u64, commands: &[Command]) -> Vec<Vec<u8>> {
         let t = rasta_now(now_ms);
         for cmd in commands {
-            let Some((element, message)) = message_of(*cmd) else {
+            let Some((element, message)) = self.drives.message_of(*cmd) else {
                 continue;
             };
             let Some(oc) = self
