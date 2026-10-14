@@ -107,11 +107,11 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-IXL-014 | H-006 | `crates/railit-kernel/src/kernel.rs`<br>`crates/railit-kernel/src/lib.rs` | `aux_needs_a_second_operator_in_time`<br>`aux_release_of_occupied_route`<br>`aux_reset_tvd`<br>`aux_force_point`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-kernel/tests/borders.rs`<br>`crates/railit-kernel/tests/phase2.rs`<br>Szenario 10<br>Szenario 12 |
 | REQ-IXL-015 | H-001, H-009 | `crates/railit-kernel/src/kernel.rs`<br>`crates/railit-kernel/src/lib.rs` | `substitute_signal_lets_train_pass`<br>`substitute_signal_times_out_and_drops`<br>`cancel_with_substitute_uses_time_lock`<br>`substitute_only_when_justified`<br>`crates/railit-kernel/tests/phase2.rs`<br>Szenario 10 |
 | REQ-IXL-016 | H-010 | `crates/railit-kernel/src/kernel.rs`<br>`crates/railit-kernel/src/lib.rs` | `level_crossing_must_be_closed_before_proceed`<br>`level_crossing_opens_after_train_has_left`<br>`shared_locks_match_routes`<br>`crates/railit-kernel/tests/phase2.rs`<br>Szenario 09 |
-| REQ-IXL-017 | H-012 | `crates/railit-kernel/src/invariants.rs`<br>`crates/railit-kernel/src/invariants/reference.rs`<br>`crates/railit-kernel/src/kernel/border.rs` | `never_both_sides_hold_permission`<br>`designated_side_takes_permission_after_settle_time`<br>`only_newer_offers_are_taken`<br>`take_back_permission_by_aux_operation`<br>`permission_conflict_is_alarmed`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-kernel/tests/borders.rs` |
+| REQ-IXL-017 | H-012 | `crates/railit-adapters/src/ils.rs`<br>`crates/railit-kernel/src/invariants.rs`<br>`crates/railit-kernel/src/invariants/reference.rs`<br>`crates/railit-kernel/src/kernel/border.rs` | `never_both_sides_hold_permission`<br>`designated_side_takes_permission_after_settle_time`<br>`only_newer_offers_are_taken`<br>`take_back_permission_by_aux_operation`<br>`permission_conflict_is_alarmed`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-kernel/tests/borders.rs`<br>`crates/railit-runtime/tests/ils.rs` |
 | REQ-IXL-018 | H-012 | `crates/railit-kernel/src/kernel/border.rs` | `permission_is_given_only_when_safe`<br>`crates/railit-kernel/tests/borders.rs` |
 | REQ-IXL-019 | H-001, H-012 | `crates/railit-kernel/src/kernel/border.rs` | `incoming_trains_are_authorized_only_without_permission`<br>`borders_are_consistent`<br>`crates/railit-kernel/tests/borders.rs` |
 | REQ-IXL-020 | H-001, H-012 | `crates/railit-kernel/src/invariants.rs`<br>`crates/railit-kernel/src/invariants/reference.rs`<br>`crates/railit-kernel/src/kernel/border.rs` | `exit_needs_permission_and_clear_neighbour`<br>`lost_neighbour_drops_exit_signal`<br>`proceed_only_when_safe`<br>`crates/railit-kernel/tests/borders.rs` |
-| REQ-IXL-021 | H-012 | `crates/railit-kernel/src/kernel/border.rs` | `never_two_stations_feed_the_single_track`<br>`single_track_direction_changes_in_order`<br>`crates/railit-kernel/tests/borders.rs`<br>Szenario 13 |
+| REQ-IXL-021 | H-012 | `crates/railit-kernel/src/kernel/border.rs` | `never_two_stations_feed_the_single_track`<br>`single_track_direction_changes_in_order`<br>`crates/railit-kernel/tests/borders.rs`<br>`crates/railit-runtime/tests/ils.rs`<br>Szenario 13 |
 | REQ-IXL-022 | H-006, H-016 | `apps/railitd/src/service.rs`<br>`crates/railit-kernel/src/io.rs` | `confirmation_must_restate_the_operation`<br>`apps/railitd/tests/api.rs`<br>`apps/railitd/ui/e2e/bedienplatz.test.ts`<br>`crates/railit-kernel/tests/phase2.rs`<br>Szenario 12 |
 | REQ-IXL-023 | H-007 | `crates/railit-kernel/src/invariants.rs` | `linear_check_agrees_with_reference`<br>`kernel_never_becomes_unsafe` |
 | REQ-IXL-024 | H-015 | `apps/railit/src/bench.rs` | `bench_measures_a_small_corridor` |
@@ -128,7 +128,8 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-COM-005 | H-005, H-014 | – | `heartbeats_keep_the_connection_alive`<br>`silence_times_out`<br>`crates/railit-rasta/tests/rasta.rs` |
 | REQ-COM-006 | H-005, H-014 | – | `field_over_eulynx_and_rasta`<br>`apps/railitd/tests/api.rs`<br>Szenario 18<br>Szenario 19 |
 | REQ-COM-007 | H-005, H-014 | `crates/railit-rasta/src/lib.rs` | `twenty_percent_loss_does_not_break_the_connection`<br>`both_directions_deliver_in_order_prefixes`<br>`crates/railit-rasta/tests/rasta.rs`<br>Szenario 18 |
-| REQ-COM-008 | H-014, H-015 | `apps/railit-field/src/main.rs`<br>`apps/railitd/src/field.rs`<br>`crates/railit-adapters/src/net.rs`<br>`crates/railit-fuzz/src/lib.rs` | `leader_connects_and_controls_the_field`<br>`remote_field_over_rasta`<br>`field_network_must_match`<br>`apps/railitd/tests/field.rs`<br>`crates/railit-adapters/tests/net.rs` |
+| REQ-COM-008 | H-014, H-015 | `apps/railit-field/src/main.rs`<br>`apps/railitd/src/field.rs`<br>`crates/railit-adapters/src/ils.rs`<br>`crates/railit-adapters/src/net.rs`<br>`crates/railit-fuzz/src/lib.rs` | `leader_connects_and_controls_the_field`<br>`remote_field_over_rasta`<br>`field_network_must_match`<br>`apps/railitd/tests/field.rs`<br>`crates/railit-adapters/tests/net.rs` |
+| REQ-COM-009 | H-012, H-014 | – | `telegram_roundtrip_and_rejects`<br>`interrupted_link_delivers_nothing_and_recovers`<br>`corruption_is_never_delivered`<br>`permission_stays_exclusive_over_disturbed_ils`<br>`direction_change_waits_for_the_link`<br>`all_scenarios_pass_over_sci_ils`<br>`borders_over_sci_ils`<br>`sci_ils`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-runtime/tests/ils.rs`<br>`crates/railit-runtime/tests/scenarios.rs`<br>Szenario 22 |
 
 ## [plan.md](../requirements/plan.md)
 
@@ -193,4 +194,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-120 Anforderungen, davon 120 mit Nachweis.
+121 Anforderungen, davon 121 mit Nachweis.

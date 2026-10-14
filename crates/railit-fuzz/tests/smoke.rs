@@ -40,6 +40,7 @@ fn seeds_pass() {
     railit_fuzz::journal(&journal);
     railit_fuzz::rasta(&[]);
     railit_fuzz::sci(&[]);
+    railit_fuzz::sci_ils(&[]);
     railit_fuzz::node_wire(&[]);
     railit_fuzz::mirror_state(&[]);
     railit_fuzz::field_server(&[]);
@@ -108,6 +109,7 @@ proptest! {
         railit_fuzz::journal(&data);
         railit_fuzz::rasta(&data);
         railit_fuzz::sci(&data);
+        railit_fuzz::sci_ils(&data);
         railit_fuzz::node_wire(&data);
         railit_fuzz::mirror_state(&data);
         railit_fuzz::field_server(&data);
@@ -115,6 +117,37 @@ proptest! {
 }
 
 proptest! {
+    /// Verfälschte gültige SCI-ILS-Telegramme: Gelesen wird nur, was genau so kodiert.
+    #[test]
+    fn mutated_ils_telegrams(
+        flips in proptest::collection::vec((any::<proptest::sample::Index>(), any::<u8>()), 0..4),
+        seq in any::<u32>(),
+        flags in 0u8..32,
+        cut in 0usize..3,
+    ) {
+        use railit_adapters::ils::IlsTelegram;
+        let t = IlsTelegram {
+            sender: "Adorf".into(),
+            receiver: "Strecke".into(),
+            border: 1,
+            message: railit_kernel::BorderMessage {
+                holding: flags & 1 != 0,
+                seq,
+                offer: flags & 2 != 0,
+                approach_clear: flags & 4 != 0,
+                request: flags & 8 != 0,
+                exclusive: flags & 16 != 0,
+            },
+        };
+        let mut raw = t.encode().unwrap();
+        for (i, b) in flips {
+            let at = i.index(raw.len());
+            raw[at] ^= b;
+        }
+        raw.truncate(raw.len() - cut);
+        railit_fuzz::sci_ils(&raw);
+    }
+
     /// Verfälschte echte Journale (einzelne Bytes, abgeschnitten): Prüfen, Abspielen und
     /// Mitlesen melden höchstens Fehler (REQ-SAF-007, REQ-JRN-009).
     #[test]

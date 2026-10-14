@@ -263,7 +263,10 @@ fn to_request(command: &SimCommand, topology: &Topology) -> Result<HttpRequest, 
                 })),
             )
         }
-        SimCommand::Link(..) | SimCommand::Links => {
+        SimCommand::Link(..)
+        | SimCommand::Links
+        | SimCommand::IlsLink(..)
+        | SimCommand::IlsLinks => {
             return Err(
                 "Störungen der Übertragungsstrecke nur beim eingebauten Feld (--field eulynx)"
                     .into(),

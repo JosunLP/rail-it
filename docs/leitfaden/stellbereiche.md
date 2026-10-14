@@ -42,6 +42,30 @@ Durchrutschweg – verschlossen.
 Property-Tests mit zwei und drei echten Kernen belegen, dass nie beide Seiten einer Grenze die
 Erlaubnis halten.
 
+## Nachbarstellwerke über SCI-ILS
+
+Ohne weitere Angabe stellt der Dienst die Grenzmeldungen ideal im Prozess zu. Mit
+`--borders ils` laufen sie wie zwischen getrennten Stellwerken als **EULYNX-SCI-ILS**-Telegramme
+über **RaSTA** – je Paar benachbarter Bereiche eine Verbindung, deren Strecke sich stören lässt:
+
+```sh
+railitd --network nordbahn.toml --plan nordbahn/ --trusted-key railit.pub --borders ils --speed 10 &
+railit ils                                        # Verbindungen, Zähler, Störungen
+railit ils fault Adorf-Strecke --loss 30 --delay-ms 80   # gestört: RaSTA gleicht aus
+railit ils fault Adorf-Strecke --down             # unterbrochen
+railit ils fault Adorf-Strecke                    # wieder ungestört
+railit scenario run tests/scenarios/22_nordbahn_sci_ils.toml
+railit scenario run --ils tests/scenarios/*.toml  # alle Szenarien über SCI-ILS
+```
+
+Ist die Verbindung unterbrochen, kommen keine Meldungen des Nachbarn mehr an: Eine Ausfahrt über
+die Grenze fällt nach der Meldezeit auf Halt, beide Seiten melden die Grenze gestört, und die
+Erlaubnis bleibt, wo sie war – eine Anforderung wartet, bis die Verbindung wieder steht. Ein
+Property-Test lässt die drei Kerne der Nordbahn unter zufälligen Störungen (Unterbrechung,
+Verlust, Verfälschung, Laufzeiten über `t_max`) Erlaubnisse anfordern und Ausfahrten stellen:
+Nie halten beide Seiten einer Grenze die Erlaubnis, nie zeigen Ausfahrten beider Bahnhöfe in die
+Strecke Fahrt (REQ-COM-009).
+
 ## Bedienen
 
 ```sh

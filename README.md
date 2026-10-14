@@ -39,7 +39,9 @@ und Diagnose: Journal auch im Knotenbetrieb, Zustand und Ereignisse zu jedem Zei
 Journal, Metriken unter `/v1/metrics`) und Phase 9 (Mitlesen und Rückschau: Bereitschaftsrechner
 liest das Journal laufend geprüft mit, Rückschau am Bedienplatz) und Phase 10 (Übernahme:
 Feldrechner mit Umschalter, Ausgabe erst nach Quittung, Übernahme des Betriebs durch den
-Bereitschaftsrechner, siehe [Übernahme](#übernahme)) sind umgesetzt.
+Bereitschaftsrechner, siehe [Übernahme](#übernahme)) und Phase 11 (Nachbarstellwerke: Grenzmeldungen
+zwischen den Stellbereichen über EULYNX SCI-ILS und RaSTA mit störbarer Strecke, siehe
+[ETCS, EULYNX und railML](#etcs-eulynx-und-railml)) sind umgesetzt.
 
 | Crate | Inhalt | |
 |-------|--------|---|
@@ -54,7 +56,7 @@ Bereitschaftsrechner, siehe [Übernahme](#übernahme)) sind umgesetzt.
 | `railit-embedded` | Runtime für den sicheren Rechner (Cortex-R): Knoten mit Kanälen, Binärprotokoll über RaSTA | `no_std`, ohne Allokator |
 | `railit-etcs` | RBC-Funktion für ETCS Level 2: Anmeldung, Fahrerlaubnis über Bereichsgrenzen, Notbremsung | |
 | `railit-rasta` | RaSTA-Sicherheits- und Wiederholschicht nach EN 50159 | `no_std`, ohne Allokator |
-| `railit-adapters` | Feldanbindung über EULYNX SCI-P/-LS/-TDS/-LX und RaSTA zu simulierten Objektsteuerungen, im Dienst oder über UDP zu einem Feldrechner mit Umschalter | |
+| `railit-adapters` | Feldanbindung über EULYNX SCI-P/-LS/-TDS/-LX und RaSTA zu simulierten Objektsteuerungen, im Dienst oder über UDP zu einem Feldrechner mit Umschalter; SCI-ILS zwischen Nachbarstellwerken | |
 | `railit-journal` | Betriebsjournal mit Hashkette, Prüfpunkten, Siegeln, Zustandsabzügen und parallelem Replay; Auditprotokoll | |
 | `railit-sim` | Simulator: Weichen, Signale, Gleisfreimeldung, Bahnübergänge, Züge (auch mit ETCS), Störungen | |
 | `railit-ops` | Zugnummernmeldung, Fahrplan, Zuglenkung, Selbstblock, Disposition | |
@@ -213,6 +215,14 @@ railit safety                     # Redundanz, mitwählende Kanäle, Abschaltung
 railit safety fault 2 stall       # Prüfung: Kanal 2 fällt aus und wird ausgeschlossen
 railit safety reintegrate 2       # Kanal 2 übernimmt den Zustand und wählt wieder mit
 railit scenario run tests/scenarios/2[01]_*.toml
+
+# Nachbarstellwerke: Grenzmeldungen über EULYNX SCI-ILS und RaSTA, Strecke störbar
+railitd --network examples/nordbahn.toml --plan nordbahn/ --trusted-key railit.pub \
+        --borders ils --speed 10 &
+railit ils                                  # Verbindungen zwischen den Stellbereichen
+railit ils fault Adorf-Strecke --down       # unterbrechen: Ausfahrt fällt auf Halt
+railit scenario run tests/scenarios/22_nordbahn_sci_ils.toml
+railit scenario run --ils tests/scenarios/*.toml
 
 # Netz als railML 3 ausgeben und wieder einlesen
 railit net export examples/nordbahn.toml --out nordbahn.railml

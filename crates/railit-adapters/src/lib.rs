@@ -14,6 +14,7 @@
 //! Die Objektsteuerungen senden den Zustand ihrer Elemente bei jeder Änderung und nach jedem
 //! Verbindungsaufbau vollständig.
 
+pub mod ils;
 pub mod net;
 pub mod sci;
 

@@ -1,0 +1,68 @@
+[scenario]
+name = "Nordbahn über SCI-ILS: gestörte und unterbrochene Verbindung zum Nachbarstellwerk"
+description = """
+Die drei Stellbereiche der Nordbahn tauschen ihre Grenzmeldungen über EULYNX SCI-ILS und
+RaSTA aus, je Paar benachbarter Stellwerke eine Verbindung. Eine gestörte Strecke (Verlust,
+Verfälschung, Laufzeit) gleicht RaSTA aus. Fällt die Verbindung zwischen Adorf und der
+Strecke aus, fällt das Ausfahrsignal auf Halt und beide Seiten melden die Grenze gestört; die
+Erlaubnis bleibt, wo sie war. Steht die Verbindung wieder, geht der Betrieb weiter.
+"""
+network = "../../examples/nordbahn.toml"
+borders = "ils"
+
+[[step]]
+note = "Anlauf: Verbindungen stehen, Erlaubnis Richtung Osten"
+until = { permission = { "Adorf>Strecke" = true, "Strecke>Bstadt" = true }, ils_up = { "Adorf-Strecke" = true, "Strecke-Bstadt" = true } }
+timeout_s = 10
+expect = { permission = { "Strecke>Adorf" = false, "Bstadt>Strecke" = false } }
+
+[[step]]
+note = "Gestörte Strecke: 30 % Verlust, 10 % Verfälschung, 80 ms Laufzeit"
+ils_link = { link = "Adorf-Strecke", loss_percent = 30, corrupt_percent = 10, delay_ms = 80 }
+add_train = { name = "RE1", signal = "AA", length_m = 100, speed_kmh = 80 }
+set_route = "AA-AN1"
+until = { route = { "AA-AN1" = "proceed" } }
+timeout_s = 15
+
+[[step]]
+note = "Ausfahrt über die Grenze trotz gestörter Strecke"
+set_route = "AN1->Strecke"
+until = { route = { "AN1->Strecke" = "proceed" } }
+timeout_s = 15
+
+[[step]]
+note = "RaSTA gleicht die Störung aus: keine Grenzstörung"
+wait_s = 20
+expect = { signal = { AN1 = "proceed" }, ils_up = { "Adorf-Strecke" = true }, no_alarm = ["border_lost", "permission_conflict"] }
+
+[[step]]
+note = "Verbindung unterbrochen: Ausfahrsignal fällt auf Halt, die Grenze ist gestört"
+ils_link = { link = "Adorf-Strecke", down = true }
+until = { signal = { AN1 = "stop" }, alarm = ["border_lost"] }
+timeout_s = 5
+expect = { permission = { "Adorf>Strecke" = true, "Strecke>Adorf" = false } }
+
+[[step]]
+note = "RaSTA baut die Verbindung nach t_max ab"
+until = { ils_up = { "Adorf-Strecke" = false } }
+timeout_s = 5
+expect = { ils_up = { "Strecke-Bstadt" = true } }
+
+[[step]]
+note = "Ohne Meldung des Nachbarn keine Erlaubnisabgabe"
+request_permission = "Strecke>Adorf"
+wait_s = 10
+expect = { permission = { "Adorf>Strecke" = true, "Strecke>Adorf" = false } }
+
+[[step]]
+note = "Verbindung wieder hergestellt"
+ils_link = { link = "Adorf-Strecke" }
+until = { ils_up = { "Adorf-Strecke" = true } }
+timeout_s = 10
+
+[[step]]
+note = "Zurücknahme der Ausfahrt; danach gibt Adorf die angeforderte Erlaubnis ab"
+cancel_route = "AN1->Strecke"
+until = { permission = { "Strecke>Adorf" = true } }
+timeout_s = 120
+expect = { permission = { "Adorf>Strecke" = false }, no_alarm = ["permission_conflict"], safe_state = false }

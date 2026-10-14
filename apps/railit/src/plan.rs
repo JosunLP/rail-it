@@ -417,6 +417,7 @@ pub(crate) fn run_scenarios(
     node: bool,
     channels: Option<u8>,
     journal: bool,
+    ils: bool,
     output: Output,
 ) -> ExitCode {
     let opts = railit_runtime::scenario::RunOptions {
@@ -424,6 +425,7 @@ pub(crate) fn run_scenarios(
             .and_then(|c| railit_runtime::railit_safety::Redundancy::from_channels(usize::from(c))),
         node,
         journal,
+        ils,
     };
     let mut all_passed = true;
     let mut results = Vec::new();

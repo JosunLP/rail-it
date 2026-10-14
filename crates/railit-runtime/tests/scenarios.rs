@@ -21,8 +21,8 @@ fn all_scenarios_pass() {
 fn all_scenarios_pass_with_three_channels() {
     run_all(RunOptions {
         channels: Some(Redundancy::TwoOutOfThree),
-        node: false,
         journal: true,
+        ..RunOptions::default()
     });
 }
 
@@ -31,9 +31,21 @@ fn all_scenarios_pass_with_three_channels() {
 #[test]
 fn all_scenarios_pass_on_safe_computer_nodes() {
     run_all(RunOptions {
-        channels: None,
         node: true,
         journal: true,
+        ..RunOptions::default()
+    });
+}
+
+/// REQ-COM-009: Die Stellbereiche tauschen ihre Grenzmeldungen über EULYNX SCI-ILS und RaSTA
+/// aus – alle Szenarien verhalten sich wie bei idealer Übertragung, auch auf Knoten.
+#[test]
+fn all_scenarios_pass_over_sci_ils() {
+    run_all(RunOptions {
+        node: true,
+        journal: true,
+        ils: true,
+        ..RunOptions::default()
     });
 }
 

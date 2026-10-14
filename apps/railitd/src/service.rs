@@ -24,6 +24,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use crate::auth::{Permission, Principal};
 use crate::engine::{Answer, EngineMsg, OpsCommand, SafetyCommand, SimCommand, SimReply};
 use crate::field::FieldControl;
+use railit_runtime::railit_adapters::ils::IlsStatus;
 use railit_runtime::railit_adapters::{LinkFaults, LinkStatus};
 
 /// Fehler einer Operation.
@@ -489,7 +490,9 @@ impl Service {
     async fn sim_done(&self, command: SimCommand) -> Res<()> {
         match self.sim(command).await? {
             SimReply::Error(e) => Err(ServiceError::BadRequest(e)),
-            SimReply::Done | SimReply::Trains(_) | SimReply::Links(_) => Ok(()),
+            SimReply::Done | SimReply::Trains(_) | SimReply::Links(_) | SimReply::IlsLinks(_) => {
+                Ok(())
+            }
         }
     }
 
@@ -497,7 +500,7 @@ impl Service {
         match self.sim(SimCommand::Trains).await? {
             SimReply::Trains(t) => Ok(t),
             SimReply::Error(e) => Err(ServiceError::BadRequest(e)),
-            SimReply::Done | SimReply::Links(_) => Ok(Vec::new()),
+            SimReply::Done | SimReply::Links(_) | SimReply::IlsLinks(_) => Ok(Vec::new()),
         }
     }
 
@@ -561,6 +564,34 @@ impl Service {
             who,
             Permission::Simulate,
             "link_faults",
+            &target,
+            self.sim_done(command),
+        )
+        .await
+    }
+
+    /// Zustand der SCI-ILS-Verbindungen zwischen den Stellbereichen (leer ohne SCI-ILS).
+    pub(crate) async fn ils_links(&self) -> Res<Vec<IlsStatus>> {
+        match self.sim(SimCommand::IlsLinks).await? {
+            SimReply::IlsLinks(l) => Ok(l),
+            SimReply::Error(e) => Err(ServiceError::BadRequest(e)),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    /// Störungen einer SCI-ILS-Verbindung setzen (Simulation, Prüfstand).
+    pub(crate) async fn ils_faults(
+        &self,
+        who: &Principal,
+        link: String,
+        faults: LinkFaults,
+    ) -> Res<()> {
+        let target = format!("{link} {faults:?}");
+        let command = SimCommand::IlsLink(link, faults);
+        self.act(
+            who,
+            Permission::Simulate,
+            "ils_faults",
             &target,
             self.sim_done(command),
         )

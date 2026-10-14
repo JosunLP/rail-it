@@ -136,6 +136,10 @@ struct Args {
     /// Zugangstoken der Steuerung des Feldrechners (auch über `RAILIT_FIELD_TOKEN`).
     #[arg(long, env = "RAILIT_FIELD_TOKEN", hide_env_values = true)]
     field_token: Option<String>,
+    /// Übertragung der Grenzmeldungen zwischen den Stellbereichen: direkt im Prozess oder
+    /// über EULYNX SCI-ILS und RaSTA mit störbarer Strecke (`/v1/ils`).
+    #[arg(long, value_enum, default_value_t = BordersArg::Direct)]
+    borders: BordersArg,
     /// Kanäle je Stellbereich: 1 (ohne Vergleich), 2 (2-von-2) oder 3 (2-von-3).
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=3))]
     channels: u8,
@@ -188,6 +192,15 @@ enum FieldArg {
     Eulynx,
     /// Feldrechner (`railit-field`) über RaSTA/UDP; die Simulation läuft dort.
     Remote,
+}
+
+/// Übertragung der Grenzmeldungen.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum BordersArg {
+    /// Ideal im Prozess.
+    Direct,
+    /// Über EULYNX SCI-ILS und RaSTA, je Paar benachbarter Stellbereiche eine Verbindung.
+    Ils,
 }
 
 fn parse_id(text: &str) -> Result<u32, String> {
@@ -305,6 +318,7 @@ fn load(args: &Args) -> Result<(Topology, Runtime<ServiceField>), String> {
         tracing::info!(channels = args.channels, "redundante Kanäle mit Voter");
     }
     attach_nodes(&mut rt, args)?;
+    use_borders(&mut rt, args.borders)?;
     let timetable = match &args.timetable {
         Some(path) => {
             let source =
@@ -319,6 +333,15 @@ fn load(args: &Args) -> Result<(Topology, Runtime<ServiceField>), String> {
     };
     rt.enable_ops(&net, cfg, timetable)?;
     Ok((net, rt))
+}
+
+/// Übertragung der Grenzmeldungen (`--borders`).
+fn use_borders(rt: &mut Runtime<ServiceField>, borders: BordersArg) -> Result<(), String> {
+    if borders == BordersArg::Ils {
+        rt.use_ils()?;
+        tracing::info!(links = rt.ils_links().len(), "Grenzmeldungen über SCI-ILS");
+    }
+    Ok(())
 }
 
 /// Bindet Stellbereiche an Knoten des sicheren Rechners an (`--node`).

@@ -546,6 +546,66 @@ fn network_with_areas_over_api() {
     }
 }
 
+/// REQ-COM-009: Grenzmeldungen über SCI-ILS und RaSTA; eine unterbrochene Verbindung hält
+/// den Erlaubniswechsel an, bis sie wieder steht.
+#[test]
+fn borders_over_sci_ils() {
+    let (plans, public) = prepare_areas("nordbahn-ils");
+    let d = start_for(
+        NORDBAHN,
+        &[
+            "--plan",
+            plans.to_str().unwrap(),
+            "--trusted-key",
+            public.to_str().unwrap(),
+            "--borders",
+            "ils",
+        ],
+    );
+    let links = |d: &Daemon| {
+        let (status, links) = get(d, "/v1/ils", true);
+        assert_eq!(status, 200);
+        links
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| (l["link"].as_str().unwrap().to_string(), l["up"] == true))
+            .collect::<Vec<_>>()
+    };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !permission(&d, "Adorf", "Adorf>Strecke") || !links(&d).iter().all(|(_, up)| *up) {
+        assert!(Instant::now() < deadline, "Anlauf über SCI-ILS bleibt aus");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let names: Vec<String> = links(&d).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names, ["Adorf-Strecke", "Strecke-Bstadt"]);
+
+    assert_eq!(
+        post(&d, "/v1/ils/Adorf-Strecke", Some(json!({"down": true}))).0,
+        200
+    );
+    assert_eq!(post(&d, "/v1/ils/Nord-Sued", Some(json!({}))).0, 400);
+    assert_eq!(post(&d, "/v1/borders/Strecke%3EAdorf/request", None).0, 200);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(permission(&d, "Adorf", "Adorf>Strecke"));
+    assert!(!permission(&d, "Strecke", "Strecke>Adorf"));
+    assert!(!links(&d)[0].1);
+
+    assert_eq!(
+        post(&d, "/v1/ils/Adorf-Strecke", Some(json!({"down": false}))).0,
+        200
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !permission(&d, "Strecke", "Strecke>Adorf") {
+        assert!(
+            Instant::now() < deadline,
+            "Erlaubniswechsel nach Wiederkehr bleibt aus"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!permission(&d, "Adorf", "Adorf>Strecke"));
+}
+
 fn delete(d: &Daemon, path: &str) -> u16 {
     agent()
         .delete(format!("{}{path}", d.url))

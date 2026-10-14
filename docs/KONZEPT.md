@@ -1,6 +1,6 @@
 # rail-it – Konzept einer Engine für Netz- und Stellwerkmanagement
 
-> Status: **v0.12** (Phasen 0 bis 10 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
+> Status: **v0.13** (Phasen 0 bis 11 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
 >
 > v0.2 arbeitet die Grundsatzentscheidungen aus Abschnitt 2 ein: vollständiger Netz- und
 > Bahnbetrieb, deutsches ESTW **und** europäisches System (ETCS/EULYNX), Server **und**
@@ -439,8 +439,20 @@ Property-Tests mit zwei bzw. drei echten Kernen, beliebigen Bedienungen, Laufzei
 einer Sekunde und Neustarts belegen, dass nie beide Seiten einer Grenze die Erlaubnis halten
 und nie zwei Bahnhöfe Züge in die Strecke schicken. Die Übertragung ist in der Simulation
 ideal. Seit Phase 4 steht mit `railit-rasta` die sichere Übertragung nach EN 50159 bereit
-(REQ-COM-001 bis 005); die Feldanbindung nutzt sie bereits (Abschnitt 12), die Anbindung
-getrennter Stellwerksrechner über SCI-ILS steht noch aus.
+(REQ-COM-001 bis 005); die Feldanbindung nutzt sie bereits (Abschnitt 12).
+
+**Stand Phase 11 – SCI-ILS:** Die Grenzmeldungen können wie zwischen getrennten Stellwerken
+als EULYNX-SCI-ILS-Telegramme über RaSTA laufen (`railitd --borders ils`, Szenario-Option
+`borders = "ils"`), je Paar benachbarter Bereiche eine Verbindung mit störbarer Strecke
+(`railit_adapters::ils`). Das Telegramm trägt Absender, Empfänger, die Nummer der Grenze im
+Paar (beide Seiten brauchen keine gemeinsamen Grenznamen), die Merkmale der Grenzmeldung und
+die laufende Nummer. Zugestellt wird nur, was über eine stehende Verbindung **neu** eingetroffen
+ist; ein Nachbarkern, der nicht mehr rechnet, während RaSTA seine Lebenszeichen weiter
+sendet, fällt so am Alter der letzten Meldung auf. Alle Szenarien laufen auch über SCI-ILS
+(und über Knoten mit Journal) unverändert; ein Property-Test mit den drei Kernen der Nordbahn
+unter zufälligen Störungen findet nie zwei Halter einer Erlaubnis und nie Ausfahrten beider
+Bahnhöfe in die Strecke (REQ-COM-009). Offen bleibt, die Stellbereiche in getrennten
+Prozessen bzw. auf getrennten Rechnern laufen zu lassen.
 
 ### 10.5 Invarianten
 
@@ -523,8 +535,8 @@ an (SCI-P, SCI-LS, SCI-TDS, SCI-LX), jede über eine eigene RaSTA-Verbindung mit
 Strecke (Verlust, Verfälschung, Verzögerung, Unterbrechung). Der Kern erhält nur Meldungen
 über stehende Verbindungen; fällt eine aus, gelten ihre Elemente nach der Meldezeit als
 gestört (REQ-COM-006). `railitd --field eulynx` und Szenario-Option `field = "eulynx"`
-schalten diese Anbindung ein. SCI-ILS und SCI-RBC stehen noch aus; das RBC ist bis dahin
-in-process angebunden. Der Sicherheitscode (MD4 mit vereinbarten Anfangswerten) entspricht der
+schalten diese Anbindung ein. SCI-ILS folgt in Phase 11 (Abschnitt 10.4); SCI-RBC steht noch
+aus, das RBC ist bis dahin in-process angebunden. Der Sicherheitscode (MD4 mit vereinbarten Anfangswerten) entspricht der
 RaSTA-Norm, ist aber vor einer Zulassung gegen deren Anforderungen zu prüfen (H-014).
 
 **Stand Phase 10:** Die Objektsteuerungen können auch in einem eigenen Prozess laufen, dem
@@ -924,13 +936,14 @@ Daraus folgen diese Regeln:
 | **1 – Minimaler Kern** | Plan-Image (signiert), Fahrstraßengenerator mit unabhängiger Gegenprüfung, Kern mit Weichen, Signalen und TVD inkl. Teilauflösung und Zeitverschluss, Simulator, Szenarien, `railitd` mit REST-API, CLI | Bahnhof „Beispielstadt“ (`examples/beispielstadt.toml`) fährt sicher in der Simulation, bedienbar über die CLI | ✔ |
 | **2 – ESTW vollständig** | Durchrutschwege, Flankenschutz, Hilfshandlungen mit Zählwerk, Signalbegriffe Ks und H/V (`railit-movement`), BÜ, Erkennung unerlaubter Besetzungen, Journal und Replay | Fachlich vollständiges Einzelstellwerk nach `de-estw` | ✔ |
 | **3 – Netz & Betrieb** | Mehrere Stellbereiche, Streckenblock, Zugnummern, Fahrplan, Zuglenkung, Disposition, gRPC-Vertrag, Rollen, mTLS, Audit | Betrieb eines Netzes mit mehreren Bahnhöfen in der Simulation („Nordbahn“, `examples/nordbahn.toml` mit Fahrplan `examples/nordbahn-fahrplan.toml`) | ✔ |
-| **4 – Europa** | ETCS Level 2 (MA-Erzeugung, RBC-Funktion), EULYNX SCI-P/-LS/-TDS/-LX über RaSTA zu simulierten Objektsteuerungen, Import und Export von railML 3 | Mischbetrieb ESTW/ETCS in der Simulation (Szenarien 16 bis 19); Feldanbindung bereit für Prüfstände | ✔ (PlanPro-Import und SCI-ILS offen) |
+| **4 – Europa** | ETCS Level 2 (MA-Erzeugung, RBC-Funktion), EULYNX SCI-P/-LS/-TDS/-LX über RaSTA zu simulierten Objektsteuerungen, Import und Export von railML 3 | Mischbetrieb ESTW/ETCS in der Simulation (Szenarien 16 bis 19); Feldanbindung bereit für Prüfstände | ✔ (PlanPro-Import offen; SCI-ILS in Phase 11) |
 | **5 – Sicherheit & Embedded** | Redundante Kanäle, Voter, Watchdog, Cortex-R-Runtime, Kani-Nachweise, Fuzzing, Safety Case, Rückverfolgbarkeit | Kandidat für das Labor mit [Sicherheitsnachweis](safety/safety-case.md) (Szenarien 20, 21) | ✔ (Hardware, Einbindung des sicheren Rechners in `railitd` offen) |
 | **6 – UI** | Spurplan-UI als API-Client mit sicherer Anzeige- und Bestätigungskette | Bedienplatz unter `/ui/` mit automatisch berechnetem Spurplan, Anzeigeüberwachung und Prüfcode (Abschnitt 14.3) | ✔ (ergonomische Prüfung mit Bedienern offen) |
 | **7 – Betriebsreife** | Sicherer Rechner im Dienst (Knoten, Spiegel, Zustandsabgleich), robuste RaSTA-Wiederholung, signiertes Journal, Bedienplatz für Netz und Betrieb, Leistungsmessung | Verteilte Einsatzvariante lauffähig (`railit-node`, `railitd --node`), alle Szenarien über Knoten; Journal und Audit gesiegelt; Leistungsziele bei 5000 Elementen in der CI gemessen | ✔ (Zielhardware offen) |
 | **8 – Verfügbarkeit & Diagnose** | Journal auch im Knotenbetrieb, Diagnose aus dem Journal (Zustand zu einem Zeitpunkt, Ereignisse eines Zeitraums), Metriken für den Betrieb | Jeder Betrieb ist lückenlos aufgezeichnet und nachträglich in Sekunden befragbar; Metriken für den Betrieb | ✔ |
 | **9 – Mitlesen & Rückschau** | Mitleser für wachsende Journale, Rückschau im Dienst und im Bedienplatz, Bereitschaftsrechner über den Journalstrom | Ein zweiter Rechner zeigt den Zustand des Hauptrechners laufend geprüft an; jeder Zeitpunkt lässt sich am Bedienplatz zurückschauen | ✔ |
 | **10 – Übernahme** | Feldrechner mit Umschalter (`railit-field`), Ausgabe erst nach Quittung, Übernahme des mitgelesenen Zustands im Kern und im Dienst | Fällt der Hauptrechner aus, übernimmt der Bereitschaftsrechner den Betrieb – mit dem mitgelesenen Zustand, solange die Zusage des Hauptrechners das deckt | ✔ (Zeitbedingungen auf Zielhardware, Umschalter in realer Feldtechnik offen) |
+| **11 – Nachbarstellwerke** | Grenzmeldungen als EULYNX-SCI-ILS-Telegramme über RaSTA, je Paar benachbarter Stellbereiche eine Verbindung mit störbarer Strecke; Dienst, CLI, Szenarien, Fuzzing | Die Stellbereiche sprechen wie getrennte Stellwerke miteinander; gestörte Verbindungen halten den Erlaubniswechsel sicher an (Szenario 22, REQ-COM-009) | ✔ (Stellbereiche in getrennten Prozessen offen) |
 
 **Umgesetzte Crates (Stand Phase 7):** `railit-types`, `railit-topology`, `railit-plan`,
 `railit-planning`, `railit-rules`, `railit-kernel`, `railit-safety` (Kanäle, Voter, Watchdog),

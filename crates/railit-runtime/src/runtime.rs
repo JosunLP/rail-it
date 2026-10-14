@@ -14,6 +14,8 @@
 use std::io::Write;
 use std::time::Instant;
 
+use railit_adapters::LinkFaults;
+use railit_adapters::ils::{IlsNet, IlsStatus};
 use railit_etcs::{PositionReport, Rbc, RbcEvent, RbcView};
 use railit_journal::{Header, JournalWriter, SafetyKind};
 use railit_kernel::{
@@ -400,6 +402,8 @@ pub struct Runtime<F> {
     snapshot_every: Option<u64>,
     /// Ausgabe erst nach Quittung des Bereitschaftsrechners (REQ-SVC-012).
     gate: Option<Gate>,
+    /// Grenzmeldungen über SCI-ILS und RaSTA statt ideal im Prozess.
+    ils: Option<IlsNet>,
 }
 
 impl<F: FieldAdapter> Runtime<F> {
@@ -525,6 +529,7 @@ impl<F: FieldAdapter> Runtime<F> {
             clock: Instant::now(),
             snapshot_every: None,
             gate: None,
+            ils: None,
         }
     }
 
@@ -612,6 +617,45 @@ impl<F: FieldAdapter> Runtime<F> {
             self.attach_node(area, Box::new(link))?;
         }
         Ok(())
+    }
+
+    /// Überträgt die Grenzmeldungen zwischen den Stellbereichen über EULYNX SCI-ILS und
+    /// RaSTA mit störbarer Strecke statt ideal im Prozess (vor dem ersten Zyklus). Jedes Paar
+    /// benachbarter Bereiche hat eine Verbindung ([`IlsNet`]).
+    ///
+    /// # Errors
+    /// Schon gelaufene Zyklen, Bereichsnamen, die keine SCI-Kennung sind, oder ungepaarte
+    /// Grenzen.
+    pub fn use_ils(&mut self) -> Result<(), String> {
+        if self.now != Tick::ZERO {
+            return Err("SCI-ILS nur vor dem ersten Zyklus einschalten".into());
+        }
+        let names: Vec<String> = self.areas.iter().map(|a| a.name.clone()).collect();
+        let peers: Vec<Vec<Option<(usize, BorderId)>>> =
+            self.areas.iter().map(|a| a.peers.clone()).collect();
+        self.ils = Some(IlsNet::new(&names, &peers)?);
+        Ok(())
+    }
+
+    /// Zustand der SCI-ILS-Verbindungen (leer ohne SCI-ILS).
+    pub fn ils_links(&self) -> Vec<IlsStatus> {
+        self.ils.as_ref().map(IlsNet::links).unwrap_or_default()
+    }
+
+    /// Ob die Grenzmeldungen über SCI-ILS laufen.
+    pub const fn uses_ils(&self) -> bool {
+        self.ils.is_some()
+    }
+
+    /// Störungen einer SCI-ILS-Verbindung (Name `A-B`, siehe [`Self::ils_links`]).
+    ///
+    /// # Errors
+    /// Ohne SCI-ILS oder bei unbekannter Verbindung.
+    pub fn set_ils_faults(&mut self, link: &str, faults: LinkFaults) -> Result<(), String> {
+        self.ils
+            .as_mut()
+            .ok_or("Grenzmeldungen laufen nicht über SCI-ILS")?
+            .set_faults(link, faults)
     }
 
     /// Alle Knoten sind verbunden und ihre Spiegel abgeglichen (ohne Knoten: `true`).
@@ -969,6 +1013,17 @@ impl<F: FieldAdapter> Runtime<F> {
         self.field.advance(self.now);
         self.field_inputs.clear();
         self.field.reports(&mut self.field_inputs);
+        if let Some(ils) = &mut self.ils {
+            for ((area, border), message) in ils.advance(self.now) {
+                if let Some(slot) = self
+                    .areas
+                    .get_mut(area)
+                    .and_then(|a| border.index().and_then(|i| a.inbox.get_mut(i)))
+                {
+                    *slot = Some(message);
+                }
+            }
+        }
 
         let mut all = std::mem::take(&mut self.ops_pending);
         all.extend_from_slice(requests);
@@ -1097,7 +1152,9 @@ impl<F: FieldAdapter> Runtime<F> {
         let mut count = 0usize;
         for batch in batches {
             for ((area, border), message) in batch.mail {
-                if let Some(slot) = self
+                if let Some(ils) = &mut self.ils {
+                    ils.send((area, border), message);
+                } else if let Some(slot) = self
                     .areas
                     .get_mut(area)
                     .and_then(|a| border.index().and_then(|i| a.inbox.get_mut(i)))
@@ -1110,6 +1167,9 @@ impl<F: FieldAdapter> Runtime<F> {
             for (train, authority) in batch.cab {
                 self.field.set_cab_authority(&train, authority);
             }
+        }
+        if let Some(ils) = &mut self.ils {
+            ils.flush();
         }
         count
     }

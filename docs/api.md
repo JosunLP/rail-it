@@ -83,6 +83,8 @@ Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`; mit
 | POST | `/v1/safety/reset` | Sicheren Zustand zurücksetzen (Neubeginn wie nach einem Neustart), Body `{"area"?}` | 200 / 400 |
 | GET | `/v1/field/links` | Verbindungen zu den Objektsteuerungen (mit `--field eulynx` oder `remote`) | JSON-Liste |
 | POST | `/v1/field/links/{Objektsteuerung}` | Übertragungsstrecke stören, Body `{"down"?,"loss_percent"?,"corrupt_percent"?,"delay_ms"?}`; `{}` hebt alle Störungen auf | 200 / 400 |
+| GET | `/v1/ils` | SCI-ILS-Verbindungen zwischen den Stellbereichen (mit `--borders ils`, sonst leer) | JSON-Liste |
+| POST | `/v1/ils/{Verbindung}` | SCI-ILS-Strecke `A-B` stören, Body wie bei `/v1/field/links`; Rolle Simulation | 200 / 400 |
 
 Namen mit `>` (Grenzen, Fahrstraßen über Grenzen wie `AN1->Strecke`) werden im Pfad kodiert
 (`AN1-%3EStrecke`). Bei mehreren Stellbereichen tragen Antworten und Ereignisse das Feld
@@ -246,6 +248,18 @@ Mit `railitd --field eulynx` laufen alle Stellbefehle und Meldungen als EULYNX-S
 zeigt je Verbindung `controller`, `interface`, `elements`, `up`, `discarded` (verworfene
 PDUs), `bad_telegrams` und die eingestellten `faults`. Fällt eine Verbindung aus, behandelt
 der Kern ihre Elemente nach der Meldezeit als gestört (REQ-COM-006).
+
+## Nachbarstellwerke über SCI-ILS
+
+Mit `railitd --borders ils` tauschen die Stellbereiche ihre Grenzmeldungen als
+EULYNX-SCI-ILS-Telegramme über RaSTA aus, je Paar benachbarter Bereiche eine Verbindung
+(`Adorf-Strecke`, `Strecke-Bstadt`). `/v1/ils` zeigt je Verbindung `link`, `areas`,
+`borders`, `up`, `discarded` (verworfene PDUs), `bad_telegrams`, `delivered` (zugestellte
+Grenzmeldungen) und die eingestellten `faults`; `POST /v1/ils/{Verbindung}` stört die Strecke.
+Bleiben die Meldungen aus, fällt eine Ausfahrt über die Grenze auf Halt, die Grenze wird
+gestört gemeldet, und die Erlaubnis wandert erst wieder, wenn die Verbindung steht
+(REQ-COM-009). `railit ils` zeigt dasselbe auf der Kommandozeile, `railit ils fault
+Adorf-Strecke --down` stört.
 
 ## Redundante Kanäle
 

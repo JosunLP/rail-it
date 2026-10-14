@@ -161,6 +161,13 @@ enum Command {
         #[command(subcommand)]
         command: Option<SafetyCommand>,
     },
+    /// Nachbarstellwerke über SCI-ILS: Verbindungen zwischen den Stellbereichen (online,
+    /// `railitd --borders ils`). Ohne Unterbefehl: Zustand.
+    Ils {
+        /// Befehl; ohne Angabe `status`.
+        #[command(subcommand)]
+        command: Option<IlsCommand>,
+    },
     /// Angemeldeter Benutzer (online).
     Whoami,
     /// Auditprotokoll prüfen (offline) oder anzeigen (online).
@@ -208,6 +215,29 @@ enum BorderCommand {
 enum Switch {
     On,
     Off,
+}
+
+#[derive(Debug, Subcommand)]
+enum IlsCommand {
+    /// Verbindungen mit Zustand, Störungen und Zählern.
+    Status,
+    /// Strecke einer Verbindung stören (Prüfung; Rolle Simulation). Ohne Angaben: ungestört.
+    Fault {
+        /// Verbindung `A-B`, z. B. `Adorf-Strecke`.
+        link: String,
+        /// Strecke unterbrochen.
+        #[arg(long)]
+        down: bool,
+        /// Verlust in Prozent.
+        #[arg(long, default_value_t = 0)]
+        loss: u8,
+        /// Verfälschung in Prozent.
+        #[arg(long, default_value_t = 0)]
+        corrupt: u8,
+        /// Laufzeit in Millisekunden.
+        #[arg(long, default_value_t = 0)]
+        delay_ms: u32,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -439,6 +469,10 @@ enum ScenarioCommand {
         /// genau den Endzustand ergeben.
         #[arg(long)]
         journal: bool,
+        /// Grenzmeldungen zwischen den Stellbereichen über EULYNX SCI-ILS und RaSTA
+        /// übertragen statt ideal im Prozess.
+        #[arg(long)]
+        ils: bool,
     },
 }
 
@@ -735,7 +769,8 @@ fn main() -> ExitCode {
             node,
             channels,
             journal,
-        }) => plan::run_scenarios(&files, node, channels, journal, output),
+            ils,
+        }) => plan::run_scenarios(&files, node, channels, journal, ils, output),
         Command::Journal(JournalCommand::Verify {
             file,
             key,
@@ -855,6 +890,7 @@ fn run_online(
         Command::Safety { command } => {
             run_safety(c, command.unwrap_or(SafetyCommand::Status), output)
         }
+        Command::Ils { command } => run_ils(c, command.unwrap_or(IlsCommand::Status), output),
         Command::Border(b) => {
             let (address, verb, what) = match b {
                 BorderCommand::Request { address } => (address, "request", "anfordern"),
@@ -980,6 +1016,36 @@ fn run_ops(
         ),
     };
     online::done(result, &what, output)
+}
+
+/// Nachbarstellwerke über SCI-ILS: Zustand oder Störung einer Verbindung.
+fn run_ils(
+    c: &online::Client,
+    cmd: IlsCommand,
+    output: Output,
+) -> Result<ExitCode, online::Failure> {
+    match cmd {
+        IlsCommand::Status => online::ils(c, output),
+        IlsCommand::Fault {
+            link,
+            down,
+            loss,
+            corrupt,
+            delay_ms,
+        } => online::done(
+            c.post(
+                &format!("/v1/ils/{}", online::segment(&link)),
+                Some(json!({
+                    "down": down,
+                    "loss_percent": loss,
+                    "corrupt_percent": corrupt,
+                    "delay_ms": delay_ms,
+                })),
+            ),
+            &format!("Störungen der Verbindung {link} gesetzt."),
+            output,
+        ),
+    }
 }
 
 /// Befehle an die Sicherheitsschicht.

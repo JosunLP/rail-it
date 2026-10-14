@@ -37,6 +37,8 @@
 //!
 //! | GET | `/v1/field/links` | Übertragungsstrecken zu den Objektsteuerungen (EULYNX/RaSTA) |
 //! | POST | `/v1/field/links/{oc}` | Strecke stören (`{"down":true,"loss_percent":20,…}`) |
+//! | GET | `/v1/ils` | SCI-ILS-Verbindungen zwischen den Stellbereichen (`--borders ils`) |
+//! | POST | `/v1/ils/{verbindung}` | SCI-ILS-Strecke stören (`{"down":true,"delay_ms":200,…}`) |
 //! | GET | `/v1/etcs` | ETCS: angemeldete Züge mit Betriebsart und Fahrerlaubnis |
 //! | GET | `/v1/whoami` | Angemeldeter Benutzer mit Rollen |
 //! | GET | `/v1/audit` | Auditprotokoll prüfen, letzte Einträge (`?last=50`) |
@@ -149,6 +151,8 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/v1/etcs", get(etcs))
         .route("/v1/field/links", get(links))
         .route("/v1/field/links/{controller}", post(link_faults))
+        .route("/v1/ils", get(ils_links))
+        .route("/v1/ils/{link}", post(ils_faults))
         .route("/v1/safety", get(safety))
         .route("/v1/safety/faults", post(safety_fault))
         .route("/v1/safety/reintegrate", post(safety_reintegrate))
@@ -742,6 +746,20 @@ async fn link_faults(
     Json(faults): Json<railit_runtime::railit_adapters::LinkFaults>,
 ) -> ApiResult {
     state.service.link_faults(&who, controller, faults).await?;
+    Ok(done())
+}
+
+async fn ils_links(State(state): State<AppState>) -> ApiResult {
+    Ok(Json(state.service.ils_links().await?).into_response())
+}
+
+async fn ils_faults(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Path(link): Path<String>,
+    Json(faults): Json<railit_runtime::railit_adapters::LinkFaults>,
+) -> ApiResult {
+    state.service.ils_faults(&who, link, faults).await?;
     Ok(done())
 }
 

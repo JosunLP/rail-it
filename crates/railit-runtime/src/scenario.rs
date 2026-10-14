@@ -55,6 +55,13 @@
 //! `link = { controller = "OC-Weichen", down = true, loss_percent, corrupt_percent, delay_ms }`
 //! stört die Übertragungsstrecke.
 //!
+//! Nachbarstellwerke: `[scenario] borders = "ils"` überträgt die Grenzmeldungen zwischen den
+//! Stellbereichen über EULYNX SCI-ILS und RaSTA (eine Verbindung je Paar benachbarter
+//! Bereiche, Name `A-B`). Die Aktion
+//! `ils_link = { link = "Adorf-Strecke", down = true, loss_percent, corrupt_percent, delay_ms }`
+//! stört die Strecke; die Bedingung `ils_up = { "Adorf-Strecke" = true }` prüft die
+//! Verbindung.
+//!
 //! Redundanz: `[scenario] channels = 2` (2-von-2) oder `3` (2-von-3) lässt jeden Stellbereich
 //! über die Sicherheitsschicht mit so vielen Kanälen laufen. Aktionen:
 //! `channel_fault = { channel = 2, fault = "stall" }` (`drop_inputs`, `stray_command`,
@@ -130,6 +137,8 @@ struct Header {
     channels: usize,
     #[serde(default)]
     node: bool,
+    #[serde(default)]
+    borders: BorderKind,
     /// Jeden Bereich mitschreiben und am Ende abspielen (nur über [`RunOptions`]).
     #[serde(skip)]
     journal: bool,
@@ -143,6 +152,8 @@ pub struct RunOptions {
     pub channels: Option<Redundancy>,
     /// Alle Bereiche auf Knoten im Gleichschritt.
     pub node: bool,
+    /// Grenzmeldungen aller Szenarien über SCI-ILS und RaSTA.
+    pub ils: bool,
     /// Jeden Bereich im Journal mitschreiben (mit häufigen Zustandsabzügen) und am Ende
     /// abspielen: Das Replay muss genau zum Endzustand jedes Bereichs führen (REQ-JRN-002,
     /// REQ-JRN-006, REQ-JRN-007).
@@ -260,6 +271,8 @@ struct Step {
     #[serde(default)]
     link: Option<LinkEntry>,
     #[serde(default)]
+    ils_link: Option<IlsLinkEntry>,
+    #[serde(default)]
     channel_fault: Option<ChannelFaultEntry>,
     #[serde(default)]
     reintegrate: Option<ChannelEntry>,
@@ -286,6 +299,17 @@ enum FieldKind {
     Eulynx,
 }
 
+/// Übertragung der Grenzmeldungen im Szenario.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BorderKind {
+    /// Ideal im Prozess.
+    #[default]
+    Direct,
+    /// Über EULYNX SCI-ILS und RaSTA mit störbarer Strecke.
+    Ils,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChannelFaultEntry {
@@ -309,6 +333,14 @@ struct ChannelEntry {
 enum AreaSelection {
     All(bool),
     Area(String),
+}
+
+// `deny_unknown_fields` verträgt sich nicht mit `flatten`.
+#[derive(Debug, Deserialize)]
+struct IlsLinkEntry {
+    link: String,
+    #[serde(flatten)]
+    faults: LinkFaults,
 }
 
 // `deny_unknown_fields` verträgt sich nicht mit `flatten`.
@@ -445,6 +477,8 @@ struct Conditions {
     #[serde(default)]
     link_up: BTreeMap<String, bool>,
     #[serde(default)]
+    ils_up: BTreeMap<String, bool>,
+    #[serde(default)]
     safety_trip: Option<bool>,
     #[serde(default)]
     safety_event: Vec<String>,
@@ -578,6 +612,9 @@ fn run_str_with(source: &str, base: &Path, opts: RunOptions) -> Result<Outcome, 
         toml::from_str(source).map_err(|e| ScenarioError::Syntax(e.to_string()))?;
     let mut header = file.scenario;
     header.node |= opts.node;
+    if opts.ils {
+        header.borders = BorderKind::Ils;
+    }
     header.journal = opts.journal;
     if let Some(r) = opts.channels
         && header.channels == default_channels()
@@ -634,6 +671,9 @@ fn run_with<F: SimulatedField>(
     .map_err(ScenarioError::Planning)?;
     if header.node {
         rt.use_lockstep_nodes().map_err(ScenarioError::Planning)?;
+    }
+    if header.borders == BorderKind::Ils {
+        rt.use_ils().map_err(ScenarioError::Planning)?;
     }
     let mut journals = Vec::new();
     if header.journal {
@@ -942,6 +982,11 @@ impl<F: SimulatedField> Ctx<F> {
         failures.extend(self.ops_actions(step));
         if let Some(l) = &step.link
             && let Err(e) = self.rt.field_mut().set_link_faults(&l.controller, l.faults)
+        {
+            failures.push(e);
+        }
+        if let Some(l) = &step.ils_link
+            && let Err(e) = self.rt.set_ils_faults(&l.link, l.faults)
         {
             failures.push(e);
         }
@@ -1308,6 +1353,15 @@ impl<F: SimulatedField> Ctx<F> {
             if got != Some(*want) {
                 failures.push(format!(
                     "Verbindung {controller}: erwartet {want}, ist {got:?}"
+                ));
+            }
+        }
+        let ils = self.rt.ils_links();
+        for (link, want) in &c.ils_up {
+            let got = ils.iter().find(|l| &l.link == link).map(|l| l.up);
+            if got != Some(*want) {
+                failures.push(format!(
+                    "SCI-ILS-Verbindung {link}: erwartet {want}, ist {got:?}"
                 ));
             }
         }

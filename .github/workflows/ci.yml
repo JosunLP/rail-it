@@ -54,7 +54,7 @@ jobs:
           path: docs/safety/traceability.md
 
   properties:
-    name: Eigenschaftstests (Kern, RaSTA)
+    name: Eigenschaftstests (Kern, RaSTA, SCI-ILS)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -71,6 +71,10 @@ jobs:
         run: cargo test --release --locked -p railit-rasta --test rasta
         env:
           PROPTEST_CASES: "5000"
+      - name: Erlaubniswechsel über gestörtes SCI-ILS (1000 Fälle)
+        run: cargo test --release --locked -p railit-runtime --test ils
+        env:
+          PROPTEST_CASES: "1000"
 
   ui:
     name: Bedienplatz (TypeScript, Bun, Playwright)

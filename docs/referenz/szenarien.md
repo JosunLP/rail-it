@@ -5,7 +5,7 @@ deterministisch mit Kern und Simulator in simulierter Zeit. Einführung und Beis
 [Szenarien](../leitfaden/szenarien); über zwanzig Szenarien liegen unter `tests/scenarios/`.
 
 ```sh
-railit scenario run tests/scenarios/*.toml [--channels 2|3] [--node] [--journal]
+railit scenario run tests/scenarios/*.toml [--channels 2|3] [--node] [--journal] [--ils]
 ```
 
 ## `[scenario]`
@@ -26,9 +26,11 @@ railit scenario run tests/scenarios/*.toml [--channels 2|3] [--node] [--journal]
 | `field` | `direct` · `eulynx` | `direct` | Stellbefehle und Meldungen über EULYNX SCI und RaSTA zu Objektsteuerungen |
 | `channels` | 1 · 2 · 3 | 1 | Kanäle je Stellbereich (2-von-2, 2-von-3) |
 | `node` | bool | `false` | Jeder Bereich auf einem Knoten des sicheren Rechners |
+| `borders` | `direct` · `ils` | `direct` | Grenzmeldungen zwischen den Stellbereichen über EULYNX SCI-ILS und RaSTA |
 
 `--channels` und `--node` auf der Kommandozeile gelten für Szenarien ohne eigene Angabe;
-`--journal` schreibt jeden Bereich mit und spielt das Journal am Ende ab.
+`--journal` schreibt jeden Bereich mit und spielt das Journal am Ende ab; `--ils` überträgt
+die Grenzmeldungen aller Szenarien über SCI-ILS.
 
 ### `rules`
 
@@ -68,6 +70,7 @@ die Hilfshandlung verfällt.
 | `add_train` | `{ name, signal, length_m, speed_kmh, ignore_signals, etcs }` | Zug vor einem Signal einsetzen; `ignore_signals` überfährt Halt (Prüfung des Schutzes) |
 | `fault` / `clear_fault` | `{ kind, element }` | Störung setzen bzw. aufheben |
 | `link` | `{ controller, down, loss_percent, corrupt_percent, delay_ms }` | Übertragungsstrecke zu einer Objektsteuerung stören (nur `field = "eulynx"`) |
+| `ils_link` | `{ link, down, loss_percent, corrupt_percent, delay_ms }` | SCI-ILS-Strecke zwischen zwei Stellwerken stören, z. B. `link = "Adorf-Strecke"` (nur `borders = "ils"`) |
 
 Störungen (`kind`): `point_disturbed`, `tvd_disturbed`, `tvd_occupied`, `signal_defective`,
 `lx_disturbed`.
@@ -121,6 +124,7 @@ Mit eingeschalteter Betriebsführung trägt `add_train` die Zugnummer am Signal 
 | `etcs_end` | `{ Zug = Ende }` | Ende der Fahrerlaubnis, Signalname oder `"Netzgrenze"` |
 | `etcs_event` | Liste | Ereignisarten des RBC |
 | `link_up` | `{ Objektsteuerung = bool }` | Verbindung steht |
+| `ils_up` | `{ Verbindung = bool }` | SCI-ILS-Verbindung zwischen zwei Stellwerken steht, z. B. `{ "Adorf-Strecke" = true }` |
 | `safety_trip` | bool | Eine Sicherheitsschicht hat abgeschaltet |
 | `safety_event` | Liste | `channel_excluded`, `tripped` |
 | `active_channels` | Liste von bool | Mitwählende Kanäle, z. B. `[true, true, false]` |

@@ -12,6 +12,7 @@
 //! | [`journal`] | Prüfung der Hashkette eines Journals |
 //! | [`rasta`] | RaSTA-Verbindung nach dem Aufbau unter beliebigen PDUs |
 //! | [`sci`] | EULYNX-SCI-Telegramme (Rundreise) |
+//! | [`sci_ils`] | SCI-ILS-Telegramme zwischen Stellwerken (Rundreise, bitgleich) |
 //! | [`node_wire`] | Binärprotokoll und Knoten des sicheren Rechners |
 //! | [`mirror_state`] | Spiegel: beliebige übertragene Zustandsteile, danach Kernzyklen |
 //! | [`field_server`] | Feldrechner mit Umschalter: beliebige PDUs von beliebigen Absendern neben einem verbundenen Stellwerk |
@@ -434,6 +435,28 @@ pub fn sci(data: &[u8]) {
         && let Ok(raw) = t.encode()
     {
         assert_eq!(Telegram::decode(&raw).ok(), Some(t), "SCI-Rundreise");
+    }
+}
+
+/// SCI-ILS: Jedes lesbare Telegramm übersteht die Rundreise unverändert und kodiert wieder
+/// genau zu den gelesenen Bytes – ein Telegramm hat nur eine gültige Darstellung.
+///
+/// # Panics
+/// Wenn Rundreise oder Kodierung abweichen (Fund für den Fuzzer).
+pub fn sci_ils(data: &[u8]) {
+    use railit_adapters::ils::IlsTelegram;
+    if let Ok(t) = IlsTelegram::decode(data) {
+        let raw = t.encode();
+        assert_eq!(
+            raw.as_deref().ok(),
+            Some(data),
+            "SCI-ILS: mehrdeutige Kodierung"
+        );
+        assert_eq!(
+            raw.ok().and_then(|r| IlsTelegram::decode(&r).ok()),
+            Some(t),
+            "SCI-ILS-Rundreise"
+        );
     }
 }
 

@@ -787,6 +787,44 @@ pub(crate) fn safety(c: &Client, output: Output) -> Res<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Verbindungen zwischen den Stellbereichen über SCI-ILS.
+pub(crate) fn ils(c: &Client, output: Output) -> Res<ExitCode> {
+    let links = c.get("/v1/ils")?;
+    if output == Output::Json {
+        print_json(&links);
+        return Ok(ExitCode::SUCCESS);
+    }
+    let list = links.as_array().cloned().unwrap_or_default();
+    if list.is_empty() {
+        println!("Grenzmeldungen laufen nicht über SCI-ILS (railitd --borders ils).");
+    }
+    for l in list {
+        let mark = if l["up"] == true {
+            "✔ steht"
+        } else {
+            "✘ getrennt"
+        };
+        let f = &l["faults"];
+        let faults = if f["down"] == true {
+            "unterbrochen".to_string()
+        } else {
+            format!(
+                "Verlust {} %, Verfälschung {} %, Laufzeit {} ms",
+                f["loss_percent"], f["corrupt_percent"], f["delay_ms"]
+            )
+        };
+        println!(
+            "{:<24} {mark:<10} Grenzen {}  zugestellt {}  verworfen {}  unlesbar {}  ({faults})",
+            show(&l["link"]),
+            l["borders"],
+            l["delivered"],
+            l["discarded"],
+            l["bad_telegrams"],
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 pub(crate) fn etcs(c: &Client, output: Output) -> Res<ExitCode> {
     let trains = c.get("/v1/etcs")?;
     if output == Output::Json {

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use railit_kernel::{Request, RequestId};
 use railit_runtime::SimulatedField;
+use railit_runtime::railit_adapters::ils::IlsStatus;
 use railit_runtime::railit_adapters::{LinkFaults, LinkStatus};
 use railit_runtime::railit_safety::SafetyEvent;
 use railit_runtime::{Addressed, AreaSafetyEvent, Coverage, NamedEvent, Runtime, Snapshot};
@@ -30,6 +31,10 @@ pub(crate) enum SimCommand {
     Link(String, LinkFaults),
     /// Zustand der Übertragungsstrecken.
     Links,
+    /// Störungen einer SCI-ILS-Verbindung zwischen zwei Stellbereichen.
+    IlsLink(String, LinkFaults),
+    /// Zustand der SCI-ILS-Verbindungen.
+    IlsLinks,
 }
 
 /// Befehl an die Betriebsführung (Zugnummern, Disposition).
@@ -71,6 +76,7 @@ pub(crate) enum SimReply {
     Done,
     Trains(Vec<TrainInfo>),
     Links(Vec<LinkStatus>),
+    IlsLinks(Vec<IlsStatus>),
     Error(String),
 }
 
@@ -429,8 +435,16 @@ fn ops_command(rt: &mut Runtime<ServiceField>, command: OpsCommand) -> Result<()
 
 /// Führt einen Simulationsbefehl aus. Neue Züge erhalten ihre Zugnummer am Signal.
 fn sim_command(rt: &mut Runtime<ServiceField>, command: SimCommand) -> SimReply {
-    if let SimCommand::Links = command {
-        return SimReply::Links(rt.field().links());
+    match command {
+        SimCommand::Links => return SimReply::Links(rt.field().links()),
+        SimCommand::IlsLinks => return SimReply::IlsLinks(rt.ils_links()),
+        SimCommand::IlsLink(link, faults) => {
+            return match rt.set_ils_faults(&link, faults) {
+                Ok(()) => SimReply::Done,
+                Err(e) => SimReply::Error(e),
+            };
+        }
+        _ => {}
     }
     if let SimCommand::AddTrain(spec) = command {
         return add_train(rt, spec);
@@ -459,7 +473,10 @@ fn sim_command(rt: &mut Runtime<ServiceField>, command: SimCommand) -> SimReply 
             field.simulator_mut().clear(fault);
             SimReply::Done
         }
-        SimCommand::AddTrain(_) | SimCommand::Links => SimReply::Done,
+        SimCommand::AddTrain(_)
+        | SimCommand::Links
+        | SimCommand::IlsLinks
+        | SimCommand::IlsLink(..) => SimReply::Done,
     }
 }
 
