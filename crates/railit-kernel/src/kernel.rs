@@ -333,6 +333,13 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
             st.meta.started_at = now;
         }
         self.record_reports(st, now, inputs, out);
+        if first_cycle {
+            // Beim Anlauf hält kein Kern eine Erlaubnis: Die Annäherungsabschnitte sind
+            // verschlossen, bevor die erste Anforderung zugelassen wird. Sonst könnte eine
+            // Fahrstraße im ersten Zyklus eine Weiche des Annäherungsabschnitts in der anderen
+            // Lage verschließen.
+            self.sync_border_locks(st, now, out)?;
+        }
 
         for input in inputs {
             if let Input::Request { id, request } = *input {

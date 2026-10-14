@@ -75,6 +75,32 @@ fn adorf_holding() -> Harness {
     h
 }
 
+/// REQ-IXL-019: Beim Anlauf ist der Annäherungsabschnitt verschlossen, bevor die erste
+/// Anforderung zugelassen wird. Eine Fahrstraße, die im ersten Zyklus eine Weiche des
+/// Annäherungsabschnitts in der anderen Lage verschließen würde, wird abgewiesen (vorher ging
+/// der Kern in den sicheren Zustand; gefunden vom Übernahmetest der Runtime).
+#[test]
+fn first_cycle_request_respects_approach_lock() {
+    let net = railit_import::toml_format::parse(NORDBAHN)
+        .unwrap()
+        .topology;
+    let areas = compile_areas(&net, None, &PlanningConfig::default()).unwrap();
+    let plan = &areas
+        .iter()
+        .find(|a| a.name == "Adorf")
+        .unwrap()
+        .compiled
+        .plan;
+    let mut h = Harness::with_plan(leak(plan));
+    let r = h.route("AA-AN1");
+    let events = h.step(&[Request::SetRoute(r)]);
+    assert_eq!(h.last, Ok(()));
+    assert_eq!(rejected(&events), Some(Rejection::Conflict));
+    assert!(state(&h).approach_locked());
+    h.run(5);
+    assert_eq!(h.last, Ok(()));
+}
+
 /// REQ-IXL-017: Der beim Anlauf bestimmte Kern übernimmt die Erlaubnis erst, wenn der
 /// Nachbar die Einschwingzeit lang meldet, sie nicht zu halten.
 #[test]
