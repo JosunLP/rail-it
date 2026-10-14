@@ -40,7 +40,8 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-SVC-008 | H-006 | – | `interlocking_over_grpc`<br>`mutual_tls_identifies_users_by_certificate`<br>`apps/railitd/tests/grpc.rs` |
 | REQ-SVC-009 | H-015, H-016 | `apps/railitd/src/api.rs`<br>`apps/railitd/src/metrics.rs` | `operate_station_over_api`<br>`safe_computer_nodes_over_api`<br>`histogram_is_cumulative_and_consistent`<br>`apps/railitd/tests/api.rs` |
 | REQ-SVC-010 | H-011, H-016 | `apps/railitd/src/api.rs`<br>`apps/railitd/src/review.rs` | `aux_operation_and_journal`<br>`apps/railitd/tests/api.rs` |
-| REQ-SVC-011 | H-011, H-015, H-016 | `apps/railitd/src/api.rs`<br>`apps/railitd/src/standby.rs`<br>`apps/railitd/ui/src/panels.ts` | `standby_follows_the_primary`<br>`area_names_are_encoded`<br>`apps/railitd/tests/api.rs`<br>`apps/railitd/ui/e2e/bedienplatz.test.ts` |
+| REQ-SVC-011 | H-011, H-015, H-016 | `apps/railitd/src/api.rs`<br>`apps/railitd/src/standby.rs`<br>`apps/railitd/ui/src/panels.ts`<br>`crates/railit-runtime/src/replication.rs` | `standby_follows_the_primary`<br>`area_names_are_encoded`<br>`apps/railitd/tests/api.rs`<br>`apps/railitd/ui/e2e/bedienplatz.test.ts` |
+| REQ-SVC-012 | H-001, H-003, H-010, H-015 | `crates/railit-runtime/src/replication.rs`<br>`crates/railit-runtime/src/runtime.rs` | `outputs_wait_for_all_areas`<br>`lapse_releases_everything_and_rearms_after_catching_up`<br>`area_without_journal_lapses`<br>`takeover_in_beispielstadt_is_safe`<br>`takeover_in_nordbahn_is_safe`<br>`stale_takeover_without_gate_opens_the_crossing_before_a_train`<br>`gate_covers_only_a_current_standby`<br>`crates/railit-runtime/tests/takeover.rs` |
 
 ## [embedded.md](../requirements/embedded.md)
 
@@ -112,7 +113,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-IXL-022 | H-006, H-016 | `apps/railitd/src/service.rs`<br>`crates/railit-kernel/src/io.rs` | `confirmation_must_restate_the_operation`<br>`apps/railitd/tests/api.rs`<br>`apps/railitd/ui/e2e/bedienplatz.test.ts`<br>`crates/railit-kernel/tests/phase2.rs`<br>Szenario 12 |
 | REQ-IXL-023 | H-007 | `crates/railit-kernel/src/invariants.rs` | `linear_check_agrees_with_reference`<br>`kernel_never_becomes_unsafe` |
 | REQ-IXL-024 | H-015 | `apps/railit/src/bench.rs` | `bench_measures_a_small_corridor` |
-| REQ-IXL-025 | H-001, H-003, H-015 | `crates/railit-kernel/src/kernel.rs` | `proceed_falls_to_halt_and_locks_remain`<br>`locked_route_and_train_in_route_continue`<br>`pending_aux_expires_and_substitute_goes_out`<br>`safe_state_is_kept`<br>`kernel_never_becomes_unsafe`<br>`crates/railit-kernel/tests/common/mod.rs`<br>`crates/railit-kernel/tests/invariants.rs`<br>`crates/railit-kernel/tests/takeover.rs` |
+| REQ-IXL-025 | H-001, H-003, H-015 | `crates/railit-kernel/src/kernel.rs`<br>`crates/railit-runtime/src/runtime.rs` | `proceed_falls_to_halt_and_locks_remain`<br>`locked_route_and_train_in_route_continue`<br>`pending_aux_expires_and_substitute_goes_out`<br>`safe_state_is_kept`<br>`kernel_never_becomes_unsafe`<br>`crates/railit-kernel/tests/common/mod.rs`<br>`crates/railit-kernel/tests/invariants.rs`<br>`crates/railit-kernel/tests/takeover.rs`<br>`crates/railit-runtime/tests/takeover.rs` |
 
 ## [kommunikation.md](../requirements/kommunikation.md)
 
@@ -189,4 +190,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-116 Anforderungen, davon 116 mit Nachweis.
+117 Anforderungen, davon 117 mit Nachweis.

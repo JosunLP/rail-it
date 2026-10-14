@@ -31,6 +31,9 @@ use crate::directory::Directory;
 use crate::field::FieldAdapter;
 use crate::names::{NamedAux, NamedEvent, SafetySnapshot, Snapshot};
 use crate::remote::{LockstepLink, NodeLink, NodeSetup, Remote};
+use crate::replication::{
+    Batch, Coverage, Gate, Mark, ReplicationClock, ReplicationConfig, ReplicationStatus,
+};
 
 /// Ereignis eines Kerns mit seinem Bereich.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -90,8 +93,11 @@ pub struct CycleOutput {
     pub now: Tick,
     /// Ereignisse aller Kerne.
     pub events: Vec<AreaEvent>,
-    /// Stellbefehle ans Feld (IDs des Gesamtnetzes).
+    /// Stellbefehle der Kerne in diesem Zyklus (IDs des Gesamtnetzes). Mit Ausgabesperre
+    /// (REQ-SVC-012) erreichen sie das Feld erst nach der Quittung.
     pub commands: Vec<Command>,
+    /// Stellbefehle, die in diesem Zyklus ans Feld gingen.
+    pub released: usize,
     /// Erster Bereich, dessen Kern im sicheren Zustand ist, mit Grund
     /// ([`SafeStateReason::SafetyLayer`], wenn die Sicherheitsschicht abgeschaltet hat).
     pub safe_state: Option<(usize, SafeStateReason)>,
@@ -102,6 +108,9 @@ pub struct CycleOutput {
     /// Ereignisse des RBC (ETCS).
     pub etcs: Vec<RbcEvent>,
 }
+
+/// Fahrerlaubnisse je ETCS-Fahrzeug (freigegebene Signale des Gesamtnetzes bzw. keine).
+type CabAuthorities = Vec<(String, Option<Vec<SignalId>>)>;
 
 /// Kennungen ab diesem Wert gehören zu Anforderungen der Betriebsführung.
 pub const OPS_REQUEST_BASE: u64 = 1 << 62;
@@ -226,7 +235,17 @@ fn build_channels(
     rules: GenericRules,
     cfg: &SafetyConfig,
 ) -> AreaChannels {
-    let channel = || Some((OwnedState::new(&plan), VecOutputs::default()));
+    build_channels_from(plan, rules, cfg, &OwnedState::new(&plan))
+}
+
+/// Kanäle, die alle mit `state` beginnen.
+fn build_channels_from(
+    plan: PlanView<'static>,
+    rules: GenericRules,
+    cfg: &SafetyConfig,
+    state: &OwnedState,
+) -> AreaChannels {
+    let channel = || Some((state.clone(), VecOutputs::default()));
     let slots = match cfg.redundancy {
         Redundancy::Single => [channel(), None, None],
         Redundancy::TwoOutOfTwo => [channel(), channel(), None],
@@ -234,7 +253,7 @@ fn build_channels(
     };
     match Channels::new(Interlocking::new(plan, rules), slots) {
         Ok(c) => c.with_state_check_every(cfg.state_check_every),
-        // Frische Zustände sind gleich, die Kanäle lückenlos: kann nicht auftreten.
+        // Gleiche Zustände, lückenlose Kanäle: kann nicht auftreten.
         Err(e) => unreachable!("Kanäle: {e:?}"),
     }
 }
@@ -379,6 +398,8 @@ pub struct Runtime<F> {
     clock: Instant,
     /// Abstand der Zustandsabzüge in neu begonnenen Journalen (Zyklen, 0 = keine).
     snapshot_every: Option<u64>,
+    /// Ausgabe erst nach Quittung des Bereitschaftsrechners (REQ-SVC-012).
+    gate: Option<Gate>,
 }
 
 impl<F: FieldAdapter> Runtime<F> {
@@ -503,6 +524,7 @@ impl<F: FieldAdapter> Runtime<F> {
             safety: SafetyConfig::default(),
             clock: Instant::now(),
             snapshot_every: None,
+            gate: None,
         }
     }
 
@@ -695,7 +717,8 @@ impl<F: FieldAdapter> Runtime<F> {
 
     /// RBC nach dem Zyklus: Positionsmeldungen der Fahrzeuggeräte übernehmen,
     /// Fahrerlaubnisse berechnen und an die Fahrzeuggeräte übergeben.
-    fn run_etcs(&mut self, cycle_events: &[AreaEvent]) -> Vec<RbcEvent>
+    /// RBC nach dem Zyklus: Ereignisse und Fahrerlaubnisse je Fahrzeug (IDs des Gesamtnetzes).
+    fn run_etcs(&mut self, cycle_events: &[AreaEvent]) -> (Vec<RbcEvent>, CabAuthorities)
     where
         F: FieldAdapter,
     {
@@ -714,7 +737,7 @@ impl<F: FieldAdapter> Runtime<F> {
             })
             .collect();
         if reports.is_empty() && self.rbc.cab_authorities().is_empty() {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
         // Per Hilfshandlung aufgelöste Fahrstraßen: Züge darin erhalten eine Notbremsung.
         let revoked: Vec<(usize, RouteId)> = cycle_events
@@ -728,22 +751,27 @@ impl<F: FieldAdapter> Runtime<F> {
             })
             .collect();
         let events = self.rbc.update(&RbcAreas(&self.areas), &reports, &revoked);
-        for (train, authority) in self.rbc.cab_authorities() {
-            let global = authority.map(|list| {
-                list.into_iter()
-                    .filter_map(|(area, local)| {
-                        self.areas
-                            .get(area)?
-                            .map
-                            .signals
-                            .get(local.index()?)
-                            .copied()
-                    })
-                    .collect()
-            });
-            self.field.set_cab_authority(&train, global);
-        }
-        events
+        let cab = self
+            .rbc
+            .cab_authorities()
+            .into_iter()
+            .map(|(train, authority)| {
+                let global = authority.map(|list| {
+                    list.into_iter()
+                        .filter_map(|(area, local)| {
+                            self.areas
+                                .get(area)?
+                                .map
+                                .signals
+                                .get(local.index()?)
+                                .copied()
+                        })
+                        .collect()
+                });
+                (train, global)
+            })
+            .collect();
+        (events, cab)
     }
 
     /// Schaltet die Betriebsführung ein (Zugnummernmeldung, Fahrplan, Zuglenkung,
@@ -1003,28 +1031,238 @@ impl<F: FieldAdapter> Runtime<F> {
                 });
             }
         }
-        for ((area, border), message) in mail {
-            if let Some(slot) = self
-                .areas
-                .get_mut(area)
-                .and_then(|a| border.index().and_then(|i| a.inbox.get_mut(i)))
-            {
-                *slot = Some(message);
-            }
-        }
-        self.field.apply(&commands);
-        let ops = self.run_ops(now, &events);
-        let etcs = self.run_etcs(&events);
-
+        let (released, ops, etcs) = self.dispatch(now, &events, &commands, mail);
         CycleOutput {
             now,
             events,
             commands,
+            released,
             safe_state,
             safety,
             ops,
             etcs,
         }
+    }
+
+    /// Gibt die Ausgaben eines Zyklus hinaus – mit Ausgabesperre erst nach Quittung – und
+    /// führt Betriebsführung und RBC aus. Liefert die Anzahl der Stellbefehle ans Feld und
+    /// die Ereignisse von Betriebsführung und RBC.
+    fn dispatch(
+        &mut self,
+        now: Tick,
+        events: &[AreaEvent],
+        commands: &[Command],
+        mail: Vec<((usize, BorderId), BorderMessage)>,
+    ) -> (usize, Vec<OpsEvent>, Vec<RbcEvent>)
+    where
+        F: FieldAdapter,
+    {
+        if self.gate.is_none() {
+            let released = self.deliver(vec![Batch {
+                marks: Vec::new(),
+                commands: commands.to_vec(),
+                mail,
+                cab: Vec::new(),
+            }]);
+            let ops = self.run_ops(now, events);
+            let (etcs, cab) = self.run_etcs(events);
+            for (train, authority) in cab {
+                self.field.set_cab_authority(&train, authority);
+            }
+            return (released, ops, etcs);
+        }
+        // Ausgaben erst nach Quittung (REQ-SVC-012): Befehle, Grenzmeldungen und
+        // Fahrerlaubnisse dieses Zyklus warten, bis der Bereitschaftsrechner ihn kennt.
+        let marks = self.marks();
+        let ops = self.run_ops(now, events);
+        let (etcs, cab) = self.run_etcs(events);
+        let batch = Batch {
+            marks,
+            commands: commands.to_vec(),
+            mail,
+            cab,
+        };
+        let ms = self.gate_ms();
+        let out = self
+            .gate
+            .as_mut()
+            .map(|g| g.push(batch, ms))
+            .unwrap_or_default();
+        (self.deliver(out), ops, etcs)
+    }
+
+    /// Gibt Ausgaben hinaus: Grenzmeldungen an die Nachbarn (im nächsten Zyklus), Stellbefehle
+    /// ans Feld, Fahrerlaubnisse an die Fahrzeuge. Liefert die Anzahl der Stellbefehle.
+    fn deliver(&mut self, batches: Vec<Batch>) -> usize {
+        let mut count = 0usize;
+        for batch in batches {
+            for ((area, border), message) in batch.mail {
+                if let Some(slot) = self
+                    .areas
+                    .get_mut(area)
+                    .and_then(|a| border.index().and_then(|i| a.inbox.get_mut(i)))
+                {
+                    *slot = Some(message);
+                }
+            }
+            count = count.saturating_add(batch.commands.len());
+            self.field.apply(&batch.commands);
+            for (train, authority) in batch.cab {
+                self.field.set_cab_authority(&train, authority);
+            }
+        }
+        count
+    }
+
+    /// Stand jedes Bereichs nach dem Zyklus für die Quittung: Zyklus des Kerns und Hash der
+    /// letzten Journalzeile (ohne Journal: keiner).
+    fn marks(&self) -> Vec<Option<Mark>> {
+        self.areas
+            .iter()
+            .map(|a| {
+                let head = a.journal.writer.as_ref()?.head();
+                Some(Mark {
+                    cycle: a.state().meta().cycle(),
+                    head,
+                })
+            })
+            .collect()
+    }
+
+    /// Zeit der Ausgabesperre in Millisekunden.
+    fn gate_ms(&self) -> u64 {
+        match self.gate.as_ref().map(Gate::clock) {
+            Some(ReplicationClock::Cycle) => self.now.as_millis(),
+            _ => u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX),
+        }
+    }
+
+    /// Schaltet die Ausgabesperre ein (REQ-SVC-012): Ab dem nächsten Zyklus gehen Ausgaben
+    /// erst hinaus, wenn der Bereitschaftsrechner den Zyklus in allen Bereichen quittiert hat
+    /// ([`Self::acknowledge`]).
+    ///
+    /// # Errors
+    /// Bereich ohne Journal oder auf einem Knoten des sicheren Rechners.
+    pub fn enable_replication(&mut self, cfg: ReplicationConfig) -> Result<(), String> {
+        if let Some(a) = self.areas.iter().find(|a| a.journal.writer.is_none()) {
+            return Err(format!(
+                "Ausgabesperre: Stellbereich „{}“ ohne Journal",
+                a.name
+            ));
+        }
+        if self.areas.iter().any(|a| a.remote.is_some()) {
+            return Err("Ausgabesperre nicht mit Knoten des sicheren Rechners".into());
+        }
+        self.gate = Some(Gate::new(cfg, self.areas.len()));
+        Ok(())
+    }
+
+    /// Quittung des Bereitschaftsrechners: Er hat das Journal von `area` bis zum Zyklus
+    /// `cycle` geprüft, die letzte Zeile hat den Hash `head`. Gibt frei, was damit quittiert
+    /// ist, und liefert die Zusage an den Bereitschaftsrechner.
+    ///
+    /// # Errors
+    /// Ohne Ausgabesperre oder bei einer Quittung, die nicht zum Journal passt.
+    pub fn acknowledge(&mut self, area: usize, cycle: u64, head: &str) -> Result<Coverage, String> {
+        let ms = self.gate_ms();
+        let gate = self.gate.as_mut().ok_or("keine Ausgabesperre")?;
+        let valid = gate.acknowledge(area, cycle, head);
+        let out = gate.release(ms);
+        let coverage = gate.coverage(ms);
+        self.deliver(out);
+        if valid {
+            Ok(coverage)
+        } else {
+            Err(format!(
+                "Quittung passt nicht zum Journal (Bereich {area}, Zyklus {cycle})"
+            ))
+        }
+    }
+
+    /// Übernimmt den Betrieb mit den Zuständen, die ein Bereitschaftsrechner aus den Journalen
+    /// des ausgefallenen Rechners mitgelesen hat (REQ-SVC-012), je Stellbereich einer.
+    ///
+    /// Jeder Kern gleicht seinen Zustand restriktiv an (REQ-IXL-025: Fahrt fällt auf Halt,
+    /// Verschlüsse bleiben); alle Kanäle beginnen mit dem angeglichenen Zustand. Ein laufendes
+    /// Journal hält ihn als Zustandsübernahme fest (`detail`), sodass es sich abspielen lässt.
+    /// Das Stellbild geht sofort ans Feld. `now` darf nicht vor dem letzten Zyklus des
+    /// ausgefallenen Rechners liegen; Zeitverschlüsse laufen ab dort weiter.
+    ///
+    /// # Errors
+    /// Schon gelaufene Zyklen, Bereiche auf Knoten oder Zustände, die nicht zu den Plänen
+    /// passen.
+    pub fn take_over(
+        &mut self,
+        states: &[OwnedState],
+        now: Tick,
+        detail: &str,
+    ) -> Result<CycleOutput, String> {
+        if self.now != Tick::ZERO {
+            return Err("Übernahme nur vor dem ersten Zyklus".into());
+        }
+        if self.areas.iter().any(|a| a.remote.is_some()) {
+            return Err("Übernahme nicht mit Knoten des sicheren Rechners".into());
+        }
+        if states.len() != self.areas.len() {
+            return Err(format!(
+                "Übernahme: {} Zustände für {} Stellbereiche",
+                states.len(),
+                self.areas.len()
+            ));
+        }
+        for (area, state) in self.areas.iter().zip(states) {
+            if !state.fits(area.plan()) {
+                return Err(format!(
+                    "Übernahme: Zustand passt nicht zum Plan von „{}“",
+                    area.name
+                ));
+            }
+        }
+        self.now = now;
+        let mut events = Vec::new();
+        let mut commands = Vec::new();
+        let mut safe_state = None;
+        let safety = self.safety;
+        for (index, (area, state)) in self.areas.iter_mut().zip(states).enumerate() {
+            let mut state = state.clone();
+            let kernel = area.channels.kernel().clone();
+            let mut out = VecOutputs::default();
+            if let (Err(reason), None) = (
+                kernel.take_over(&mut state.view(), now, &mut out),
+                safe_state,
+            ) {
+                safe_state = Some((index, reason));
+            }
+            area.channels = build_channels_from(*area.plan(), *area.rules(), &safety, &state);
+            area.journal.write(|j| j.resync(now, &state, detail));
+            events.extend(out.events.iter().map(|event| AreaEvent {
+                area: index,
+                event: *event,
+            }));
+            commands.extend(out.commands.iter().filter_map(|c| globalize(&area.map, *c)));
+        }
+        let released = self.deliver(vec![Batch {
+            marks: Vec::new(),
+            commands: commands.clone(),
+            mail: Vec::new(),
+            cab: Vec::new(),
+        }]);
+        Ok(CycleOutput {
+            now,
+            events,
+            commands,
+            released,
+            safe_state,
+            safety: Vec::new(),
+            ops: Vec::new(),
+            etcs: Vec::new(),
+        })
+    }
+
+    /// Zustand der Ausgabesperre, falls eingeschaltet.
+    pub fn replication(&self) -> Option<ReplicationStatus> {
+        let ms = self.gate_ms();
+        self.gate.as_ref().map(|g| g.status(ms))
     }
 
     /// Verteilt Feldmeldungen, Grenzmeldungen des letzten Zyklus und Anforderungen auf die
