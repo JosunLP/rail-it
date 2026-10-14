@@ -15,6 +15,7 @@
 //! | `TOP_Knoten` mit zwei Kanten                     | Verbindung zweier Gleisenden              |
 //! | `Signal` (`Signal_Real`, `Signal_Art`, `Signalsystem`) | Haupt-, Mehrabschnitts-, Vor- oder Sperrsignal; `Block_Signal` als Selbstblocksignal |
 //! | `BUE_Anlage`                                     | Bahnübergang                              |
+//! | `W_Kr_Gsp_Komponente` mit `Kreuzung`, zwei Lagen | Kreuzung ohne bewegliche Teile (Kreuzungsweichen: Fehler) |
 //! | `FMA_Komponente` (`ID_FMAgrenze`)                | Grenze der Gleisfreimeldung               |
 //! | `FMA_Anlage` → `Gleis_Abschnitt` (`Bezeichnung`)  | Name des Gleisfreimeldeabschnitts         |
 //!
@@ -23,7 +24,7 @@
 //! über ihren lokalen Namen erkannt, der Namensraum (1.9 oder 1.10) ist gleichgültig. Wie beim
 //! railML-Import wird nichts ergänzt oder geraten: Fehlt eine Angabe, die das Netzmodell braucht
 //! (Bezeichnung, Wirkrichtung, Signalsystem), ist das ein Fehler mit Fundstelle. Was rail-it
-//! nicht abbilden kann (Kreuzungen, fiktive Signale, Gleissperren, Geometrie, Planungsdaten),
+//! nicht abbilden kann (Kreuzungsweichen, fiktive Signale, Gleissperren, Geometrie, Planungsdaten),
 //! wird mit Warnung übergangen bzw. als Fehler gemeldet, wenn es die Sicherheit beträfe.
 //!
 //! Intern wird PlanPro in die Mikrotopologie übersetzt, die auch der railML-Import liest; der
@@ -131,6 +132,8 @@ struct Micro {
     nodes: Vec<TopNode>,
     signals: Vec<Sig>,
     lxs: Vec<Named>,
+    /// Kreuzungen ohne bewegliche Teile: Name und beide Kreuzungsstellen.
+    crossings: Vec<(String, [Spot; 2])>,
     detectors: Vec<Named>,
     tvds: Vec<Tvd>,
 }
@@ -497,8 +500,58 @@ fn read(r: &mut Reader, root: Node<'_, '_>) -> Micro {
             spot,
         });
     }
+    read_crossings(r, &containers, &edges, &mut micro);
     read_detection(r, &containers, &edges, &mut micro);
     micro
+}
+
+/// Kreuzungen ohne bewegliche Teile: `W_Kr_Gsp_Komponente` mit `Kreuzung` und je einer Lage
+/// auf beiden gekreuzten Kanten.
+fn read_crossings(
+    r: &mut Reader,
+    containers: &[Node<'_, '_>],
+    edges: &HashMap<&str, usize>,
+    micro: &mut Micro,
+) {
+    let names: HashMap<&str, String> = objects(containers, "W_Kr_Gsp_Element")
+        .filter_map(|n| Some((id_of(n)?, designation(n)?)))
+        .collect();
+    for n in objects(containers, "W_Kr_Gsp_Komponente").collect::<Vec<_>>() {
+        if child(n, "Kreuzung").is_none() || child(n, "Zungenpaar").is_some() {
+            continue;
+        }
+        let ctx = Reader::context(n);
+        let Some(name) = wert(n, &["ID_W_Kr_Gsp_Element"])
+            .and_then(|e| names.get(e))
+            .cloned()
+        else {
+            r.errors
+                .push(diag(ctx, "Kreuzung ohne W_Kr_Gsp_Element mit Bezeichnung"));
+            continue;
+        };
+        let mut legs = Vec::new();
+        for p in children(n, "Punkt_Objekt_TOP_Kante") {
+            let edge = wert(p, &["ID_TOP_Kante"]).and_then(|id| edges.get(id).copied());
+            let length = edge.map_or(0, |e| micro.edge_length(e));
+            let at = wert(p, &["Abstand"])
+                .and_then(mm_of)
+                .filter(|a| *a <= length);
+            if let (Some(edge), Some(at_mm)) = (edge, at) {
+                legs.push(Spot {
+                    edge,
+                    at_mm,
+                    forward: None,
+                });
+            }
+        }
+        match legs[..] {
+            [a, b] if a.edge != b.edge => micro.crossings.push((name, [a, b])),
+            _ => r.errors.push(diag(
+                ctx,
+                "Kreuzung braucht genau zwei Punkt_Objekt_TOP_Kante auf verschiedenen TOP_Kanten",
+            )),
+        }
+    }
 }
 
 /// Weichen je `TOP_Knoten` aus `W_Kr_Gsp_Komponente` und `W_Kr_Gsp_Element`.
@@ -528,10 +581,11 @@ fn read_switches(
         let ctx = Reader::context(n);
         let element = wert(n, &["ID_W_Kr_Gsp_Element"]).and_then(|id| elements.get(id));
         if child(n, "Kreuzung").is_some() {
-            r.errors.push(diag(
-                ctx,
-                "Kreuzungen und Kreuzungsweichen werden nicht unterstützt",
-            ));
+            if child(n, "Zungenpaar").is_some() {
+                r.errors
+                    .push(diag(ctx, "Kreuzungsweichen werden nicht unterstützt"));
+            }
+            // Kreuzungen ohne bewegliche Teile liest read_crossings.
             continue;
         }
         if element.is_some_and(|e| child(*e, "Gleissperre_Element").is_some()) {
@@ -891,8 +945,18 @@ impl Micro {
         }
         let _ = writeln!(
             out,
-            "</signalsIS><switchesIS>{switches}</switchesIS><trainDetectionElements>"
+            "</signalsIS><switchesIS>{switches}</switchesIS><crossings>"
         );
+        for (k, (name, [a, b])) in self.crossings.iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "<crossing id=\"pp-cr{k}\" type=\"simpleCrossing\"><name name=\"{}\"/>{}{}</crossing>",
+                esc(name),
+                self.spot_railml(*a),
+                self.spot_railml(*b)
+            );
+        }
+        let _ = writeln!(out, "</crossings><trainDetectionElements>");
         for d in &self.detectors {
             let _ = writeln!(
                 out,
@@ -1148,6 +1212,23 @@ impl Micro {
                 name,
             });
         }
+        for n in rdesc(&doc, "crossing") {
+            let name = rname(n).ok_or("Kreuzung ohne Namen")?;
+            let locs = children(n, "spotLocation").collect::<Vec<_>>();
+            let spot_of = |loc: Node<'_, '_>| -> Result<Spot, String> {
+                Ok(Spot {
+                    edge: rattr(loc, "netElementRef")
+                        .and_then(|r| by_id.get(r).copied())
+                        .ok_or("netElementRef unbekannt")?,
+                    at_mm: rattr(loc, "pos").and_then(mm_of).ok_or("pos fehlt")?,
+                    forward: None,
+                })
+            };
+            let [a, b] = locs[..] else {
+                return Err(format!("Kreuzung „{name}“: zwei Lagen erwartet"));
+            };
+            m.crossings.push((name, [spot_of(a)?, spot_of(b)?]));
+        }
         let mut det_ids: HashMap<&str, String> = HashMap::new();
         for n in rdesc(&doc, "trainDetectionElement") {
             let id = rattr(n, "id").ok_or("Gleisfreimeldeelement ohne id")?;
@@ -1308,6 +1389,24 @@ impl Micro {
                 );
             }
             let _ = writeln!(o, "{:i$}</Zungenpaar>", "", i = ind + 2);
+            close(&mut o, ind, "W_Kr_Gsp_Komponente");
+        }
+        for (name, legs) in &self.crossings {
+            let element = guid("W_Kr_Gsp_Element", name);
+            open(&mut o, ind, "W_Kr_Gsp_Element", &element);
+            bez(&mut o, name);
+            close(&mut o, ind, "W_Kr_Gsp_Element");
+            open(
+                &mut o,
+                ind,
+                "W_Kr_Gsp_Komponente",
+                &guid("W_Kr_Gsp_Komponente", name),
+            );
+            for leg in legs {
+                punkt(&mut o, *leg);
+            }
+            w(&mut o, ind + 2, "ID_W_Kr_Gsp_Element", &element);
+            let _ = writeln!(o, "{:i$}<Kreuzung/>", "", i = ind + 2);
             close(&mut o, ind, "W_Kr_Gsp_Komponente");
         }
         for s in &self.signals {

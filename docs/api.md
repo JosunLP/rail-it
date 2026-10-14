@@ -218,7 +218,7 @@ Jedes Ereignis trägt `time_ms` (Simulationszeit) und `type`:
 | `train_described`, `train_moved`, `train_left`, `train_erased`, `arrived`, `departed`, `route_requested`, `permission_requested`, `spawned`, `spawn_failed` | `train`, … (`"source":"ops"`) | Betriebsführung: Zugnummern, Halte mit `delay_s`, Anforderungen der Zuglenkung |
 | `train_registered`, `train_deregistered`, `authority_granted`, `authority_shortened`, `emergency_stop` | `train`, `end`, `eoa_mm` bzw. `reason` (`"source":"etcs"`) | RBC: Anmeldung, Fahrerlaubnis, Verkürzung, Notbremsung |
 | `safety` | `event` (`channel_excluded` mit `channel`, `divergence`; `tripped` mit `trip`), `area` | Sicherheitsschicht: Kanal ausgeschlossen, Abschaltung |
-| `sim` | `event`, `train`, … | Simulation: `train_stopped`, `train_started`, `train_left`, `train_arrived`, `train_derailed`, `point_trailed`, `signal_passed_at_danger`, `substitute_passed`, `level_crossing_not_closed` |
+| `sim` | `event`, `train`, … | Simulation: `train_stopped`, `train_started`, `train_left`, `train_arrived`, `train_derailed`, `point_trailed`, `signal_passed_at_danger`, `substitute_passed`, `level_crossing_not_closed`, `emergency_brake`, `crossing_collision` (mit `crossing`, `train`, `other`) |
 
 ## Störungsarten der Simulation
 

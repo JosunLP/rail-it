@@ -42,7 +42,7 @@ pub fn to_svg(layout: &Layout) -> String {
         "<style>.track{stroke:#444;stroke-width:4;stroke-linecap:round}\
          .border{stroke:#999;stroke-dasharray:4 4}\
          .area{fill:#888;font-size:11px}.name{fill:#333}.station{font-weight:bold;fill:#036}\
-         .sig{fill:#c00}.lx{stroke:#a60;stroke-width:3}</style>\n",
+         .sig{fill:#c00}.lx{stroke:#a60;stroke-width:3}.crossing{stroke:#222;stroke-width:2}.crossing-link{stroke:#222;stroke-width:1;stroke-dasharray:4 4;opacity:.5}</style>\n",
     );
     let _ = writeln!(out, r##"<rect width="100%" height="100%" fill="#fff"/>"##);
     for a in &layout.areas {
@@ -112,6 +112,15 @@ pub fn to_svg(layout: &Layout) -> String {
             "name",
             &s.name,
         );
+    }
+    for c in &layout.crossings {
+        let [a, b] = c.at;
+        line(&mut out, a, b, "crossing-link");
+        for [x, y] in [a, b] {
+            line(&mut out, [x - 7, y - 7], [x + 7, y + 7], "crossing");
+            line(&mut out, [x - 7, y + 7], [x + 7, y - 7], "crossing");
+        }
+        text(&mut out, [a[0] - 34, a[1] - 10], "name", &c.name);
     }
     for l in &layout.level_crossings {
         let [x, y] = l.at;

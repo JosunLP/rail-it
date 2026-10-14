@@ -36,6 +36,10 @@
 //! track = "1"
 //! position_m = 120
 //!
+//! [[crossing]]              # Kreuzung ohne bewegliche Teile: Gleise schneiden sich
+//! name = "Kr1"               # beide Kreuzungsstellen im selben Abschnitt (REQ-TOP-016)
+//! legs = [{ track = "K1", position_m = 10 }, { track = "K2", position_m = 10 }]
+//!
 //! [[tvd]]
 //! name = "T1"
 //! elements = ["1"]           # Gleise und Weichen
@@ -79,6 +83,8 @@ struct Document {
     tvd: Vec<TvdEntry>,
     #[serde(default)]
     level_crossing: Vec<LevelCrossingEntry>,
+    #[serde(default)]
+    crossing: Vec<CrossingEntry>,
     #[serde(default)]
     area: Vec<AreaEntry>,
     #[serde(default)]
@@ -172,6 +178,20 @@ struct LevelCrossingEntry {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct CrossingEntry {
+    name: String,
+    legs: [CrossingLeg; 2],
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CrossingLeg {
+    track: String,
+    position_m: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LinkEntry {
     from: String,
     to: String,
@@ -232,6 +252,7 @@ pub fn parse(source: &str) -> Result<Validated, ImportError> {
     add_signals(&mut b, doc.signal, &mut errors);
     add_tvds(&mut b, doc.tvd, &mut errors);
     add_level_crossings(&mut b, doc.level_crossing, &mut errors);
+    add_crossings(&mut b, doc.crossing, &mut errors);
     add_areas(&mut b, doc.area, &mut errors);
     add_stations(&mut b, doc.station, &mut errors);
 
@@ -408,6 +429,41 @@ fn add_level_crossings(
             continue;
         };
         if let Err(e) = b.add_level_crossing(l.name, track, position) {
+            errors.push(model_error(context, &e));
+        }
+    }
+}
+
+fn add_crossings(
+    b: &mut TopologyBuilder,
+    entries: Vec<CrossingEntry>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for c in entries {
+        let context = format!("crossing „{}“", c.name);
+        let mut legs = Vec::with_capacity(2);
+        for leg in &c.legs {
+            let Some(ElementRef::Track(track)) = b.lookup(&leg.track) else {
+                errors.push(Diagnostic {
+                    context: context.clone(),
+                    message: format!("„{}“ ist kein bekanntes Gleis", leg.track),
+                    requirement: None,
+                });
+                continue;
+            };
+            let Some(position) = metres(leg.position_m) else {
+                errors.push(invalid_metres(
+                    context.clone(),
+                    "position_m",
+                    leg.position_m,
+                ));
+                continue;
+            };
+            legs.push((track, position));
+        }
+        if let [x, y] = legs[..]
+            && let Err(e) = b.add_crossing(c.name, [x, y])
+        {
             errors.push(model_error(context, &e));
         }
     }

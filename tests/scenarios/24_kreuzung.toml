@@ -1,0 +1,53 @@
+[scenario]
+name = "Kreuzung: Fahrten über die Kreuzung schließen sich aus"
+description = """
+Zwei Strecken kreuzen sich an der Kreuzung Kr1. Beide Kreuzungsstellen liegen im Abschnitt
+TKr; eine Fahrt von West nach Ost schließt die Fahrt von Nord nach Süd aus, bis der Zug die
+Kreuzung geräumt hat. Gegenprobe: Ein Zug, der das Halt zeigende Signal B überfährt, stößt an
+der Kreuzung mit dem Zug zusammen, der dort fahren darf; der Simulator meldet Haltüberfahrung
+und Zusammenstoß.
+"""
+network = "../../examples/kreuzung.toml"
+
+[[step]]
+note = "Fahrt West → Ost"
+add_train = { name = "RE1", signal = "A", length_m = 120, speed_kmh = 80 }
+set_route = "A-GO"
+until = { route = { "A-GO" = "proceed" } }
+timeout_s = 10
+
+[[step]]
+note = "Fahrt Nord → Süd ist feindlich"
+set_route = "B-GS"
+expect = { rejected = "conflict", signal = { B = "stop" } }
+
+[[step]]
+note = "RE1 räumt die Kreuzung, danach ist die Fahrt Nord → Süd möglich"
+until = { tvd = { TKr = "clear", TO = "occupied" } }
+timeout_s = 60
+expect = { no_alarm = ["unauthorized_occupancy"] }
+
+[[step]]
+set_route = "B-GS"
+until = { route = { "B-GS" = "proceed" } }
+timeout_s = 10
+
+[[step]]
+note = "Beide Züge verlassen das Netz"
+add_train = { name = "RB2", signal = "B", length_m = 80, speed_kmh = 60 }
+until = { train = { RE1 = "left", RB2 = "left" } }
+timeout_s = 300
+expect = { no_alarm = ["unauthorized_occupancy", "signal_passed_at_danger"] }
+
+[[step]]
+note = "Gegenprobe: RE3 fährt langsam über die Kreuzung, RB4 überfährt das Halt zeigende Signal B"
+add_train = { name = "RE3", signal = "A", length_m = 300, speed_kmh = 30 }
+set_route = "A-GO"
+until = { route = { "A-GO" = "proceed" } }
+timeout_s = 10
+
+[[step]]
+add_train = { name = "RB4", signal = "B", length_m = 80, speed_kmh = 30, ignore_signals = true }
+until = { sim_event = ["signal_passed_at_danger", "crossing_collision"] }
+timeout_s = 120
+expect = { signal = { B = "stop" } }

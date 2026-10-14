@@ -88,6 +88,14 @@ pub enum TopologyError {
         /// Betroffene Abschnitte.
         tvds: Vec<String>,
     },
+    /// Die Kreuzungsstellen einer Kreuzung liegen nicht im selben Gleisfreimeldeabschnitt
+    /// oder auf demselben Gleis.
+    CrossingTvd {
+        /// Kreuzung.
+        crossing: String,
+        /// Abschnitte der beiden Kreuzungsstellen (bzw. Gleis, wenn beide darauf liegen).
+        tvds: Vec<String>,
+    },
     /// Ein Stellbereich hat keine Abschnitte.
     EmptyArea {
         /// Bereich.
@@ -135,6 +143,7 @@ impl TopologyError {
             Self::EmptyTvd { .. } | Self::NotInTvd { .. } | Self::InMultipleTvds { .. } => {
                 "REQ-TOP-006"
             }
+            Self::CrossingTvd { .. } => "REQ-TOP-016",
             Self::EmptyArea { .. }
             | Self::TvdNotInArea { .. }
             | Self::TvdInMultipleAreas { .. } => "REQ-TOP-011",
@@ -193,6 +202,12 @@ impl fmt::Display for TopologyError {
                 }
                 Ok(())
             }
+            Self::CrossingTvd { crossing, tvds } => write!(
+                f,
+                "Kreuzung „{crossing}“: beide Kreuzungsstellen müssen auf verschiedenen Gleisen im \
+                 selben Gleisfreimeldeabschnitt liegen (gefunden: {})",
+                tvds.join(", ")
+            ),
             Self::EmptyArea { area } => write!(f, "Stellbereich „{area}“ ist leer"),
             Self::TvdNotInArea { tvd } => {
                 write!(

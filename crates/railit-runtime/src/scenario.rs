@@ -817,6 +817,7 @@ const fn sim_event_kind(e: &SimEvent) -> &'static str {
         SimEvent::SubstitutePassed { .. } => "substitute_passed",
         SimEvent::LevelCrossingNotClosed { .. } => "level_crossing_not_closed",
         SimEvent::EmergencyBrake { .. } => "emergency_brake",
+        SimEvent::CrossingCollision { .. } => "crossing_collision",
     }
 }
 

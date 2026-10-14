@@ -230,6 +230,13 @@ impl Topology {
             lxs.push(id);
         }
 
+        for c in self.crossings() {
+            let legs = c.legs.map(|(t, at)| track_map.get(&t).map(|l| (*l, at)));
+            if let [Some(x), Some(y)] = legs {
+                b.add_crossing(c.name.clone(), [x, y]).map_err(err)?;
+            }
+        }
+
         let topology = b.build()?.topology;
         Ok(AreaCut {
             area,

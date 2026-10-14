@@ -26,7 +26,9 @@ use railit_kernel::{Aspect, Command, Input, LxReport, Occupancy, PointReport, Si
 use railit_topology::{
     Direction, NodeRef, Port, PortRef, SignalKind, TerminalKind, Topology, TvdMember,
 };
-use railit_types::{Duration, Length, LxId, PointId, PointPosition, SignalId, Speed, Tick, TvdId};
+use railit_types::{
+    Duration, Length, LxId, PointId, PointPosition, SignalId, Speed, Tick, TrackId, TvdId,
+};
 use serde::{Deserialize, Serialize};
 
 /// Parameter des Simulators.
@@ -158,6 +160,15 @@ pub enum SimEvent {
         /// Zug.
         train: String,
     },
+    /// Zwei Züge stehen zugleich auf beiden Kreuzungsstellen einer Kreuzung: Zusammenstoß.
+    CrossingCollision {
+        /// Kreuzung.
+        crossing: String,
+        /// Zug auf der ersten Kreuzungsstelle.
+        train: String,
+        /// Zug auf der zweiten Kreuzungsstelle.
+        other: String,
+    },
     /// Zug hat ein Halt zeigendes Signal überfahren.
     SignalPassedAtDanger {
         /// Zug.
@@ -273,6 +284,8 @@ pub struct Simulator {
     tvd_faults: Vec<Option<Occupancy>>,
     trains: Vec<Train>,
     events: Vec<SimEvent>,
+    /// Bereits gemeldete Zusammenstöße an Kreuzungen: Kreuzung und beide Züge.
+    collisions: HashSet<(String, String, String)>,
 }
 
 const fn delimits(kind: SignalKind) -> bool {
@@ -280,6 +293,33 @@ const fn delimits(kind: SignalKind) -> bool {
         kind,
         SignalKind::Main | SignalKind::Combined | SignalKind::EtcsStopMarker
     )
+}
+
+/// Ob der Zug die Stelle `pos` (mm ab Port `a`) auf Gleis `track` überdeckt.
+fn covers(t: &Train, track: TrackId, pos: u64) -> bool {
+    if t.state == TrainState::Left {
+        return false;
+    }
+    let mut remaining = t.length;
+    for (k, seg) in t.path.iter().rev().enumerate() {
+        let hi = if k == 0 { t.head.min(seg.len) } else { seg.len };
+        let lo = hi.saturating_sub(remaining);
+        if seg.node == NodeRef::Track(track) {
+            let p = if travel(seg.entry) == Direction::AToB {
+                pos
+            } else {
+                seg.len.saturating_sub(pos)
+            };
+            if (lo..=hi).contains(&p) {
+                return true;
+            }
+        }
+        remaining = remaining.saturating_sub(hi);
+        if remaining == 0 {
+            break;
+        }
+    }
+    false
 }
 
 const fn travel(entry: Port) -> Direction {
@@ -328,6 +368,7 @@ impl Simulator {
             tvd_faults,
             trains: Vec::new(),
             events: Vec::new(),
+            collisions: HashSet::new(),
         }
     }
 
@@ -709,6 +750,38 @@ impl Simulator {
         }
         trains.retain(|t| t.state != TrainState::Left);
         self.trains = trains;
+        self.check_crossings();
+    }
+
+    /// Meldet Züge, die zugleich beide Kreuzungsstellen einer Kreuzung belegen.
+    fn check_crossings(&mut self) {
+        let mut found = Vec::new();
+        for c in self.net.crossings() {
+            let [(ta, pa), (tb, pb)] = c.legs;
+            let on = |track: TrackId, pos: Length| {
+                self.trains
+                    .iter()
+                    .filter(move |t| covers(t, track, u64::from(pos.as_mm())))
+                    .map(|t| t.name.clone())
+            };
+            for a in on(ta, pa) {
+                for b in on(tb, pb) {
+                    if a != b {
+                        found.push((c.name.clone(), a.clone(), b));
+                    }
+                }
+            }
+        }
+        for key in found {
+            if self.collisions.insert(key.clone()) {
+                let (crossing, train, other) = key;
+                self.events.push(SimEvent::CrossingCollision {
+                    crossing,
+                    train,
+                    other,
+                });
+            }
+        }
     }
 
     /// Nächstes Halt zeigendes Hauptsignal im aktuellen Element ab Position `head`.

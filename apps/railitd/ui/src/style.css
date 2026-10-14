@@ -463,6 +463,22 @@ svg.plan text {
   stroke: var(--disturbed);
 }
 
+.crossing-mark {
+  stroke: var(--text);
+  stroke-width: 2;
+}
+
+.crossing-link {
+  stroke: var(--text);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+  opacity: 0.5;
+}
+
+.crossing-name {
+  fill: var(--text) !important;
+}
+
 @keyframes blink {
   to {
     visibility: hidden;

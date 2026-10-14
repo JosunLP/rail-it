@@ -123,6 +123,18 @@ export class PlanView {
       }
     }
 
+    // Kreuzungen: beide Kreuzungsstellen markiert und gestrichelt verbunden.
+    for (const c of layout.crossings ?? []) {
+      const [a, b] = c.at;
+      const group = el('g', { class: 'crossing' }, objects);
+      segment(group, a, b, 'crossing-link');
+      for (const [x, y] of [a, b]) {
+        segment(group, [x - 7, y - 7], [x + 7, y + 7], 'crossing-mark');
+        segment(group, [x - 7, y + 7], [x + 7, y - 7], 'crossing-mark');
+      }
+      text(group, [a[0] - 34, a[1] - 10], c.name, 'crossing-name');
+    }
+
     for (const l of layout.level_crossings) {
       const [x, y] = l.at;
       const group = el('g', { class: 'lx' }, objects);

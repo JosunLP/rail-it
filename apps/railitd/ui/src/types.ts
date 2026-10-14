@@ -20,6 +20,7 @@ export interface Layout {
   terminals: { name: string; kind: 'boundary' | 'buffer_stop' | 'border'; at: Pos; opens: 'left' | 'right' }[];
   signals: { name: string; kind: string; system: string; at: Pos; facing: 'left' | 'right'; track: string }[];
   level_crossings: { name: string; at: Pos }[];
+  crossings?: { name: string; at: [Pos, Pos] }[];
   borders: { left: string; right: string; at: Pos }[];
   areas: { name: string; x0: number; x1: number }[];
   stations: { name: string; at: Pos }[];

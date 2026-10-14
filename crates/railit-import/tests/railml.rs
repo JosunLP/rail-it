@@ -7,6 +7,7 @@ use railit_topology::{NodeRef, Port, PortRef, SignalKind, TerminalKind, Topology
 
 const BEISPIELSTADT: &str = include_str!("../../../examples/beispielstadt.toml");
 const NORDBAHN: &str = include_str!("../../../examples/nordbahn.toml");
+const KREUZUNG: &str = include_str!("../../../examples/kreuzung.toml");
 const HANDMADE: &str = include_str!("data/abzweig.railml");
 
 fn node_name(net: &Topology, n: NodeRef) -> String {
@@ -65,6 +66,12 @@ fn describe(net: &Topology) -> BTreeSet<String> {
             lx.position.as_mm()
         ));
     }
+    for c in net.crossings() {
+        let legs = c
+            .legs
+            .map(|(t, at)| format!("{}@{}", net.track(t).unwrap().name, at.as_mm()));
+        out.insert(format!("crossing {} {legs:?}", c.name));
+    }
     for (_, tvd) in net.tvds() {
         let mut members = tvd
             .members
@@ -114,6 +121,12 @@ fn roundtrip(toml: &str) {
 #[test]
 fn beispielstadt_survives_the_roundtrip() {
     roundtrip(BEISPIELSTADT);
+}
+
+/// REQ-TOP-014, REQ-TOP-016: auch mit einer Kreuzung.
+#[test]
+fn crossing_survives_the_roundtrip() {
+    roundtrip(KREUZUNG);
 }
 
 /// REQ-TOP-014: auch mit Stellbereichen und Betriebsstellen.

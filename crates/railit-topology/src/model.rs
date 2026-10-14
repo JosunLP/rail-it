@@ -110,6 +110,18 @@ pub struct LevelCrossing {
     pub position: Length,
 }
 
+/// Kreuzung (ohne bewegliche Teile): Zwei Gleise schneiden sich, ohne verbunden zu sein. Beide
+/// Kreuzungsstellen liegen im selben Gleisfreimeldeabschnitt (REQ-TOP-016); Fahrten über die
+/// eine und die andere Kreuzungsstelle schließen sich damit über den Abschnitt aus.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct Crossing {
+    /// Fachlicher Name, z. B. `"Kr1"`.
+    pub name: String,
+    /// Die beiden Kreuzungsstellen: Gleis und Position ab dessen Port `a`.
+    pub legs: [(TrackId, Length); 2],
+}
+
 /// Stellbereich: Gleisfreimeldeabschnitte, die genau ein Sicherheitskern steuert.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]

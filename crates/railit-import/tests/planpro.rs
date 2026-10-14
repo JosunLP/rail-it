@@ -8,6 +8,7 @@ use railit_topology::{NodeRef, Port, PortRef, SignalKind, SignalSystem, Topology
 
 const BEISPIELSTADT: &str = include_str!("../../../examples/beispielstadt.toml");
 const NORDBAHN: &str = include_str!("../../../examples/nordbahn.toml");
+const KREUZUNG: &str = include_str!("../../../examples/kreuzung.toml");
 const HANDMADE: &str = include_str!("../../../examples/abzweig.ppxml");
 
 fn node_name(net: &Topology, n: NodeRef) -> String {
@@ -66,6 +67,12 @@ fn describe(net: &Topology) -> BTreeSet<String> {
             lx.position.as_mm()
         ));
     }
+    for c in net.crossings() {
+        let legs = c
+            .legs
+            .map(|(t, at)| format!("{}@{}", net.track(t).unwrap().name, at.as_mm()));
+        out.insert(format!("crossing {} {legs:?}", c.name));
+    }
     for (_, tvd) in net.tvds() {
         let mut members = tvd
             .members
@@ -123,6 +130,12 @@ fn generated_corridor_survives_the_roundtrip() {
     let net = railit_import::generate::corridor(6, 2);
     let net = toml_format::parse(&net).unwrap().topology;
     roundtrip(&net);
+}
+
+/// REQ-TOP-015, REQ-TOP-016: auch mit einer Kreuzung.
+#[test]
+fn crossing_survives_the_roundtrip() {
+    roundtrip(&toml_format::parse(KREUZUNG).unwrap().topology);
 }
 
 /// Stellbereiche bildet der Export nicht ab.

@@ -15,6 +15,7 @@
 //! | `signalIS` (`isEtcsSignal`)                | ETCS-Halt-Tafel                           |
 //! | `signalIS` mit `belongsToParent`           | Vorsignal am Mast: Mehrabschnittssignal   |
 //! | `levelCrossingIS`                          | Bahnübergang                              |
+//! | `crossing` (`simpleCrossing`, zwei `spotLocation`) | Kreuzung ohne bewegliche Teile    |
 //!
 //! Gleisfreimeldeabschnitte ergeben sich aus der Topologie: Zusammenhängende Gleise und
 //! Weichen zwischen Gleisfreimeldeeinrichtungen bilden einen Abschnitt. Liegt eine Einrichtung
@@ -200,6 +201,11 @@ impl Reader<'_, '_> {
             self.errors.push(diag(context(n), "ohne spotLocation"));
             return None;
         };
+        self.spot_at(n, loc)
+    }
+
+    /// Ort aus der `spotLocation` `loc` des Objekts `n`.
+    fn spot_at(&mut self, n: Node<'_, '_>, loc: Node<'_, '_>) -> Option<Spot> {
         let Some(element) = attr(loc, "netElementRef").and_then(|r| self.element(r)) else {
             self.errors.push(diag(
                 context(n),
@@ -301,6 +307,7 @@ pub fn parse_with_warnings(source: &str) -> Result<(Validated, Vec<String>), Imp
     add_terminals(&mut r, &mut b);
     add_signals(&mut r, &mut b);
     add_level_crossings(&mut r, &mut b);
+    add_crossings(&mut r, &mut b);
     add_tvds(&mut r, &mut b, &graph, &points, &detectors);
     add_operation(&mut r, &mut b);
 
@@ -480,10 +487,13 @@ fn connect(r: &mut Reader<'_, '_>, b: &mut TopologyBuilder, graph: &mut Graph) -
         }
     }
     for n in descendants(r.doc, "crossing") {
-        r.errors.push(diag(
-            context(n),
-            "Kreuzungen und Kreuzungsweichen werden noch nicht unterstützt",
-        ));
+        if attr(n, "type") != Some("simpleCrossing") || children(n, "spotLocation").count() != 2 {
+            r.errors.push(diag(
+                context(n),
+                "nur Kreuzungen ohne bewegliche Teile (type=\"simpleCrossing\" mit zwei \
+                 spotLocation) werden unterstützt; Kreuzungsweichen nicht",
+            ));
+        }
     }
     for (id, (x, y)) in &relations {
         if used.contains(id) {
@@ -762,6 +772,32 @@ fn add_signals(r: &mut Reader<'_, '_>, b: &mut TopologyBuilder) {
     }
 }
 
+/// Kreuzungen ohne bewegliche Teile: zwei `spotLocation` auf den gekreuzten Elementen.
+fn add_crossings(r: &mut Reader<'_, '_>, b: &mut TopologyBuilder) {
+    for n in descendants(r.doc, "crossing").collect::<Vec<_>>() {
+        let locs = children(n, "spotLocation").collect::<Vec<_>>();
+        if attr(n, "type") != Some("simpleCrossing") || locs.len() != 2 {
+            continue;
+        }
+        let mut legs = Vec::new();
+        for loc in locs {
+            let Some(spot) = r.spot_at(n, loc) else {
+                continue;
+            };
+            if let Some((index, position)) = r.piece_at(spot)
+                && let Some(t) = track(index)
+            {
+                legs.push((t, Length::from_mm(position)));
+            }
+        }
+        if let [x, y] = legs[..]
+            && let Err(e) = b.add_crossing(display_name(n), [x, y])
+        {
+            r.errors.push(model_error(context(n), &e));
+        }
+    }
+}
+
 fn add_level_crossings(r: &mut Reader<'_, '_>, b: &mut TopologyBuilder) {
     for n in descendants(r.doc, "levelCrossingIS").collect::<Vec<_>>() {
         let ctx = context(n);
@@ -945,7 +981,7 @@ fn add_tvds(
 ) {
     let at_end = detectors_at_ends(r, detectors);
     let mut c = tvd_components(r, graph, points, detectors, &at_end);
-    let boundary = tvd_boundaries(r, &mut c, graph, points, detectors, &at_end);
+    let mut boundary = tvd_boundaries(r, &mut c, graph, points, detectors, &at_end);
     // Benannte Abschnitte in der Reihenfolge des Dokuments.
     let mut named: HashMap<BTreeSet<&str>, (usize, String)> = HashMap::new();
     for (k, n) in descendants(r.doc, "tvdSection").enumerate() {
@@ -954,6 +990,34 @@ fn add_tvds(
             .collect::<BTreeSet<_>>();
         if !set.is_empty() {
             named.insert(set, (k, display_name(n)));
+        }
+    }
+    // Ein Abschnitt aus mehreren nicht verbundenen Teilen (Kreuzung): Teile, deren Grenzen alle
+    // zu einem benannten Abschnitt gehören und ihn zusammen genau begrenzen, sind ein Abschnitt.
+    let sets: Vec<BTreeSet<&str>> = named.keys().cloned().collect();
+    for set in &sets {
+        let parts: Vec<usize> = boundary
+            .iter()
+            .filter(|(_, b)| !b.is_empty() && b.is_subset(set) && !named.contains_key(*b))
+            .map(|(root, _)| *root)
+            .collect();
+        let union: BTreeSet<&str> = parts
+            .iter()
+            .filter_map(|p| boundary.get(p))
+            .flatten()
+            .copied()
+            .collect();
+        if parts.len() > 1 && union == *set {
+            // Nur Teile, die keinem anderen benannten Abschnitt entsprechen (oben), und nur,
+            // wenn sie zusammen genau diesen Abschnitt begrenzen.
+            let mut merged = BTreeSet::new();
+            for p in &parts {
+                merged.extend(boundary.remove(p).unwrap_or_default());
+                if let Some(first) = parts.first() {
+                    c.union(*first, *p);
+                }
+            }
+            boundary.insert(c.find(parts.first().copied().unwrap_or_default()), merged);
         }
     }
 
@@ -1286,6 +1350,19 @@ pub fn export(net: &Topology) -> Result<String, String> {
     write_signals(&mut out, net);
     if !c.switches.is_empty() {
         let _ = writeln!(out, "      <switchesIS>\n{}      </switchesIS>", c.switches);
+    }
+    if net.crossings().len() > 0 {
+        let _ = writeln!(out, "      <crossings>");
+        for (k, cr) in net.crossings().enumerate() {
+            let _ = writeln!(
+                out,
+                "        <crossing id=\"cr{k}\" type=\"simpleCrossing\"><name name=\"{}\"/>{}{}</crossing>",
+                esc(&cr.name),
+                spot_xml(net, cr.legs[0].0, cr.legs[0].1.as_mm(), None),
+                spot_xml(net, cr.legs[1].0, cr.legs[1].1.as_mm(), None),
+            );
+        }
+        let _ = writeln!(out, "      </crossings>");
     }
     if !c.detectors.is_empty() {
         let _ = writeln!(out, "      <trainDetectionElements>");

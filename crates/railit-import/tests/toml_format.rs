@@ -155,3 +155,49 @@ fn all_errors_are_collected_with_context() {
         );
     }
 }
+
+const KREUZUNG: &str = include_str!("../../../examples/kreuzung.toml");
+
+/// REQ-TOP-016: Beide Kreuzungsstellen liegen auf verschiedenen Gleisen im selben Abschnitt.
+#[test]
+fn crossing_legs_share_one_tvd() {
+    let net = railit_import::toml_format::parse(KREUZUNG)
+        .unwrap()
+        .topology;
+    let c = net.crossings().next().unwrap();
+    assert_eq!(c.name, "Kr1");
+    let kw = net.lookup("kw");
+    assert!(
+        matches!(kw, Some(railit_topology::ElementRef::Track(t)) if net.crossings_on(t).count() == 1)
+    );
+
+    let split = KREUZUNG.replace(
+        "name = \"TKr\"\nelements = [\"kw\", \"kn\"]",
+        "name = \"TKr\"\nelements = [\"kw\"]\n\n[[tvd]]\nname = \"TKr2\"\nelements = [\"kn\"]",
+    );
+    let err = railit_import::toml_format::parse(&split)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("REQ-TOP-016") && err.contains("TKr2"), "{err}");
+
+    let same = KREUZUNG.replace(
+        "{ track = \"kn\", position_m = 20 }",
+        "{ track = \"kw\", position_m = 30 }",
+    );
+    let err = railit_import::toml_format::parse(&same)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("REQ-TOP-016"), "{err}");
+
+    let outside = KREUZUNG.replace(
+        "{ track = \"kn\", position_m = 20 }",
+        "{ track = \"kn\", position_m = 41 }",
+    );
+    let err = railit_import::toml_format::parse(&outside)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("Kr1") && err.contains("kn"), "{err}");
+
+    let dup = KREUZUNG.replace("name = \"Kr1\"", "name = \"A\"");
+    assert!(railit_import::toml_format::parse(&dup).is_err());
+}

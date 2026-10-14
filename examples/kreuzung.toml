@@ -1,0 +1,138 @@
+# Zwei Strecken kreuzen sich niveaugleich an der Kreuzung Kr1 (ohne bewegliche Teile).
+# Beide Kreuzungsstellen liegen im Abschnitt TKr: Fahrten von West nach Ost und von Nord nach
+# Süd schließen sich über ihn aus (REQ-TOP-016).
+#
+#                 GN
+#                 │ n
+#                 B ▼
+#   GW ── w ──A▶ ─╋─ ◀F── o ── GO
+#                 G ▲
+#                 │ s
+#                 GS
+
+[network]
+name = "Kreuzung"
+
+[[terminal]]
+name = "GW"
+kind = "boundary"
+
+[[terminal]]
+name = "GO"
+kind = "boundary"
+
+[[terminal]]
+name = "GN"
+kind = "boundary"
+
+[[terminal]]
+name = "GS"
+kind = "boundary"
+
+[[track]]
+name = "w"
+length_m = 1000
+
+[[track]]
+name = "kw"
+length_m = 40
+
+[[track]]
+name = "o"
+length_m = 1000
+
+[[track]]
+name = "n"
+length_m = 1000
+
+[[track]]
+name = "kn"
+length_m = 40
+
+[[track]]
+name = "s"
+length_m = 1000
+
+[[link]]
+from = "GW.end"
+to = "w.a"
+
+[[link]]
+from = "w.b"
+to = "kw.a"
+
+[[link]]
+from = "kw.b"
+to = "o.a"
+
+[[link]]
+from = "o.b"
+to = "GO.end"
+
+[[link]]
+from = "GN.end"
+to = "n.a"
+
+[[link]]
+from = "n.b"
+to = "kn.a"
+
+[[link]]
+from = "kn.b"
+to = "s.a"
+
+[[link]]
+from = "s.b"
+to = "GS.end"
+
+[[signal]]
+name = "A"
+track = "w"
+position_m = 1000
+direction = "a_to_b"
+kind = "main"
+
+[[signal]]
+name = "F"
+track = "o"
+position_m = 0
+direction = "b_to_a"
+kind = "main"
+
+[[signal]]
+name = "B"
+track = "n"
+position_m = 1000
+direction = "a_to_b"
+kind = "main"
+
+[[signal]]
+name = "G"
+track = "s"
+position_m = 0
+direction = "b_to_a"
+kind = "main"
+
+[[crossing]]
+name = "Kr1"
+legs = [{ track = "kw", position_m = 20 }, { track = "kn", position_m = 20 }]
+
+[[tvd]]
+name = "TW"
+elements = ["w"]
+
+[[tvd]]
+name = "TO"
+elements = ["o"]
+
+[[tvd]]
+name = "TN"
+elements = ["n"]
+
+[[tvd]]
+name = "TS"
+elements = ["s"]
+
+[[tvd]]
+name = "TKr"
+elements = ["kw", "kn"]

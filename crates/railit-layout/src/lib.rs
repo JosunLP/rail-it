@@ -57,6 +57,8 @@ pub struct Layout {
     pub signals: Vec<SignalShape>,
     /// Bahnübergänge.
     pub level_crossings: Vec<MarkShape>,
+    /// Kreuzungen: beide Kreuzungsstellen (im Spurplan getrennt gezeichnet, verbunden).
+    pub crossings: Vec<CrossingShape>,
     /// Grenzen zwischen Stellbereichen.
     pub borders: Vec<BorderShape>,
     /// Stellbereiche (horizontale Ausdehnung).
@@ -134,6 +136,15 @@ pub struct MarkShape {
     pub name: String,
     /// Lage.
     pub at: Pos,
+}
+
+/// Kreuzung ohne bewegliche Teile: Lage beider Kreuzungsstellen.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CrossingShape {
+    /// Name.
+    pub name: String,
+    /// Kreuzungsstellen.
+    pub at: [Pos; 2],
 }
 
 /// Grenze zwischen zwei Stellbereichen.
@@ -527,6 +538,19 @@ pub fn layout(topo: &Topology) -> Layout {
         })
         .collect();
 
+    let crossings = topo
+        .crossings()
+        .filter_map(|c| {
+            let [(ta, pa), (tb, pb)] = c.legs;
+            let (a, _) = along(ta, pa.as_mm())?;
+            let (b, _) = along(tb, pb.as_mm())?;
+            Some(CrossingShape {
+                name: c.name.clone(),
+                at: [a, b],
+            })
+        })
+        .collect();
+
     let mut borders = Vec::new();
     for link in topo.area_links() {
         let (Some(a), Some(b)) = (topo.area(link.a), topo.area(link.b)) else {
@@ -618,6 +642,7 @@ pub fn layout(topo: &Topology) -> Layout {
         terminals,
         signals,
         level_crossings,
+        crossings,
         borders,
         areas,
         stations,
@@ -649,5 +674,8 @@ fn shift_down(l: &mut Layout, dy: i32) {
     }
     for b in &mut l.borders {
         b.at[1] += dy;
+    }
+    for c in &mut l.crossings {
+        c.at.iter_mut().for_each(mv);
     }
 }

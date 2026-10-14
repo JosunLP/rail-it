@@ -16,6 +16,7 @@ Leser ab; ein ungültiges Netz meldet er mit **allen** Fehlern auf einmal. Einf�
 | `[[link]]` | | Verbindungen zwischen Ports |
 | `[[signal]]` | | Signale und ETCS-Haltetafeln |
 | `[[level_crossing]]` | | Bahnübergänge |
+| `[[crossing]]` | | Kreuzungen ohne bewegliche Teile |
 | `[[tvd]]` | | Gleisfreimeldeabschnitte |
 | `[[area]]` | | Stellbereiche (je einer pro Sicherheitskern) |
 | `[[station]]` | | Betriebsstellen mit Bahnsteiggleisen für die Betriebsführung |
@@ -91,6 +92,19 @@ Hauptsignale stehen an einer Grenze der Gleisfreimeldung (REQ-PLN-010).
 | `track` | Text | Gleis |
 | `position_m` | Zahl | Position ab Port `a` |
 
+## `[[crossing]]` – Kreuzung
+
+Zwei Gleise schneiden sich niveaugleich, ohne verbunden zu sein (Kreuzung ohne bewegliche
+Teile). Beide Kreuzungsstellen müssen auf verschiedenen Gleisen im **selben**
+Gleisfreimeldeabschnitt liegen (REQ-TOP-016); Fahrten über die eine und die andere
+Kreuzungsstelle schließen sich damit über den Abschnitt aus. Kreuzungsweichen (EKW, DKW) gibt
+es noch nicht. Beispiel: `examples/kreuzung.toml`.
+
+| Schlüssel | Typ | Bedeutung |
+|-----------|-----|-----------|
+| `name` | Text | Name |
+| `legs` | zwei `{ track, position_m }` | Kreuzungsstellen: Gleis und Position ab Port `a` |
+
 ## `[[tvd]]` – Gleisfreimeldeabschnitt
 
 | Schlüssel | Typ | Bedeutung |
@@ -151,6 +165,7 @@ der Zielzustand). Abbildung:
 | Knoten mit einer Kante: `Ende` / sonst | Prellbock / Netzgrenze |
 | `Signal` mit `Signal_Real_Aktiv_Schirm` | `Hauptsignal`, `Hauptsperrsignal`, `Zugdeckungssignal` → Hauptsignal; `Mehrabschnitts(sperr)signal` → Mehrabschnittssignal; `Vorsignal(wiederholer)` → Vorsignal; `Sperrsignal` → Rangiersignal; `Signalsystem` Ks oder HV; `Signal_Funktion` `Block_Signal` → Selbstblock |
 | `BUE_Anlage` | Bahnübergang |
+| `W_Kr_Gsp_Komponente` mit `Kreuzung` und zwei Lagen | Kreuzung (Kreuzungsweichen: Fehler) |
 | `FMA_Komponente` (`ID_FMAgrenze`), `FMA_Anlage` → `Gleis_Abschnitt` | Freimeldegrenze, Name des Abschnitts |
 
 Hauptsignale müssen wie in jedem rail-it-Netz an einer Freimeldegrenze stehen (REQ-PLN-010);

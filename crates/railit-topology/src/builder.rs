@@ -1,6 +1,7 @@
 //! Aufbau und Validierung eines Netzes.
 
 use alloc::collections::BTreeMap;
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -12,9 +13,9 @@ use railit_types::{
 
 use crate::error::{Report, TopologyError, Warning};
 use crate::model::{
-    Area, DEFAULT_DIVERGING_SPEED, Direction, ElementRef, LevelCrossing, NodeRef, Platform, Point,
-    PortRef, Signal, SignalKind, SignalSystem, Station, Terminal, TerminalKind, Track, TvdMember,
-    TvdSection,
+    Area, Crossing, DEFAULT_DIVERGING_SPEED, Direction, ElementRef, LevelCrossing, NodeRef,
+    Platform, Point, PortRef, Signal, SignalKind, SignalSystem, Station, Terminal, TerminalKind,
+    Track, TvdMember, TvdSection,
 };
 use crate::topology::{Links, Topology};
 
@@ -56,6 +57,7 @@ pub struct TopologyBuilder {
     signals: Vec<Signal>,
     tvds: Vec<TvdSection>,
     level_crossings: Vec<LevelCrossing>,
+    crossings: Vec<Crossing>,
     links: Links,
     names: BTreeMap<String, ElementRef>,
     areas: Vec<Area>,
@@ -72,7 +74,7 @@ impl TopologyBuilder {
     }
 
     fn check_name(&self, name: &str) -> Result<(), TopologyError> {
-        if self.names.contains_key(name) {
+        if self.names.contains_key(name) || self.crossings.iter().any(|c| c.name == name) {
             return Err(TopologyError::DuplicateName {
                 name: name.to_string(),
             });
@@ -342,6 +344,33 @@ impl TopologyBuilder {
         Ok(id)
     }
 
+    /// Fügt eine Kreuzung hinzu: die Kreuzungsstellen auf zwei Gleisen (Position ab Port `a`).
+    ///
+    /// # Errors
+    /// Doppelter Name, unbekanntes Gleis oder Position außerhalb des Gleises. Dass beide
+    /// Stellen im selben Gleisfreimeldeabschnitt liegen, prüft [`Self::build`].
+    pub fn add_crossing(
+        &mut self,
+        name: impl Into<String>,
+        legs: [(TrackId, Length); 2],
+    ) -> Result<(), TopologyError> {
+        let name = name.into();
+        self.check_name(&name)?;
+        for (track, position) in legs {
+            let t = self.track(track)?;
+            if position > t.length {
+                return Err(TopologyError::PositionOutsideTrack {
+                    object: name,
+                    track: t.name.clone(),
+                    position,
+                    length: t.length,
+                });
+            }
+        }
+        self.crossings.push(Crossing { name, legs });
+        Ok(())
+    }
+
     /// Fügt einen Gleisfreimeldeabschnitt hinzu.
     ///
     /// # Errors
@@ -478,6 +507,8 @@ impl TopologyBuilder {
             check_membership(&point.name, tvds);
         }
 
+        self.check_crossings(&track_tvds, &mut errors);
+
         let tvd_area = self.check_areas_and_stations(&mut errors);
 
         // REQ-TOP-010: Zusammenhang (nur Warnung).
@@ -502,6 +533,7 @@ impl TopologyBuilder {
             signals: self.signals,
             tvds: self.tvds,
             level_crossings: self.level_crossings,
+            crossings: self.crossings,
             links: self.links,
             names: self.names,
             track_tvd: single(track_tvds),
@@ -511,6 +543,50 @@ impl TopologyBuilder {
             tvd_area,
         };
         Ok(Validated { topology, warnings })
+    }
+
+    /// REQ-TOP-016: Die Kreuzungsstellen einer Kreuzung liegen auf verschiedenen Gleisen im
+    /// selben Abschnitt.
+    fn check_crossings(&self, track_tvds: &[Vec<TvdId>], errors: &mut Vec<TopologyError>) {
+        for c in &self.crossings {
+            let [(a, _), (b, _)] = c.legs;
+            let tvd = |t: TrackId| {
+                t.index()
+                    .and_then(|i| track_tvds.get(i))
+                    .and_then(|l| l.first().copied())
+            };
+            if a == b || tvd(a).is_none() || tvd(a) != tvd(b) {
+                let name = |t: TrackId| {
+                    tvd(t)
+                        .and_then(TvdId::index)
+                        .and_then(|i| self.tvds.get(i))
+                        .map_or_else(
+                            || {
+                                format!(
+                                    "Gleis „{}“",
+                                    t.index()
+                                        .and_then(|i| self.tracks.get(i))
+                                        .map_or("?", |x| x.name.as_str())
+                                )
+                            },
+                            |x| x.name.clone(),
+                        )
+                };
+                errors.push(TopologyError::CrossingTvd {
+                    crossing: c.name.clone(),
+                    tvds: if a == b {
+                        vec![format!(
+                            "beide auf Gleis „{}“",
+                            a.index()
+                                .and_then(|i| self.tracks.get(i))
+                                .map_or("?", |x| x.name.as_str())
+                        )]
+                    } else {
+                        vec![name(a), name(b)]
+                    },
+                });
+            }
+        }
     }
 
     /// REQ-TOP-011/012: Stellbereiche und Bahnsteige. Liefert den Bereich je Abschnitt.
