@@ -23,6 +23,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::auth::{Permission, Principal};
 use crate::engine::{Answer, EngineMsg, OpsCommand, SafetyCommand, SimCommand, SimReply};
+use crate::field::FieldControl;
 use railit_runtime::railit_adapters::{LinkFaults, LinkStatus};
 
 /// Fehler einer Operation.
@@ -125,6 +126,8 @@ pub(crate) struct Service {
     layout: Arc<Value>,
     audit: Option<Arc<Audit>>,
     operators_from_users: bool,
+    /// Steuerung des Feldrechners: Simulationsbefehle gehen dorthin.
+    field_control: Option<FieldControl>,
 }
 
 impl Service {
@@ -149,7 +152,15 @@ impl Service {
             layout,
             audit,
             operators_from_users,
+            field_control: None,
         }
+    }
+
+    /// Simulationsbefehle an die Steuerung eines Feldrechners (`--field-control`).
+    #[must_use]
+    pub(crate) fn with_field_control(mut self, control: Option<FieldControl>) -> Self {
+        self.field_control = control;
+        self
     }
 
     /// Spurplan des Netzes (Geometrie für Bedienplätze).
@@ -462,6 +473,11 @@ impl Service {
     }
 
     async fn sim(&self, command: SimCommand) -> Res<SimReply> {
+        if let Some(control) = &self.field_control
+            && !matches!(command, SimCommand::Links)
+        {
+            return Ok(control.call(command, &self.topology).await);
+        }
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(EngineMsg::Sim { command, reply })

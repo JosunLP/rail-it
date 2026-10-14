@@ -191,7 +191,7 @@ impl fmt::Display for SimError {
 impl std::error::Error for SimError {}
 
 /// Öffentliche Sicht auf einen Zug.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TrainInfo {
     /// Zugnummer.
     pub name: String,

@@ -14,6 +14,7 @@
 //! Die Objektsteuerungen senden den Zustand ihrer Elemente bei jeder Änderung und nach jedem
 //! Verbindungsaufbau vollständig.
 
+pub mod net;
 pub mod sci;
 
 use std::collections::{HashMap, VecDeque};
@@ -100,7 +101,7 @@ impl Link {
 
 /// Feldelement.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-enum Element {
+pub(crate) enum Element {
     Point(PointId),
     Signal(SignalId),
     Tvd(TvdId),
@@ -108,7 +109,72 @@ enum Element {
 }
 
 /// Angebundene Elemente einer Objektsteuerung mit ihren SCI-Kennungen.
-type Elements = Vec<(String, Element)>;
+pub(crate) type Elements = Vec<(String, Element)>;
+
+/// Objektsteuerung eines Netzes: je Elementart eine.
+pub(crate) struct OcLayout {
+    pub(crate) name: String,
+    pub(crate) protocol: Protocol,
+    pub(crate) elements: Elements,
+    /// RaSTA-Kennung.
+    pub(crate) id: u32,
+}
+
+/// Objektsteuerungen eines Netzes: je Elementart eine (ohne Elemente: keine).
+///
+/// # Errors
+/// Beschreibung, wenn ein Elementname keine gültige SCI-Kennung ist (höchstens 20 Byte
+/// UTF-8 ohne `_`, das als Füllzeichen dient).
+pub(crate) fn layout(net: &railit_topology::Topology) -> Result<Vec<OcLayout>, String> {
+    let groups: [(&str, Protocol, Elements); 4] = [
+        (
+            "OC-Weichen",
+            Protocol::P,
+            net.points()
+                .map(|(id, p)| (p.name.clone(), Element::Point(id)))
+                .collect(),
+        ),
+        (
+            "OC-Signale",
+            Protocol::Ls,
+            net.signals()
+                .map(|(id, s)| (s.name.clone(), Element::Signal(id)))
+                .collect(),
+        ),
+        (
+            "OC-Gleisfrei",
+            Protocol::Tds,
+            net.tvds()
+                .map(|(id, t)| (t.name.clone(), Element::Tvd(id)))
+                .collect(),
+        ),
+        (
+            "OC-BUe",
+            Protocol::Lx,
+            net.level_crossings()
+                .map(|(id, l)| (l.name.clone(), Element::Lx(id)))
+                .collect(),
+        ),
+    ];
+    let mut out = Vec::new();
+    for (i, (name, protocol, elements)) in groups.into_iter().enumerate() {
+        if elements.is_empty() {
+            continue;
+        }
+        for (n, _) in &elements {
+            if n.len() > sci::ID_LEN || n.contains('_') {
+                return Err(format!("„{n}“ ist keine gültige SCI-Kennung"));
+            }
+        }
+        out.push(OcLayout {
+            name: name.to_string(),
+            protocol,
+            elements,
+            id: 0x0B00_0000 + u32::try_from(i).unwrap_or(0) + 1,
+        });
+    }
+    Ok(out)
+}
 
 /// Objektsteuerung mit ihrer Verbindung zum Stellwerk.
 struct ObjectController {
@@ -155,7 +221,7 @@ pub struct EulynxField {
     now: u64,
 }
 
-fn status_of(sim: &Simulator, e: Element) -> Option<Message> {
+pub(crate) fn status_of(sim: &Simulator, e: Element) -> Option<Message> {
     Some(match e {
         Element::Point(p) => Message::PointPosition(sim.point_report(p)?),
         Element::Signal(s) => Message::SignalStatus(sim.signal_report(s)?),
@@ -164,7 +230,7 @@ fn status_of(sim: &Simulator, e: Element) -> Option<Message> {
     })
 }
 
-fn input_of(e: Element, m: Message) -> Option<Input> {
+pub(crate) fn input_of(e: Element, m: Message) -> Option<Input> {
     Some(match (e, m) {
         (Element::Point(point), Message::PointPosition(report)) => Input::Point { point, report },
         (Element::Signal(signal), Message::SignalStatus(report)) => {
@@ -176,7 +242,7 @@ fn input_of(e: Element, m: Message) -> Option<Input> {
     })
 }
 
-fn command_of(e: Element, m: Message) -> Option<Command> {
+pub(crate) fn command_of(e: Element, m: Message) -> Option<Command> {
     Some(match (e, m) {
         (Element::Point(point), Message::MovePoint(position)) => {
             Command::MovePoint { point, position }
@@ -196,7 +262,24 @@ fn command_of(e: Element, m: Message) -> Option<Command> {
     })
 }
 
-fn rasta_now(now: u64) -> u32 {
+/// Stellbefehl als Element und SCI-Nachricht (Grenzmeldungen gehen nicht ans Feld).
+pub(crate) fn message_of(cmd: Command) -> Option<(Element, Message)> {
+    Some(match cmd {
+        Command::MovePoint { point, position } => {
+            (Element::Point(point), Message::MovePoint(position))
+        }
+        Command::SetSignal { signal, aspect } => (
+            Element::Signal(signal),
+            Message::IndicateAspect(aspect == Aspect::Proceed),
+        ),
+        Command::SetSubstitute { signal, on } => (Element::Signal(signal), Message::Substitute(on)),
+        Command::SetLevelCrossing { lx, close } => (Element::Lx(lx), Message::LxCommand(close)),
+        Command::ResetTvd(tvd) => (Element::Tvd(tvd), Message::ResetTvps),
+        Command::Border { .. } => return None,
+    })
+}
+
+pub(crate) fn rasta_now(now: u64) -> u32 {
     u32::try_from(now % (1 << 32)).unwrap_or(0)
 }
 
@@ -207,56 +290,16 @@ impl EulynxField {
     /// Beschreibung, wenn ein Elementname keine gültige SCI-Kennung ist (höchstens 20 Byte
     /// UTF-8 ohne `_`, das als Füllzeichen dient).
     pub fn new(sim: Simulator) -> Result<Self, String> {
-        let net = sim.topology();
-        let groups: [(&str, Protocol, Elements); 4] = [
-            (
-                "OC-Weichen",
-                Protocol::P,
-                net.points()
-                    .map(|(id, p)| (p.name.clone(), Element::Point(id)))
-                    .collect(),
-            ),
-            (
-                "OC-Signale",
-                Protocol::Ls,
-                net.signals()
-                    .map(|(id, s)| (s.name.clone(), Element::Signal(id)))
-                    .collect(),
-            ),
-            (
-                "OC-Gleisfrei",
-                Protocol::Tds,
-                net.tvds()
-                    .map(|(id, t)| (t.name.clone(), Element::Tvd(id)))
-                    .collect(),
-            ),
-            (
-                "OC-BUe",
-                Protocol::Lx,
-                net.level_crossings()
-                    .map(|(id, l)| (l.name.clone(), Element::Lx(id)))
-                    .collect(),
-            ),
-        ];
         let mut controllers = Vec::new();
-        for (i, (name, protocol, elements)) in groups.into_iter().enumerate() {
-            if elements.is_empty() {
-                continue;
-            }
-            for (n, _) in &elements {
-                if n.len() > sci::ID_LEN || n.contains('_') {
-                    return Err(format!("„{n}“ ist keine gültige SCI-Kennung"));
-                }
-            }
-            let oc_id = 0x0B00_0000 + u32::try_from(i).unwrap_or(0) + 1;
-            let mut oc_cfg = Config::new(oc_id, RASTA_IXL, Role::Server);
+        for oc in layout(sim.topology())? {
+            let mut oc_cfg = Config::new(oc.id, RASTA_IXL, Role::Server);
             oc_cfg.initial_sn = 0x1000;
-            let seed = u64::from(oc_id);
+            let seed = u64::from(oc.id);
             controllers.push(ObjectController {
-                name: name.to_string(),
-                protocol,
-                elements,
-                ixl: Connection::new(Config::new(RASTA_IXL, oc_id, Role::Client)),
+                name: oc.name,
+                protocol: oc.protocol,
+                elements: oc.elements,
+                ixl: Connection::new(Config::new(RASTA_IXL, oc.id, Role::Client)),
                 oc: Connection::new(oc_cfg),
                 down: Link::new(seed.wrapping_mul(31)),
                 up: Link::new(seed.wrapping_mul(17)),
@@ -417,22 +460,8 @@ impl EulynxField {
     pub fn apply(&mut self, commands: &[Command]) {
         let t = rasta_now(self.now);
         for cmd in commands {
-            let (element, message) = match *cmd {
-                Command::MovePoint { point, position } => {
-                    (Element::Point(point), Message::MovePoint(position))
-                }
-                Command::SetSignal { signal, aspect } => (
-                    Element::Signal(signal),
-                    Message::IndicateAspect(aspect == Aspect::Proceed),
-                ),
-                Command::SetSubstitute { signal, on } => {
-                    (Element::Signal(signal), Message::Substitute(on))
-                }
-                Command::SetLevelCrossing { lx, close } => {
-                    (Element::Lx(lx), Message::LxCommand(close))
-                }
-                Command::ResetTvd(tvd) => (Element::Tvd(tvd), Message::ResetTvps),
-                Command::Border { .. } => continue,
+            let Some((element, message)) = message_of(*cmd) else {
+                continue;
             };
             let Some(c) = self
                 .controllers

@@ -7,12 +7,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use railit_kernel::{Request, RequestId};
+use railit_runtime::SimulatedField;
 use railit_runtime::railit_adapters::{LinkFaults, LinkStatus};
 use railit_runtime::railit_safety::SafetyEvent;
 use railit_runtime::{Addressed, AreaSafetyEvent, NamedEvent, Runtime, Snapshot};
-use railit_runtime::{DynField, SimulatedField};
 use railit_sim::{Fault, SimEvent, TrainInfo, TrainSpec};
 
+use crate::field::{REMOTE, ServiceField};
 use crate::metrics::Counters;
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -130,7 +131,7 @@ fn event_json(time_ms: u64, area: Option<&str>, mut value: Value) -> Arc<str> {
 
 /// Zustand der Engine zwischen den Zyklen.
 struct Engine {
-    rt: Runtime<DynField>,
+    rt: Runtime<ServiceField>,
     ch: Channels,
     pending: Vec<Addressed>,
     waiting: HashMap<u64, oneshot::Sender<Answer>>,
@@ -218,7 +219,7 @@ impl Engine {
             }
             let _ = self.ch.events.send(event_json(time_ms, None, value));
         }
-        for e in self.rt.field_mut().simulator_mut().take_events() {
+        for e in self.rt.field_mut().take_sim_events() {
             if matches!(
                 e,
                 SimEvent::TrainDerailed { .. }
@@ -333,7 +334,7 @@ impl Engine {
 }
 
 /// Führt die Engine aus, bis alle Sender geschlossen sind.
-pub(crate) async fn run(rt: Runtime<DynField>, ch: Channels, period: Duration) {
+pub(crate) async fn run(rt: Runtime<ServiceField>, ch: Channels, period: Duration) {
     let mut interval = tokio::time::interval(period);
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut engine = Engine {
@@ -360,7 +361,7 @@ pub(crate) async fn run(rt: Runtime<DynField>, ch: Channels, period: Duration) {
 }
 
 /// Führt einen Befehl an die Betriebsführung aus.
-fn ops_command(rt: &mut Runtime<DynField>, command: OpsCommand) -> Result<(), String> {
+fn ops_command(rt: &mut Runtime<ServiceField>, command: OpsCommand) -> Result<(), String> {
     let ops = rt.ops_mut().ok_or("Betriebsführung nicht eingeschaltet")?;
     match command {
         OpsCommand::Describe { train, signal } => ops.describe(&train, &signal),
@@ -380,44 +381,52 @@ fn ops_command(rt: &mut Runtime<DynField>, command: OpsCommand) -> Result<(), St
 }
 
 /// Führt einen Simulationsbefehl aus. Neue Züge erhalten ihre Zugnummer am Signal.
-fn sim_command(rt: &mut Runtime<DynField>, command: SimCommand) -> SimReply {
+fn sim_command(rt: &mut Runtime<ServiceField>, command: SimCommand) -> SimReply {
+    if let SimCommand::Links = command {
+        return SimReply::Links(rt.field().links());
+    }
+    if let SimCommand::AddTrain(spec) = command {
+        return add_train(rt, spec);
+    }
+    let Some(field) = rt.field_mut().local_mut() else {
+        return SimReply::Error(REMOTE.into());
+    };
     match command {
-        SimCommand::AddTrain(spec) => add_train(rt, spec),
-        SimCommand::Link(controller, faults) => {
-            match rt.field_mut().set_link_faults(&controller, faults) {
-                Ok(()) => SimReply::Done,
-                Err(e) => SimReply::Error(e),
-            }
-        }
-        SimCommand::Links => SimReply::Links(rt.field().links()),
+        SimCommand::Link(controller, faults) => match field.set_link_faults(&controller, faults) {
+            Ok(()) => SimReply::Done,
+            Err(e) => SimReply::Error(e),
+        },
         SimCommand::RemoveTrain(name) => {
-            if rt.field_mut().simulator_mut().remove_train(&name) {
+            if field.simulator_mut().remove_train(&name) {
                 SimReply::Done
             } else {
                 SimReply::Error(format!("Zug „{name}“ nicht gefunden"))
             }
         }
-        SimCommand::Trains => SimReply::Trains(rt.field().simulator().trains()),
+        SimCommand::Trains => SimReply::Trains(field.simulator().trains()),
         SimCommand::Fault(fault, true) => {
-            rt.field_mut().simulator_mut().inject(fault);
+            field.simulator_mut().inject(fault);
             SimReply::Done
         }
         SimCommand::Fault(fault, false) => {
-            rt.field_mut().simulator_mut().clear(fault);
+            field.simulator_mut().clear(fault);
             SimReply::Done
         }
+        SimCommand::AddTrain(_) | SimCommand::Links => SimReply::Done,
     }
 }
 
-fn add_train(rt: &mut Runtime<DynField>, spec: TrainSpec) -> SimReply {
+fn add_train(rt: &mut Runtime<ServiceField>, spec: TrainSpec) -> SimReply {
     let name = spec.name.clone();
-    let signal = rt
-        .field()
+    let Some(field) = rt.field_mut().local_mut() else {
+        return SimReply::Error(REMOTE.into());
+    };
+    let signal = field
         .simulator()
         .topology()
         .signal(spec.signal)
         .map(|s| s.name.clone());
-    if let Err(e) = rt.field_mut().simulator_mut().add_train(spec) {
+    if let Err(e) = field.simulator_mut().add_train(spec) {
         return SimReply::Error(e.to_string());
     }
     if let (Some(ops), Some(signal)) = (rt.ops_mut(), signal)

@@ -23,6 +23,7 @@
 mod api;
 mod auth;
 mod engine;
+mod field;
 mod grpc;
 mod metrics;
 mod review;
@@ -39,6 +40,7 @@ use std::sync::Arc;
 
 use auth::{AuthMode, Users};
 use clap::Parser;
+use field::{FieldControl, ServiceField};
 use railit_plan::{PlanView, VerifyingKey};
 use railit_rules::GenericRules;
 use railit_runtime::DynField;
@@ -107,9 +109,23 @@ struct Args {
     /// Abstand der Siegel im Journal (Zyklen).
     #[arg(long, default_value_t = 600)]
     seal_every: u64,
-    /// Anbindung der (simulierten) Feldebene: direkt oder über EULYNX SCI und RaSTA.
+    /// Anbindung der (simulierten) Feldebene: direkt, über EULYNX SCI und RaSTA oder an einen
+    /// Feldrechner (`railit-field`) über RaSTA/UDP.
     #[arg(long, value_enum, default_value_t = FieldArg::Direct)]
     field: FieldArg,
+    /// Adresse des Feldrechners (UDP, mit `--field remote`).
+    #[arg(long, value_name = "ADRESSE", required_if_eq("field", "remote"))]
+    field_addr: Option<SocketAddr>,
+    /// RaSTA-Kennung dieses Stellwerks beim Feldrechner (hexadezimal); Vorgabe: Hauptrechner
+    /// 0A000001, mit `--standby` Bereitschaftsrechner 0A000002.
+    #[arg(long, value_name = "ID", value_parser = parse_id)]
+    field_id: Option<u32>,
+    /// Steuerung des Feldrechners (HTTP) für Simulationsbefehle, z. B. `http://127.0.0.1:7901`.
+    #[arg(long, value_name = "URL")]
+    field_control: Option<String>,
+    /// Zugangstoken der Steuerung des Feldrechners (auch über `RAILIT_FIELD_TOKEN`).
+    #[arg(long, env = "RAILIT_FIELD_TOKEN", hide_env_values = true)]
+    field_token: Option<String>,
     /// Kanäle je Stellbereich: 1 (ohne Vergleich), 2 (2-von-2) oder 3 (2-von-3).
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=3))]
     channels: u8,
@@ -160,6 +176,12 @@ enum FieldArg {
     Direct,
     /// Objektsteuerungen über EULYNX SCI und RaSTA vor dem Simulator.
     Eulynx,
+    /// Feldrechner (`railit-field`) über RaSTA/UDP; die Simulation läuft dort.
+    Remote,
+}
+
+fn parse_id(text: &str) -> Result<u32, String> {
+    u32::from_str_radix(text.trim_start_matches("0x"), 16).map_err(|e| e.to_string())
 }
 
 fn fail(msg: &str) -> ExitCode {
@@ -187,7 +209,7 @@ fn read_plan(path: &Path, key: Option<&VerifyingKey>) -> Result<PlanView<'static
 ///
 /// Hat das Netz Stellbereiche, ist `--plan` ein Verzeichnis mit `<Bereich>.rplan` je
 /// Stellbereich (`railit plan compile --out <Verzeichnis>`).
-fn load(args: &Args) -> Result<(Topology, Runtime<DynField>), String> {
+fn load(args: &Args) -> Result<(Topology, Runtime<ServiceField>), String> {
     let source = std::fs::read_to_string(&args.network)
         .map_err(|e| format!("{}: {e}", args.network.display()))?;
     let net = railit_import::parse(&args.network.to_string_lossy(), &source)
@@ -206,9 +228,24 @@ fn load(args: &Args) -> Result<(Topology, Runtime<DynField>), String> {
     }
     let cycle = railit_types::Duration::from_millis(args.cycle_ms.max(1));
     let sim = Simulator::new(net.clone(), SimConfig::default());
-    let sim: DynField = match args.field {
-        FieldArg::Direct => Box::new(sim),
-        FieldArg::Eulynx => Box::new(EulynxField::new(sim)?),
+    let sim = match (args.field, args.field_addr) {
+        (FieldArg::Direct, _) => ServiceField::Local(Box::new(sim) as DynField),
+        (FieldArg::Eulynx, _) => ServiceField::Local(Box::new(EulynxField::new(sim)?)),
+        (FieldArg::Remote, Some(addr)) => {
+            if args.speed != 1 {
+                return Err(
+                    "der Feldrechner läuft in Echtzeit: --field remote nur mit --speed 1".into(),
+                );
+            }
+            let id = args.field_id.unwrap_or(if args.standby.is_some() {
+                railit_runtime::railit_adapters::net::STANDBY_ID
+            } else {
+                railit_runtime::railit_adapters::net::PRIMARY_ID
+            });
+            tracing::info!(%addr, id = format!("{id:08X}"), "Feld über den Feldrechner");
+            ServiceField::remote(&net, addr, id)?
+        }
+        (FieldArg::Remote, None) => return Err("--field remote verlangt --field-addr".into()),
     };
     let rt = if net.areas().len() == 0 {
         let plan = read_plan(&args.plan, key.as_ref())?;
@@ -275,7 +312,7 @@ fn load(args: &Args) -> Result<(Topology, Runtime<DynField>), String> {
 }
 
 /// Bindet Stellbereiche an Knoten des sicheren Rechners an (`--node`).
-fn attach_nodes(rt: &mut Runtime<DynField>, args: &Args) -> Result<(), String> {
+fn attach_nodes(rt: &mut Runtime<ServiceField>, args: &Args) -> Result<(), String> {
     if args.nodes.is_empty() {
         return Ok(());
     }
@@ -322,7 +359,7 @@ fn attach_nodes(rt: &mut Runtime<DynField>, args: &Args) -> Result<(), String> {
 /// Startet die Journale: eine Datei bei einem Stellbereich, sonst ein Verzeichnis mit
 /// `<Bereich>.journal` je Stellbereich.
 fn start_journals(
-    rt: &mut Runtime<DynField>,
+    rt: &mut Runtime<ServiceField>,
     path: &Path,
     every: u64,
     seal: Option<(&railit_plan::SigningKey, u64)>,
@@ -351,10 +388,17 @@ fn start_journals(
 }
 
 /// Name und Plan je Stellbereich.
-fn area_plans(rt: &Runtime<DynField>) -> Vec<(String, railit_plan::PlanView<'static>)> {
+fn area_plans(rt: &Runtime<ServiceField>) -> Vec<(String, railit_plan::PlanView<'static>)> {
     (0..rt.area_count())
         .filter_map(|i| Some((rt.area_name(i)?.to_string(), *rt.plan_of(i)?)))
         .collect()
+}
+
+/// Steuerung des Feldrechners (`--field-control`).
+fn field_control(args: &Args) -> Option<FieldControl> {
+    args.field_control
+        .as_deref()
+        .map(|url| FieldControl::new(url, args.field_token.clone()))
 }
 
 /// Auditprotokoll (`--audit`), gesiegelt mit `--seal-key`.
@@ -376,7 +420,7 @@ fn open_audit(args: &Args) -> Result<Option<Arc<service::Audit>>, String> {
 async fn serve(
     args: Args,
     net: Topology,
-    rt: Runtime<DynField>,
+    rt: Runtime<ServiceField>,
     security: Security,
 ) -> Result<(), String> {
     let period = std::time::Duration::from_micros(
@@ -433,7 +477,8 @@ async fn serve(
             events_tx,
             audit,
             operators_from_users,
-        ),
+        )
+        .with_field_control(field_control(&args)),
         auth: Arc::new(security.auth),
         metrics: metrics_rx,
         journals,
@@ -545,6 +590,18 @@ fn main() -> ExitCode {
         Ok(v) => v,
         Err(e) => return fail(&e),
     };
+    if let Some(url) = &args.field_control {
+        match FieldControl::new(url, args.field_token.clone()).network() {
+            Ok(name) if name == net.name() => {}
+            Ok(name) => {
+                return fail(&format!(
+                    "Feldrechner simuliert „{name}“, nicht „{}“",
+                    net.name()
+                ));
+            }
+            Err(e) => return fail(&e),
+        }
+    }
     let seal_key = match args
         .seal_key
         .as_deref()

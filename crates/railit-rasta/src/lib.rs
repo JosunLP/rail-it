@@ -73,6 +73,14 @@ pub const SEND_BUFFER: usize = 16;
 /// Länge der Sendewarteschlange.
 pub const QUEUE: usize = 32;
 
+/// Empfänger- und Absenderkennung einer PDU, ungeprüft: zum Verteilen eingehender PDUs auf
+/// Verbindungen. Ob die PDU echt ist, prüft erst [`Connection::receive`].
+pub fn addresses(pdu: &[u8]) -> Option<(u32, u32)> {
+    let receiver: [u8; 4] = pdu.get(4..8)?.try_into().ok()?;
+    let sender: [u8; 4] = pdu.get(8..12)?.try_into().ok()?;
+    Some((u32::from_le_bytes(receiver), u32::from_le_bytes(sender)))
+}
+
 /// Nachrichtentypen.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u16)]

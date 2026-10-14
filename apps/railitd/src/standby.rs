@@ -95,8 +95,8 @@ impl Shared {
     }
 }
 
-/// Stellbereich als Wert eines Abfrageparameters.
-fn encode(text: &str) -> String {
+/// Text als Wert eines Abfrageparameters oder Pfadteil.
+pub(crate) fn encode(text: &str) -> String {
     text.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {

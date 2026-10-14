@@ -17,5 +17,8 @@ railit-sim = { workspace = true }
 railit-rasta = { workspace = true }
 serde = { workspace = true, features = ["std"] }
 
+[dev-dependencies]
+railit-import = { workspace = true }
+
 [lints]
 workspace = true

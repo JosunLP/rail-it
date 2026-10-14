@@ -25,6 +25,7 @@ members = [
     "apps/railit",
     "apps/railitd",
     "apps/railit-node",
+    "apps/railit-field",
     "xtask",
 ]
 

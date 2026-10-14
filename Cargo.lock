@@ -1469,6 +1469,7 @@ dependencies = [
 name = "railit-adapters"
 version = "0.1.0"
 dependencies = [
+ "railit-import",
  "railit-kernel",
  "railit-rasta",
  "railit-sim",
@@ -1506,6 +1507,25 @@ dependencies = [
  "railit-rules",
  "railit-types",
  "serde",
+]
+
+[[package]]
+name = "railit-field"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "clap",
+ "railit-adapters",
+ "railit-import",
+ "railit-sim",
+ "railit-topology",
+ "railit-types",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ureq",
 ]
 
 [[package]]
