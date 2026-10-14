@@ -1,6 +1,6 @@
 # Sicherheitsnachweis (Safety Case)
 
-> Stand: Phase 7 · Gliederung nach EN 50129, Abschnitt 5 · lebendes Dokument
+> Stand: Phase 10 · Gliederung nach EN 50129, Abschnitt 5 · lebendes Dokument
 >
 > **Geltungsbereich:** rail-it als **Kandidat für den Laborbetrieb** – Simulation, Ausbildung,
 > Prüfstände. rail-it ist **nicht zugelassen** für den realen Bahnbetrieb. Dieser Nachweis
@@ -16,10 +16,11 @@
 | Beschreibung | [Konzept](../KONZEPT.md), Abschnitte 1 bis 15 |
 | Sicherheitsrelevante Teile (SIL 4 angestrebt) | `railit-types`, `railit-plan`, `railit-rules`, `railit-kernel`, `railit-movement`, `railit-safety`, `railit-rasta`, `railit-embedded` – alle `no_std`, ohne `unsafe`, ohne Panikpfade |
 | Nicht sicherheitsrelevant (SIL 0) | Import, Projektierungswerkzeug (abgesichert durch unabhängige Gegenprüfung und Signatur), Simulator, Betriebsführung, Dienst, CLI, Bedienplatz und Spurplan-Geometrie |
-| Einsatzvarianten | 1. alles auf dem Server (`railitd` mit 1, 2 oder 3 Kanälen je Stellbereich); 2. verteilt: Kern und Sicherheitsschicht auf einem sicheren Rechner (`railit-embedded`; auf dem Server als `railit-node`, Ziel Cortex-R), angebunden über RaSTA mit `railitd --node` |
+| Einsatzvarianten | 1. alles auf dem Server (`railitd` mit 1, 2 oder 3 Kanälen je Stellbereich); 2. verteilt: Kern und Sicherheitsschicht auf einem sicheren Rechner (`railit-embedded`; auf dem Server als `railit-node`, Ziel Cortex-R), angebunden über RaSTA mit `railitd --node`; 3. Haupt- und Bereitschaftsrechner (`railitd --standby … --takeover-after-ms`) an einem Feldrechner mit Umschalter (`railit-field`), Feld über RaSTA/UDP |
+| Sicherheitsrelevant außerhalb des Kerns | Umschalter des Feldrechners (`railit_adapters::net`): Er entscheidet, welches Stellwerk stellt. Heute Teil des simulierten Feldrechners; für einen realen Einsatz in sicherer Feldtechnik umzusetzen (Teil 7) |
 | Schnittstellen | Plan-Image (signiert), Feld über EULYNX SCI-P/-LS/-TDS/-LX auf RaSTA, Nachbarstellwerke über Grenzmeldungen, ETCS-Fahrzeuge über die RBC-Funktion, Bedienung über REST/gRPC und den Bedienplatz (`/ui/`) |
-| Gefährdungen | [Gefährdungsliste](hazard-log.md), H-001 bis H-016 |
-| Anforderungen | [Anforderungen](../requirements/README.md), 101 Anforderungen mit stabilen IDs |
+| Gefährdungen | [Gefährdungsliste](hazard-log.md), H-001 bis H-017 |
+| Anforderungen | [Anforderungen](../requirements/README.md), 120 Anforderungen mit stabilen IDs |
 
 ## Teil 2 – Qualitätsmanagementbericht
 
@@ -105,13 +106,13 @@ Kontext: nur Simulation, Ausbildung, Prüfstände (Teil 1); Anwendungsbedingunge
 | Prüfcode der Anzeige: Der bestätigende Bedienplatz erkennt eine verfälschte Anzeige, der Dienst einen abweichenden Code | REQ-UI-003, `check_code_vectors`, E2E-Tests des Bedienplatzes |
 | Veraltete Anzeige wird erkannt und sperrt die Bedienung | REQ-UI-002 |
 | Spurplan aus der Topologie berechnet, nicht von Hand gezeichnet | REQ-UI-001 |
+| Rücksetzen der Sicherheitsschicht nur durch die Instandhaltung, protokolliert | REQ-SAF-004 |
 
 Der Bedienplatz selbst bleibt SIL 0. Das Argument stützt sich nicht auf seine Richtigkeit:
 Eine falsche Anzeige kann den Bediener täuschen, aber der Kern führt eine Hilfshandlung nur
 aus, wenn die Bestätigung genau die angeforderte wiederholt, und jede Regelbedienung prüft er
 ohnehin selbst. Die Anzeigeüberwachung und der Prüfcode verringern die Wahrscheinlichkeit
 einer Fehlbedienung, sie sind keine Sicherheitsfunktion.
-| Rücksetzen der Sicherheitsschicht nur durch die Instandhaltung, protokolliert | REQ-SAF-004 |
 
 ### G6 – Jeder Hergang ist nachvollziehbar
 
@@ -122,6 +123,26 @@ einer Fehlbedienung, sie sind keine Sicherheitsfunktion.
 | Eingaben als Änderung, Zustandsabzüge und paralleles Replay mit Gleichheitsprüfung an jeder Abschnittsgrenze; ein gefälschter Abzug fällt auf | REQ-JRN-005/006, `forged_snapshot_is_detected_by_replay` |
 | Journal auch im Knotenbetrieb: geprüfte Zyklen des Spiegels und Zustandsübernahmen; alle Szenarien in allen Betriebsarten mitgeschrieben und abgespielt | REQ-JRN-007, `node_journal_replays_across_resyncs` |
 | Mitlesen: Ein zweiter Rechner prüft und rechnet das Journal laufend nach und zeigt den Zustand ohne Bedienung an; Rückschau am Bedienplatz ohne Bedienung und ohne verfälschte Signalfarben | REQ-JRN-009, REQ-SVC-010/011, REQ-UI-005, `standby_follows_the_primary` |
+
+### G7 – Der Ausfall des Stellwerksrechners wird ohne unsichere Lage überbrückt
+
+| Strategie | Belege |
+|-----------|--------|
+| Ausgaben (Stellbefehle, Grenzmeldungen, ETCS-Fahrerlaubnisse) erst nach Quittung des Bereitschaftsrechners; Quittung mit Zyklus und Hash; Zusage, die Sperre eine bestimmte Zeit zu halten | REQ-SVC-012, `outputs_wait_for_all_areas`, `lapse_releases_everything_and_rearms_after_catching_up` |
+| Nur ein Stellwerk stellt: Umschalter im Feldrechner, Wechsel erst nach Abbau aller Verbindungen und Umschaltzeit, nur mit echtem Verbindungsaufbau; ein zurückkehrender Hauptrechner bleibt ausgesperrt | REQ-SVC-013, `second_interlocking_is_rejected_while_the_leader_lives`, `standby_leads_after_the_leader_is_lost` |
+| Übernahme mit dem mitgelesenen Zustand nur innerhalb der Zusage, sonst Neustart; Zustand restriktiv angeglichen (Verschlüsse bleiben, Fahrt fällt auf Halt), Invarianten geprüft | REQ-SVC-014, REQ-IXL-025, `kernel_never_becomes_unsafe` (mit Übernahme als Aktion) |
+| Ausfall an zufälliger Stelle mit Zügen, verspätetem Mitlesen und Bedienung danach: keine Entgleisung, kein Aufschneiden, kein offener Bahnübergang, kein Haltfall-Überfahren | `takeover_in_beispielstadt_is_safe`, `takeover_in_nordbahn_is_safe` (je 300 Fälle lokal) |
+| Gegenprobe: Ohne Sperre öffnet ein Bereitschaftsrechner mit Rückstand einen Bahnübergang vor einem Zug | `stale_takeover_without_gate_opens_the_crossing_before_a_train` |
+| Drei Prozesse (Feldrechner, Haupt- und Bereitschaftsrechner), Ausfall des Hauptrechners: warme Übernahme mit Zusage, Neustart ohne | `standby_takes_over_with_the_followed_state`, `standby_restarts_without_a_promise` |
+
+Das Argument stützt sich auf eine Zeitbedingung: Der Bereitschaftsrechner übernimmt den
+mitgelesenen Zustand nur, wenn er die Führung am Feldrechner erhalten hat, bevor die Zusage
+des Hauptrechners abläuft. Bis dahin hat der Hauptrechner nichts freigegeben, was der
+Bereitschaftsrechner nicht kennt, und danach erreicht er das Feld nicht mehr. Die Zusage wird
+mit der Uhr des Bereitschaftsrechners ab dem Absenden der Quittung gerechnet und um zehn
+Prozent und 200 ms gekürzt. Sie ist nur sinnvoll, wenn die Frist (`--standby-gate-ms`) die
+Erkennung (`--takeover-after-ms`), `t_max` von RaSTA und die Umschaltzeit deutlich übersteigt
+(Anwendungsbedingung 9).
 
 ## Teil 5 – Verwandte Sicherheitsnachweise
 
@@ -153,6 +174,13 @@ rail-it ist als **generisches Produkt** angelegt. Für einen Einsatz sind zusät
 8. Hilfshandlungen am Bedienplatz bestätigen; wer bestätigt, liest die Hilfshandlung aus der
    eigenen Anzeige und gibt das Element selbst ein, ohne es vom anfordernden Bediener zu
    übernehmen. Zeigt der Bedienplatz „Anzeige gestört“, wird nicht bedient.
+9. Bereitschaftsrechner nur mit Feldrechner und Umschalter (`--field remote`); genau ein
+   Bereitschaftsrechner mit eigenem Zugang der Rolle `bereitschaft`. Die Frist der
+   Ausgabesperre (`--standby-gate-ms`) muss die Summe aus Erkennungszeit
+   (`--takeover-after-ms`), `t_max` von RaSTA und Umschaltzeit des Feldrechners mit Reserve
+   übersteigen (Vorgabe im Test: 8 s gegenüber 0,5 s + 1,8 s + 0,5 s). Nach einer Übernahme
+   sind Fahrstraßen mit Fahrt neu einzustellen; nach einem Neustart gelten alle Elemente als
+   unbekannt.
 
 ## Teil 7 – Offene Punkte bis zu einer Zulassung
 
@@ -163,7 +191,7 @@ rail-it ist als **generisches Produkt** angelegt. Für einen Einsatz sind zusät
 | Qualifizierte Toolchain (z. B. Ferrocene) für die SIL-4-Crates | Konzept 16.2 |
 | Hardware des sicheren Rechners festlegen; Kanäle auf getrennter Hardware bzw. im Lockstep, Speicherprüfungen | H-015, Konzept 19 |
 | Knoten auf der Zielhardware | REQ-EMB |
-| Übernahme des Betriebs durch den Bereitschaftsrechner (Übergabe der Feldanbindung, Ausfallerkennung des Hauptrechners) | REQ-SVC-011, H-015 |
+| Zeitbedingungen der Übernahme auf Zielhardware nachweisen (Gangunterschied der Uhren, Laufzeiten); Umschalter in realer Feldtechnik; Übernahme der Betriebsführung | REQ-SVC-012 … 014, H-017 |
 | Kani-Nachweise für den gesamten Kernzyklus (heute Eigenschaftstests und Fuzzing) | H-007 |
 | Sicherheitscode von RaSTA nach Zulassungsanforderung prüfen | H-014 |
 | Regelwerke `de-estw` und `etcs` mit den Regeln eines Betreibers | Teil 5 |

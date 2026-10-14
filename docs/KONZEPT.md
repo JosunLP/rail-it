@@ -1,6 +1,6 @@
 # rail-it – Konzept einer Engine für Netz- und Stellwerkmanagement
 
-> Status: **v0.11** (Phasen 0 bis 9 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
+> Status: **v0.12** (Phasen 0 bis 10 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
 >
 > v0.2 arbeitet die Grundsatzentscheidungen aus Abschnitt 2 ein: vollständiger Netz- und
 > Bahnbetrieb, deutsches ESTW **und** europäisches System (ETCS/EULYNX), Server **und**
@@ -527,6 +527,14 @@ schalten diese Anbindung ein. SCI-ILS und SCI-RBC stehen noch aus; das RBC ist b
 in-process angebunden. Der Sicherheitscode (MD4 mit vereinbarten Anfangswerten) entspricht der
 RaSTA-Norm, ist aber vor einer Zulassung gegen deren Anforderungen zu prüfen (H-014).
 
+**Stand Phase 10:** Die Objektsteuerungen können auch in einem eigenen Prozess laufen, dem
+Feldrechner `railit-field`. Die Stellwerksseite (`FieldClient`, über UDP `UdpField`) und der
+Feldrechner (`FieldServer`) sind wie RaSTA reine Zustandsmaschinen; eingehende PDUs werden
+nach Empfänger- und Absenderkennung auf die Verbindungen verteilt. Vor den
+Objektsteuerungen sitzt der Umschalter, der nur ein Stellwerk stellen lässt (Abschnitt 15,
+Stand Phase 10). `railitd --field remote` bindet einen Feldrechner an; Simulationsbefehle
+gehen an dessen Steuerung.
+
 ---
 
 ## 13. Plattformen: Server und Embedded
@@ -732,7 +740,7 @@ verfälschte Anzeige, Ausfall des Dienstes).
   des Zustands.
 - Optional diversitär (anderes Target, andere Optimierungsstufe).
 - Ein Watchdog überwacht die Zyklus-Deadline.
-- Hot Standby, indem ein zweiter Rechner das Journal mitliest (Phase 9: Bereitschaftsrechner liest mit und zeigt an; Übernahme offen).
+- Hot Standby, indem ein zweiter Rechner das Journal mitliest und bei Ausfall übernimmt (Phase 9: Mitlesen; Phase 10: Übernahme über einen Feldrechner mit Umschalter).
 
 **Stand Phase 5:** `railit-safety` setzt Kanäle, Voter, Watchdog und den sicheren Zustand um
 (REQ-SAF-001 … 005). Jeder Kanal hat seinen eigenen Zustandsspeicher; sein Digest ist ein
@@ -781,9 +789,38 @@ veränderte Zeile, das Siegel zeigt, dass niemand die Datei als Ganzes neu gesch
   ohne Bedienung (REQ-SVC-011). Damit liegt das Journal zugleich außerhalb des
   Stellwerksrechners vor, laufend geprüft.
 
-Offen bleibt die **Übernahme** des Betriebs durch den Bereitschaftsrechner: Sie verlangt die
-Übergabe der Feldanbindung und eine Regel, wann der Bereitschaftsrechner den Hauptrechner
-für ausgefallen hält (Konzept 19).
+**Stand Phase 10 – Übernahme.** Fällt der Hauptrechner aus, übernimmt der
+Bereitschaftsrechner den Betrieb, ohne dass je zwei Rechner stellen oder der übernehmende
+Rechner eine Wirkung des ausgefallenen übersieht:
+
+- **Feldrechner mit Umschalter** (`railit-field`, REQ-COM-008, REQ-SVC-013): Die
+  Objektsteuerungen laufen in einem eigenen Prozess; beide Stellwerksrechner verbinden sich
+  über RaSTA auf UDP. Der Umschalter hört nur das führende Stellwerk; ein anderes führt erst,
+  wenn alle Verbindungen des bisherigen seit der Umschaltzeit abgebaut sind – dann hat die
+  Rückfallebene der Objektsteuerungen die Signale schon auf Halt gestellt. Die Entscheidung,
+  wer stellt, fällt damit an der einzigen Stelle, die beide Rechner gemeinsam haben: am Feld.
+- **Ausgabe erst nach Quittung** (REQ-SVC-012): Der Hauptrechner gibt Stellbefehle,
+  Grenzmeldungen und ETCS-Fahrerlaubnisse eines Zyklus erst frei, wenn der
+  Bereitschaftsrechner die Journalzeilen dieses Zyklus mit Zyklus und Hash quittiert hat, und
+  sagt ihm zu, die Sperre eine bestimmte Zeit zu halten. Bleibt der Bereitschaftsrechner aus,
+  arbeitet der Hauptrechner nach der Frist ohne Sperre weiter (Verfügbarkeit) und sperrt
+  wieder, sobald er aufgeholt hat.
+- **Übernahme** (REQ-SVC-014, REQ-IXL-025): Schweigt der Hauptrechner, holt sich der
+  Bereitschaftsrechner die Führung am Feldrechner. Gelingt das, bevor die Zusage abläuft, hat
+  der Hauptrechner nichts freigegeben, was der Bereitschaftsrechner nicht kennt, und kann das
+  Feld nicht mehr erreichen: Der Bereitschaftsrechner übernimmt den mitgelesenen Zustand,
+  restriktiv angeglichen (Verschlüsse bleiben, Fahrt fällt auf Halt, offene Hilfshandlungen
+  verfallen). Sonst beginnt er wie nach einem Neustart.
+
+Ein Property-Test lässt Haupt- und Bereitschaftsrechner an einem gemeinsamen Feld mit Zügen
+laufen und den Hauptrechner an zufälligen Stellen ausfallen (Beispielstadt und Nordbahn);
+keine der Übernahmen führte zu einer Gefährdung. Er fand nebenbei einen Fehler im Kern, der
+eine Fahrstraße im allerersten Zyklus vor dem Verschließen der Annäherungsabschnitte zuließ.
+Die Gegenprobe zeigt, wofür die Sperre gebraucht wird: Ein Bereitschaftsrechner, dem die
+letzten Zyklen fehlen, öffnet einen Bahnübergang vor einem ausfahrenden Zug.
+
+Offen sind der Nachweis der Zeitbedingungen auf Zielhardware, ein Umschalter in realer
+Feldtechnik (EULYNX sieht keinen vor) und die Übernahme der Betriebsführung (Zugnummern).
 
 **Performance**
 
@@ -892,7 +929,8 @@ Daraus folgen diese Regeln:
 | **6 – UI** | Spurplan-UI als API-Client mit sicherer Anzeige- und Bestätigungskette | Bedienplatz unter `/ui/` mit automatisch berechnetem Spurplan, Anzeigeüberwachung und Prüfcode (Abschnitt 14.3) | ✔ (ergonomische Prüfung mit Bedienern offen) |
 | **7 – Betriebsreife** | Sicherer Rechner im Dienst (Knoten, Spiegel, Zustandsabgleich), robuste RaSTA-Wiederholung, signiertes Journal, Bedienplatz für Netz und Betrieb, Leistungsmessung | Verteilte Einsatzvariante lauffähig (`railit-node`, `railitd --node`), alle Szenarien über Knoten; Journal und Audit gesiegelt; Leistungsziele bei 5000 Elementen in der CI gemessen | ✔ (Zielhardware offen) |
 | **8 – Verfügbarkeit & Diagnose** | Journal auch im Knotenbetrieb, Diagnose aus dem Journal (Zustand zu einem Zeitpunkt, Ereignisse eines Zeitraums), Metriken für den Betrieb | Jeder Betrieb ist lückenlos aufgezeichnet und nachträglich in Sekunden befragbar; Metriken für den Betrieb | ✔ |
-| **9 – Mitlesen & Rückschau** | Mitleser für wachsende Journale, Rückschau im Dienst und im Bedienplatz, Bereitschaftsrechner über den Journalstrom | Ein zweiter Rechner zeigt den Zustand des Hauptrechners laufend geprüft an; jeder Zeitpunkt lässt sich am Bedienplatz zurückschauen | ✔ (Übernahme des Betriebs offen) |
+| **9 – Mitlesen & Rückschau** | Mitleser für wachsende Journale, Rückschau im Dienst und im Bedienplatz, Bereitschaftsrechner über den Journalstrom | Ein zweiter Rechner zeigt den Zustand des Hauptrechners laufend geprüft an; jeder Zeitpunkt lässt sich am Bedienplatz zurückschauen | ✔ |
+| **10 – Übernahme** | Feldrechner mit Umschalter (`railit-field`), Ausgabe erst nach Quittung, Übernahme des mitgelesenen Zustands im Kern und im Dienst | Fällt der Hauptrechner aus, übernimmt der Bereitschaftsrechner den Betrieb – mit dem mitgelesenen Zustand, solange die Zusage des Hauptrechners das deckt | ✔ (Zeitbedingungen auf Zielhardware, Umschalter in realer Feldtechnik offen) |
 
 **Umgesetzte Crates (Stand Phase 7):** `railit-types`, `railit-topology`, `railit-plan`,
 `railit-planning`, `railit-rules`, `railit-kernel`, `railit-safety` (Kanäle, Voter, Watchdog),
@@ -902,7 +940,7 @@ Daraus folgen diese Regeln:
 Disposition), `railit-runtime` (mehrere Stellbereiche, Szenario-Runner,
 Schlüsselverwaltung, redundante Kanäle), `railit-import` (rail-it-TOML, railML 3),
 `railit-fuzz` (Fuzz-Ziele), `railit-layout` (Spurplan) sowie die Anwendungen `railit`,
-`railit-node` (Knoten des sicheren Rechners) und `railitd` (REST, gRPC, TLS/mTLS, Rollen, Feldanbindung über EULYNX, Bedienplatz). Das Regelwerk `de-estw` ist
+`railit-node` (Knoten des sicheren Rechners), `railit-field` (Feldrechner mit Umschalter) und `railitd` (REST, gRPC, TLS/mTLS, Rollen, Feldanbindung über EULYNX, Bedienplatz, Bereitschaftsrechner mit Übernahme). Das Regelwerk `de-estw` ist
 noch das Lehrregelwerk `GenericRules` mit den Zeiten aus Phase 2 (Auflösezeit des
 Durchrutschwegs, Bestätigungsfrist, Leuchtdauer Zs1). Die übrigen Crates aus Abschnitt 5 entstehen in den
 jeweiligen Phasen.

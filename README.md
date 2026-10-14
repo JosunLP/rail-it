@@ -36,7 +36,10 @@ Knoten im Dienst mit Spiegel und Zustandsabgleich (`railit-node`, `railitd --nod
 RaSTA-Wiederholung, gesiegeltes Journal und Auditprotokoll, Bedienplatz für Netz und Betrieb,
 Leistungsziele in der CI gemessen, siehe [Leistung](#leistung)) und Phase 8 (Verfügbarkeit
 und Diagnose: Journal auch im Knotenbetrieb, Zustand und Ereignisse zu jedem Zeitpunkt aus dem
-Journal, Metriken unter `/v1/metrics`) sind umgesetzt.
+Journal, Metriken unter `/v1/metrics`) und Phase 9 (Mitlesen und Rückschau: Bereitschaftsrechner
+liest das Journal laufend geprüft mit, Rückschau am Bedienplatz) und Phase 10 (Übernahme:
+Feldrechner mit Umschalter, Ausgabe erst nach Quittung, Übernahme des Betriebs durch den
+Bereitschaftsrechner, siehe [Übernahme](#übernahme)) sind umgesetzt.
 
 | Crate | Inhalt | |
 |-------|--------|---|
@@ -51,7 +54,7 @@ Journal, Metriken unter `/v1/metrics`) sind umgesetzt.
 | `railit-embedded` | Runtime für den sicheren Rechner (Cortex-R): Knoten mit Kanälen, Binärprotokoll über RaSTA | `no_std`, ohne Allokator |
 | `railit-etcs` | RBC-Funktion für ETCS Level 2: Anmeldung, Fahrerlaubnis über Bereichsgrenzen, Notbremsung | |
 | `railit-rasta` | RaSTA-Sicherheits- und Wiederholschicht nach EN 50159 | `no_std`, ohne Allokator |
-| `railit-adapters` | Feldanbindung über EULYNX SCI-P/-LS/-TDS/-LX und RaSTA zu simulierten Objektsteuerungen | |
+| `railit-adapters` | Feldanbindung über EULYNX SCI-P/-LS/-TDS/-LX und RaSTA zu simulierten Objektsteuerungen, im Dienst oder über UDP zu einem Feldrechner mit Umschalter | |
 | `railit-journal` | Betriebsjournal mit Hashkette, Prüfpunkten, Siegeln, Zustandsabzügen und parallelem Replay; Auditprotokoll | |
 | `railit-sim` | Simulator: Weichen, Signale, Gleisfreimeldung, Bahnübergänge, Züge (auch mit ETCS), Störungen | |
 | `railit-ops` | Zugnummernmeldung, Fahrplan, Zuglenkung, Selbstblock, Disposition | |
@@ -59,6 +62,7 @@ Journal, Metriken unter `/v1/metrics`) sind umgesetzt.
 | `railit-import` | rail-it-TOML, railML 3 (Import und Export) | |
 | `railit-layout` | Spurplan: schematische Geometrie aus der Topologie, SVG-Export | |
 | `railit-fuzz` | Fuzz-Ziele für alle Eingangsschnittstellen (mit `fuzz/` für cargo-fuzz) | |
+| `railit-field` | Feldrechner als eigener Prozess: simulierte Objektsteuerungen über RaSTA/UDP, Umschalter zwischen Haupt- und Bereitschaftsrechner, Steuerung der Simulation | |
 | `railit-node` | Knoten des sicheren Rechners als Serverprogramm: Kern mit Voter und Watchdog, eigener Takt, RaSTA über UDP | |
 | `railitd` | Dienst mit REST/JSON-API, gRPC (`proto/railit/v1`), Ereignisstrom, Rollen, TLS/mTLS, Audit, Bedienplatz unter `/ui/` | |
 | `apps/railitd/ui` | Bedienplatz: Spurplan-UI in TypeScript mit bQuery, gebaut mit Bun | SIL 0, reiner API-Client |
@@ -206,6 +210,30 @@ Ein zweiter Dienst kann als **Bereitschaftsrechner** mitlesen: `railitd … --st
 http://hauptrechner:7070` folgt dem Journal des Hauptrechners, rechnet jede Zeile nach und zeigt
 dessen Zustand am Bedienplatz an – ohne Bedienung. Im Bedienplatz zeigt die **Rückschau** den
 Spurplan zu jedem vergangenen Zeitpunkt.
+
+### Übernahme
+
+Fällt der Hauptrechner aus, übernimmt der Bereitschaftsrechner den Betrieb. Dazu laufen die
+Objektsteuerungen in einem eigenen **Feldrechner**, dessen Umschalter immer nur ein Stellwerk
+stellen lässt:
+
+```sh
+railit-field --network examples/beispielstadt.toml --listen 127.0.0.1:7900 --control 127.0.0.1:7901
+railitd --network … --plan … --listen 127.0.0.1:7070 --field remote --field-addr 127.0.0.1:7900 \
+        --field-control http://127.0.0.1:7901 --journal haupt.journal --standby-gate-ms 8000
+railitd --network … --plan … --listen 127.0.0.1:7071 --field remote --field-addr 127.0.0.1:7900 \
+        --field-control http://127.0.0.1:7901 --journal bereitschaft.journal \
+        --standby http://127.0.0.1:7070 --takeover-after-ms 500
+```
+
+Der Hauptrechner gibt jede Ausgabe erst frei, wenn der Bereitschaftsrechner den Zyklus
+quittiert hat, und sagt ihm zu, die Sperre eine Weile zu halten. Schweigt der Hauptrechner,
+holt sich der Bereitschaftsrechner die Führung am Feldrechner; innerhalb der Zusage übernimmt
+er den mitgelesenen Zustand (Verschlüsse bleiben, Fahrstraßen mit Fahrt stehen auf Halt),
+sonst beginnt er wie nach einem Neustart. Ein Property-Test lässt den Hauptrechner an
+zufälligen Stellen mit fahrenden Zügen ausfallen; die Gegenprobe zeigt, dass ein
+Bereitschaftsrechner ohne Sperre einen Bahnübergang vor einem Zug öffnen würde
+([API](docs/api.md#übernahme), [Sicherheitsnachweis](docs/safety/safety-case.md), G7).
 
 Journal und Auditprotokoll lassen sich mit dem Schlüssel des Stellwerks siegeln:
 `railitd … --journal betrieb.journal --audit audit.log --seal-key stellwerk.key`, geprüft mit

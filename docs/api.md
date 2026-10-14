@@ -31,6 +31,7 @@ cert_cn = "fdl-adorf"      # oder: Common Name des Client-Zertifikats
 | `disponent` | lesen, Betriebsführung (`/v1/ops/…`) |
 | `instandhaltung` | lesen, Simulation (`/v1/sim/…`, Störungen der Feldanbindung), Auditprotokoll, Sicherheitsschicht (`/v1/safety/…`: Prüffehler, Wiederaufnahme, Rücksetzen) |
 | `projektierer` | lesen, Auditprotokoll |
+| `bereitschaft` | lesen, Journal quittieren (`/v1/journal/ack`, Bereitschaftsrechner) |
 | `administration` | alles |
 
 Fehlendes Recht ergibt `403`. Jede Bedienung – auch eine abgewiesene – steht im
@@ -41,7 +42,7 @@ Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`; mit
 
 | Methode | Pfad | Zweck | Antwort |
 |---------|------|-------|---------|
-| GET | `/v1/health` | Lebenszeichen | `{"status":"ok"\|"safe_state", "network", "cycle", "time_ms", "safe_state"}` |
+| GET | `/v1/health` | Lebenszeichen; Rolle (`primary`/`standby`), Stand des Bereitschaftsrechners (`standby`), Ausgabesperre (`replication`) | `{"status":"ok"\|"safe_state", "role", "network", "cycle", "time_ms", "safe_state", "standby", "replication"}` |
 | GET | `/`, `/ui/` | Bedienplatz (Spurplan-UI, siehe unten); ohne Anmeldung, enthält keine Daten | HTML / JS / CSS |
 | GET | `/v1/layout` | Spurplan-Geometrie, aus der Topologie berechnet: Gleise, Weichen, Signale, Bahnübergänge, Grenzen, Stellbereiche, Betriebsstellen | JSON |
 | GET | `/v1/plan` | Plan: Prüfsumme, Signatur, Elemente, Fahrstraßen mit Weichen, Abschnitten, Geschwindigkeit, Durchrutschweg, Flankenschutz, Bahnübergängen, Feindlichkeiten | JSON |
@@ -51,6 +52,7 @@ Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`; mit
 | GET | `/v1/journal/state?at_ms=…[&area=…]` | Zustandsbild zu einem Zeitpunkt, aus dem Journal | JSON |
 | GET | `/v1/journal/events?from_ms=…&to_ms=…[&area=…]` | Stellbefehle und Ereignisse eines Zeitfensters (höchstens 5000 Zyklen, `truncated`) | JSON |
 | GET | `/v1/journal/stream?[area=…][&offset=…]` | Journal ab Byte `offset` und danach fortlaufend (Bereitschaftsrechner) | NDJSON-Strom |
+| POST | `/v1/journal/ack` | Quittung des Bereitschaftsrechners, Body `{"area"?,"cycle","head"}` (Zyklus des Kerns und Hash der letzten Journalzeile); gibt zurückgehaltene Ausgaben frei | 200 `{"covered","hold_ms"}` / 400 (passt nicht oder keine Ausgabesperre) |
 | POST | `/v1/routes/{name}/set` | Fahrstraße einstellen | 200 `accepted` / 409 `rejected` |
 | POST | `/v1/routes/{name}/cancel` | Fahrstraße zurücknehmen | 200 / 409 |
 | POST | `/v1/points/{name}/move` | Weiche umstellen, Body `{"position":"left"\|"right"}` | 200 / 409 |
@@ -79,7 +81,7 @@ Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`; mit
 | POST | `/v1/safety/faults` | Fehler in einen Kanal einbringen (Prüfung), Body `{"area"?,"channel","fault"}` mit `fault` aus `drop_inputs`, `stray_command`, `stall` | 200 / 400 |
 | POST | `/v1/safety/reintegrate` | Ausgeschlossenen Kanal wieder aufnehmen, Body `{"area"?,"channel"}` | 200 / 400 |
 | POST | `/v1/safety/reset` | Sicheren Zustand zurücksetzen (Neubeginn wie nach einem Neustart), Body `{"area"?}` | 200 / 400 |
-| GET | `/v1/field/links` | Verbindungen zu den Objektsteuerungen (nur mit `--field eulynx`) | JSON-Liste |
+| GET | `/v1/field/links` | Verbindungen zu den Objektsteuerungen (mit `--field eulynx` oder `remote`) | JSON-Liste |
 | POST | `/v1/field/links/{Objektsteuerung}` | Übertragungsstrecke stören, Body `{"down"?,"loss_percent"?,"corrupt_percent"?,"delay_ms"?}`; `{}` hebt alle Störungen auf | 200 / 400 |
 
 Namen mit `>` (Grenzen, Fahrstraßen über Grenzen wie `AN1->Strecke`) werden im Pfad kodiert
@@ -273,10 +275,49 @@ Zyklen des Knotens und jeden Zustandsabgleich als Übernahme.
 `railitd --network … --plan … --standby http://hauptrechner:7070 [--standby-token TOKEN]`
 liest die Journale des Hauptrechners über `/v1/journal/stream` mit, prüft und rechnet jede
 Zeile nach und zeigt den Zustand über dieselbe API und denselben Bedienplatz an (gelb
-gekennzeichnet). Bedienungen werden mit `503` abgewiesen. `/v1/health` enthält `role`
-(`primary` bzw. `standby`) und je Bereich `connected`, `cycles`, `last_ms`, `reconnects` und
-`problem`. Der Hauptrechner braucht `--journal`; `--standby` schließt `--journal` und `--node`
-aus. Die Übernahme des Betriebs durch den Bereitschaftsrechner ist noch nicht umgesetzt.
+gekennzeichnet). Bedienungen werden mit `503` abgewiesen. Jeden geprüften Stand quittiert er
+dem Hauptrechner (`POST /v1/journal/ack`, Rolle `bereitschaft`). `/v1/health` enthält `role`
+(`primary` bzw. `standby`) und unter `standby` je Bereich `connected`, `cycles`, `last_ms`,
+`acked`, `reconnects` und `problem`, den Abschnitt (`phase`: `following`, `acquiring`,
+`leading` mit `warm` und `detail`) und `covered_ms`, die verbleibende Zusage des
+Hauptrechners. Der Hauptrechner braucht `--journal`; `--standby` schließt `--node` aus.
+
+## Übernahme
+
+Für die Übernahme laufen die Objektsteuerungen in einem Feldrechner, an dem Haupt- und
+Bereitschaftsrechner hängen:
+
+```sh
+railit-field --network netz.toml --listen 0.0.0.0:7900 --control 127.0.0.1:7901
+railitd … --field remote --field-addr feld:7900 --field-control http://feld:7901 \
+        --journal haupt.journal --standby-gate-ms 8000
+railitd … --field remote --field-addr feld:7900 --field-control http://feld:7901 \
+        --journal bereitschaft.journal --standby http://haupt:7070 --standby-token … \
+        --takeover-after-ms 500 [--standby-gate-ms 8000]
+```
+
+- **Feldrechner** (`railit-field`): Objektsteuerungen über RaSTA/UDP. Sein Umschalter hört
+  nur das führende Stellwerk (RaSTA-Kennung `0A000001` Hauptrechner, `0A000002`
+  Bereitschaftsrechner, `--field-id`); ein anderes führt erst, wenn alle Verbindungen des
+  bisherigen seit der Umschaltzeit (`--switch-ms`, Vorgabe 500 ms) abgebaut sind. Die
+  Steuerung (`--control`) nimmt dieselben Simulationsbefehle an wie `/v1/sim/…`; `railitd`
+  leitet sie mit `--field-control` dorthin weiter. `GET /v1/status` zeigt das führende
+  Stellwerk, die Verbindungen und die Zahl der Wechsel.
+- **Ausgabesperre** (`--standby-gate-ms`): Der Hauptrechner gibt Stellbefehle,
+  Grenzmeldungen und ETCS-Fahrerlaubnisse erst frei, wenn der Bereitschaftsrechner den
+  Zyklus quittiert hat, und antwortet mit einer Zusage (`hold_ms`): So lange gibt er
+  mindestens nichts ohne Quittung frei. Bleiben Quittungen länger als die Frist aus, arbeitet
+  er ohne Sperre weiter. `replication` in `/v1/health` und `railit_replication_*` in
+  `/v1/metrics` zeigen den Stand.
+- **Übernahme** (`--takeover-after-ms`): Schweigt der Strom des Hauptrechners so lange,
+  versucht der Bereitschaftsrechner, am Feldrechner zu führen. Gelingt das innerhalb der
+  Zusage, übernimmt er den mitgelesenen Zustand (`warm`: Verschlüsse bleiben, Fahrstraßen
+  mit Fahrt stehen auf Halt); sonst beginnt er wie nach einem Neustart. Danach führt er mit
+  eigenem Journal (beginnend mit der Übernahme), `role` wird `primary`, der Bedienplatz
+  meldet die Übernahme und nimmt Bedienungen an.
+
+Die Frist muss Erkennungszeit, `t_max` von RaSTA (1,8 s) und Umschaltzeit deutlich
+übersteigen (Sicherheitsnachweis, Anwendungsbedingung 9).
 
 ## Metriken
 
@@ -298,6 +339,8 @@ wie `/v1/state` (Prometheus: `authorization: { credentials: <Token> }`).
 | `railit_etcs_emergency_stops_total` | Zähler | ETCS-Notbremsungen |
 | `railit_node_up`, `…_available`, `…_synced{area}` | Wert | Anbindung des Knotens (nur mit `--node`) |
 | `railit_node_cycles_total`, `…_syncs_total`, `…_divergences_total`, `…_link_losses_total`, `…_protocol_errors_total` | Zähler | Knoten: Zyklen, Abgleiche, Abweichungen, Verbindungsabbrüche, Protokollfehler |
+| `railit_replication_gated`, `…_covered`, `…_held`, `…_oldest_seconds` | Wert | Ausgabesperre (nur mit `--standby-gate-ms`): Sperre besteht, Bereitschaftsrechner gedeckt, zurückgehaltene Zyklen, Alter der ältesten Ausgabe |
+| `railit_replication_acks_total`, `…_rejected_acks_total`, `…_lapses_total` | Zähler | Gültige und unpassende Quittungen, Aufhebungen der Sperre |
 
 Metriken sind reine Beobachtung (SIL 0) ohne Rückwirkung auf den Betrieb.
 
