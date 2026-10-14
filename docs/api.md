@@ -261,6 +261,20 @@ gestört gemeldet, und die Erlaubnis wandert erst wieder, wenn die Verbindung st
 (REQ-COM-009). `railit ils` zeigt dasselbe auf der Kommandozeile, `railit ils fault
 Adorf-Strecke --down` stört.
 
+### Stellbereiche in getrennten Prozessen
+
+`railitd --areas Adorf,Strecke --ils-listen 127.0.0.1:7510 --ils-peer Bstadt=127.0.0.1:7511`
+rechnet nur Adorf und die Strecke; Bstadt rechnet ein anderer Dienst mit `--areas Bstadt
+--ils-listen 127.0.0.1:7511 --ils-peer Strecke=127.0.0.1:7510`. Jede Grenze zu einem fremden
+Bereich braucht dessen Adresse. Zustand, Fahrstraßen, Grenzen und Anforderungen eines Dienstes
+umfassen nur seine Bereiche; `/v1/ils` nennt bei Verbindungen zu einem anderen Prozess den
+fremden Bereich unter `remote` (Störungen dort nur für die abgehende Richtung). Mit einem
+gemeinsamen Feldrechner (`--field remote`, je Stellwerk eigene `--field-id`) stellt jedes
+Stellwerk nur die Objektsteuerungen seiner Bereiche; `/v1/status` des Feldrechners zeigt den
+Umschalter je Bereich unter `field.areas` (`area`, `leader`, `leader_lost_ms`), `field.leader`
+nur, wenn ein Stellwerk alle Bereiche führt. Nicht kombinierbar mit `--standby`,
+`--timetable` und `--ars`.
+
 ## Redundante Kanäle
 
 Mit `railitd --channels 2` (2-von-2) bzw. `--channels 3` (2-von-3) rechnet jeder Stellbereich

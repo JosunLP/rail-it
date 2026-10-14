@@ -76,6 +76,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ils_net"
+path = "fuzz_targets/ils_net.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "node_wire"
 path = "fuzz_targets/node_wire.rs"
 test = false

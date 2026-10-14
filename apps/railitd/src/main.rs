@@ -140,6 +140,21 @@ struct Args {
     /// über EULYNX SCI-ILS und RaSTA mit störbarer Strecke (`/v1/ils`).
     #[arg(long, value_enum, default_value_t = BordersArg::Direct)]
     borders: BordersArg,
+    /// Nur diese Stellbereiche rechnen (kommagetrennt); die übrigen rechnen in anderen
+    /// Prozessen und sind über SCI-ILS auf UDP angebunden (`--ils-listen`, `--ils-peer`).
+    #[arg(
+        long,
+        value_delimiter = ',',
+        requires = "ils_listen",
+        conflicts_with_all = ["standby", "timetable", "ars"]
+    )]
+    areas: Vec<String>,
+    /// UDP-Adresse für SCI-ILS zu den Stellbereichen anderer Prozesse.
+    #[arg(long, value_name = "ADRESSE", requires = "areas")]
+    ils_listen: Option<SocketAddr>,
+    /// Adresse eines Nachbarbereichs in einem anderen Prozess: `BEREICH=ADRESSE` (je Bereich).
+    #[arg(long = "ils-peer", value_name = "BEREICH=ADRESSE", requires = "areas")]
+    ils_peers: Vec<String>,
     /// Kanäle je Stellbereich: 1 (ohne Vergleich), 2 (2-von-2) oder 3 (2-von-3).
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=3))]
     channels: u8,
@@ -228,6 +243,53 @@ fn read_plan(path: &Path, key: Option<&VerifyingKey>) -> Result<PlanView<'static
     Ok(plan)
 }
 
+/// Kerne aus den Plänen: ein Plan für ein Netz ohne Stellbereiche, sonst je (lokalem)
+/// Stellbereich einer.
+fn runtime_for(
+    args: &Args,
+    net: &Topology,
+    key: Option<&VerifyingKey>,
+    sim: ServiceField,
+    cycle: railit_types::Duration,
+) -> Result<Runtime<ServiceField>, String> {
+    Ok(if net.areas().len() == 0 {
+        if !args.areas.is_empty() {
+            return Err(format!(
+                "Netz „{}“ hat keine Stellbereiche (--areas)",
+                net.name()
+            ));
+        }
+        let plan = read_plan(&args.plan, key)?;
+        check_correspondence(&plan, net).map_err(|e| format!("Plan passt nicht zum Netz: {e}"))?;
+        Runtime::new(plan, GenericRules::default(), sim, cycle)
+    } else {
+        if !args.plan.is_dir() {
+            return Err(format!(
+                "Netz „{}“ hat Stellbereiche: --plan muss ein Verzeichnis mit <Bereich>.rplan sein",
+                net.name()
+            ));
+        }
+        for name in &args.areas {
+            if !net.areas().any(|(_, a)| a.name == *name) {
+                return Err(format!("Stellbereich „{name}“ nicht im Netz"));
+            }
+        }
+        let mut areas = Vec::with_capacity(net.areas().len());
+        for (id, area) in net.areas() {
+            if !args.areas.is_empty() && !args.areas.contains(&area.name) {
+                continue;
+            }
+            let plan = read_plan(&args.plan.join(format!("{}.rplan", area.name)), key)?;
+            let cut = net
+                .area_cut(id)
+                .map_err(|e| format!("Stellbereich „{}“:\n{e}", area.name))?;
+            areas.push((plan, cut));
+        }
+        Runtime::for_network(net, areas, GenericRules::default(), sim, cycle)
+            .map_err(|e| format!("Pläne passen nicht zum Netz: {e}"))?
+    })
+}
+
 /// Lädt Netz und Plan(e), prüft beide und baut die Runtime.
 ///
 /// Hat das Netz Stellbereiche, ist `--plan` ein Verzeichnis mit `<Bereich>.rplan` je
@@ -266,36 +328,12 @@ fn load(args: &Args) -> Result<(Topology, Runtime<ServiceField>), String> {
                 railit_runtime::railit_adapters::net::PRIMARY_ID
             });
             tracing::info!(%addr, id = format!("{id:08X}"), "Feld über den Feldrechner");
-            ServiceField::remote(&net, addr, id)?
+            let areas = (!args.areas.is_empty()).then_some(args.areas.as_slice());
+            ServiceField::remote(&net, addr, id, areas)?
         }
         (FieldArg::Remote, None) => return Err("--field remote verlangt --field-addr".into()),
     };
-    let rt = if net.areas().len() == 0 {
-        let plan = read_plan(&args.plan, key.as_ref())?;
-        check_correspondence(&plan, &net).map_err(|e| format!("Plan passt nicht zum Netz: {e}"))?;
-        Runtime::new(plan, GenericRules::default(), sim, cycle)
-    } else {
-        if !args.plan.is_dir() {
-            return Err(format!(
-                "Netz „{}“ hat Stellbereiche: --plan muss ein Verzeichnis mit <Bereich>.rplan sein",
-                net.name()
-            ));
-        }
-        let mut areas = Vec::with_capacity(net.areas().len());
-        for (id, area) in net.areas() {
-            let plan = read_plan(
-                &args.plan.join(format!("{}.rplan", area.name)),
-                key.as_ref(),
-            )?;
-            let cut = net
-                .area_cut(id)
-                .map_err(|e| format!("Stellbereich „{}“:\n{e}", area.name))?;
-            areas.push((plan, cut));
-        }
-        Runtime::for_network(&net, areas, GenericRules::default(), sim, cycle)
-            .map_err(|e| format!("Pläne passen nicht zum Netz: {e}"))?
-    };
-    let mut rt = rt;
+    let mut rt = runtime_for(args, &net, key.as_ref(), sim, cycle)?;
     let period_us = args
         .cycle_ms
         .max(1)
@@ -318,7 +356,7 @@ fn load(args: &Args) -> Result<(Topology, Runtime<ServiceField>), String> {
         tracing::info!(channels = args.channels, "redundante Kanäle mit Voter");
     }
     attach_nodes(&mut rt, args)?;
-    use_borders(&mut rt, args.borders)?;
+    use_borders(&mut rt, args)?;
     let timetable = match &args.timetable {
         Some(path) => {
             let source =
@@ -335,9 +373,27 @@ fn load(args: &Args) -> Result<(Topology, Runtime<ServiceField>), String> {
     Ok((net, rt))
 }
 
-/// Übertragung der Grenzmeldungen (`--borders`).
-fn use_borders(rt: &mut Runtime<ServiceField>, borders: BordersArg) -> Result<(), String> {
-    if borders == BordersArg::Ils {
+/// Übertragung der Grenzmeldungen (`--borders`, `--areas` mit `--ils-listen` und
+/// `--ils-peer`).
+fn use_borders(rt: &mut Runtime<ServiceField>, args: &Args) -> Result<(), String> {
+    if let Some(listen) = args.ils_listen {
+        let mut peers = Vec::new();
+        for p in &args.ils_peers {
+            let (area, addr) = p
+                .split_once('=')
+                .ok_or_else(|| format!("--ils-peer {p}: erwartet BEREICH=ADRESSE"))?;
+            let addr = addr.parse().map_err(|e| format!("--ils-peer {p}: {e}"))?;
+            peers.push((area.to_string(), addr));
+        }
+        let addr = rt.use_ils_udp(listen, peers)?;
+        tracing::info!(%addr, areas = ?args.areas, "Stellbereiche verteilt, SCI-ILS über UDP");
+        if matches!(args.field, FieldArg::Direct | FieldArg::Eulynx) {
+            tracing::warn!(
+                "eingebautes Feld bei verteilten Stellbereichen: Züge fahren nicht über die \
+                 Prozessgrenze (gemeinsames Feld: --field remote)"
+            );
+        }
+    } else if args.borders == BordersArg::Ils {
         rt.use_ils()?;
         tracing::info!(links = rt.ils_links().len(), "Grenzmeldungen über SCI-ILS");
     }

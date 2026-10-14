@@ -451,8 +451,17 @@ ist; ein Nachbarkern, der nicht mehr rechnet, während RaSTA seine Lebenszeichen
 sendet, fällt so am Alter der letzten Meldung auf. Alle Szenarien laufen auch über SCI-ILS
 (und über Knoten mit Journal) unverändert; ein Property-Test mit den drei Kernen der Nordbahn
 unter zufälligen Störungen findet nie zwei Halter einer Erlaubnis und nie Ausfahrten beider
-Bahnhöfe in die Strecke (REQ-COM-009). Offen bleibt, die Stellbereiche in getrennten
-Prozessen bzw. auf getrennten Rechnern laufen zu lassen.
+Bahnhöfe in die Strecke (REQ-COM-009).
+
+**Stand Phase 11 – verteilte Stellbereiche:** Ein Dienst kann nur einen Teil der
+Stellbereiche rechnen (`railitd --areas Adorf,Strecke --ils-listen … --ils-peer Bstadt=…`).
+Rolle, RaSTA-Kennung und Nummer jeder Grenze folgen aus dem Gesamtnetz, sodass beide Prozesse
+sie gleich bestimmen; die PDUs zu Bereichen anderer Prozesse gehen über UDP. Der Feldrechner
+hat bei Netzen mit Stellbereichen je Bereich eigene Objektsteuerungen und einen eigenen
+Umschalter: Jedes Stellwerk stellt nur seine Bereiche, ein Bereitschaftsrechner für das ganze
+Netz kommt nur dort zum Zug, wo ein Stellwerk ausfällt. Ein Zug fährt so über die
+Prozessgrenze (REQ-COM-010). Offen: Betriebsführung, ETCS und Bereitschaftsrechner bei
+verteilten Stellbereichen.
 
 ### 10.5 Invarianten
 
@@ -943,7 +952,7 @@ Daraus folgen diese Regeln:
 | **8 – Verfügbarkeit & Diagnose** | Journal auch im Knotenbetrieb, Diagnose aus dem Journal (Zustand zu einem Zeitpunkt, Ereignisse eines Zeitraums), Metriken für den Betrieb | Jeder Betrieb ist lückenlos aufgezeichnet und nachträglich in Sekunden befragbar; Metriken für den Betrieb | ✔ |
 | **9 – Mitlesen & Rückschau** | Mitleser für wachsende Journale, Rückschau im Dienst und im Bedienplatz, Bereitschaftsrechner über den Journalstrom | Ein zweiter Rechner zeigt den Zustand des Hauptrechners laufend geprüft an; jeder Zeitpunkt lässt sich am Bedienplatz zurückschauen | ✔ |
 | **10 – Übernahme** | Feldrechner mit Umschalter (`railit-field`), Ausgabe erst nach Quittung, Übernahme des mitgelesenen Zustands im Kern und im Dienst | Fällt der Hauptrechner aus, übernimmt der Bereitschaftsrechner den Betrieb – mit dem mitgelesenen Zustand, solange die Zusage des Hauptrechners das deckt | ✔ (Zeitbedingungen auf Zielhardware, Umschalter in realer Feldtechnik offen) |
-| **11 – Nachbarstellwerke** | Grenzmeldungen als EULYNX-SCI-ILS-Telegramme über RaSTA, je Paar benachbarter Stellbereiche eine Verbindung mit störbarer Strecke; Dienst, CLI, Szenarien, Fuzzing | Die Stellbereiche sprechen wie getrennte Stellwerke miteinander; gestörte Verbindungen halten den Erlaubniswechsel sicher an (Szenario 22, REQ-COM-009) | ✔ (Stellbereiche in getrennten Prozessen offen) |
+| **11 – Nachbarstellwerke** | Grenzmeldungen als EULYNX-SCI-ILS-Telegramme über RaSTA, je Paar benachbarter Stellbereiche eine Verbindung mit störbarer Strecke; Stellbereiche in getrennten Prozessen über UDP mit Umschalter je Bereich am Feldrechner; Dienst, CLI, Szenarien, Fuzzing | Die Stellbereiche sprechen wie getrennte Stellwerke miteinander; gestörte Verbindungen halten den Erlaubniswechsel sicher an (Szenario 22, REQ-COM-009) | ✔ (auch in getrennten Prozessen; Betriebsführung, ETCS und Bereitschaftsrechner verteilt offen) |
 
 **Umgesetzte Crates (Stand Phase 7):** `railit-types`, `railit-topology`, `railit-plan`,
 `railit-planning`, `railit-rules`, `railit-kernel`, `railit-safety` (Kanäle, Voter, Watchdog),

@@ -218,51 +218,92 @@ pub struct IlsStatus {
     pub delivered: u64,
     /// Eingestellte Störungen.
     pub faults: LinkFaults,
+    /// Bereich, der in einem anderen Prozess rechnet (über UDP angebunden).
+    pub remote: Option<String>,
+}
+
+/// Stellbereich an einer SCI-ILS-Verbindung.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IlsArea {
+    /// Name (SCI-Kennung).
+    pub name: String,
+    /// Index im Gesamtnetz: bestimmt RaSTA-Kennung und Rolle (der kleinere baut auf).
+    pub global: usize,
+    /// Index in der Runtime, wenn der Bereich in diesem Prozess rechnet.
+    pub local: Option<usize>,
+}
+
+/// Paar benachbarter Stellbereiche mit allen Grenzen dazwischen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IlsPair {
+    /// Die beiden Bereiche, der mit dem kleineren Index im Gesamtnetz zuerst.
+    pub areas: [IlsArea; 2],
+    /// Grenzen: Grenze aus Sicht des ersten und des zweiten Bereichs. Die Reihenfolge ist die
+    /// des ersten Bereichs; der Index ist die Nummer der Grenze im Telegramm.
+    pub borders: Vec<(BorderId, BorderId)>,
 }
 
 /// Eine Seite der Verbindung.
 struct Side {
-    area: usize,
-    name: String,
+    area: IlsArea,
     conn: Connection,
     /// Strecke von dieser Seite zur anderen.
     out: Link,
 }
 
+impl Side {
+    const fn is_local(&self) -> bool {
+        self.area.local.is_some()
+    }
+}
+
 /// Verbindung zwischen zwei Stellwerken mit allen Grenzen dazwischen.
 struct IlsLink {
     name: String,
-    /// Client (kleinerer Index) und Server.
+    /// Client (kleinerer Index) und Server. Rechnet eine Seite in einem anderen Prozess,
+    /// bleibt ihre Verbindung ungenutzt; ihre PDUs kommen über [`IlsNet::receive_pdu`].
     /// Je Seite eigens angelegt: Die RaSTA-Puffer sind groß.
     sides: [Box<Side>; 2],
     /// Grenzen: Grenze auf Seite 0 und auf Seite 1, Index = Nummer im Telegramm.
     borders: Vec<(BorderId, BorderId)>,
+    /// Aus dem Netz eingegangene PDUs für die lokale Seite.
+    inbound: Vec<Vec<u8>>,
     bad_telegrams: u32,
     delivered: u64,
 }
 
-/// SCI-ILS zwischen allen Stellbereichen eines Netzes (in einem Prozess, Strecken störbar).
+/// SCI-ILS zwischen Stellbereichen: Verbindungen zwischen zwei Bereichen dieses Prozesses
+/// laufen über eine störbare Strecke im Speicher, Verbindungen zu Bereichen anderer Prozesse
+/// über das Netz ([`Self::take_outgoing`], [`Self::receive_pdu`], [`UdpIls`]).
 pub struct IlsNet {
     links: Vec<IlsLink>,
+    /// PDUs an Bereiche anderer Prozesse: Name des Empfängerbereichs und PDU.
+    outgoing: Vec<(String, Vec<u8>)>,
     now: u64,
 }
 
+/// RaSTA-Kennung des Stellwerks eines Bereichs.
+pub fn rasta_id(global: usize) -> u32 {
+    RASTA_BASE.wrapping_add(u32::try_from(global).unwrap_or(u32::MAX))
+}
+
 impl IlsNet {
-    /// Verbindungen für ein Netz: `areas` sind die Namen der Stellbereiche, `peers` je
-    /// Bereich und Grenze das Gegenstück (siehe Runtime).
+    /// Verbindungen für ein Netz, dessen Bereiche alle in diesem Prozess rechnen: `areas`
+    /// sind die Namen der Stellbereiche, `peers` je Bereich und Grenze das Gegenstück (siehe
+    /// Runtime).
     ///
     /// # Errors
     /// Beschreibung, wenn ein Bereichsname keine gültige Kennung ist, Grenzen sich nicht
     /// paaren oder zwischen zwei Bereichen mehr als 256 Grenzen liegen.
     pub fn new(areas: &[String], peers: &[Vec<Option<Endpoint>>]) -> Result<Self, String> {
-        for name in areas {
-            if !valid_identifier(name) {
-                return Err(format!(
-                    "Stellbereich „{name}“: keine gültige SCI-Kennung (höchstens 20 Byte, ohne „_“)"
-                ));
-            }
-        }
-        let mut links: Vec<IlsLink> = Vec::new();
+        let area = |i: usize| -> Result<IlsArea, String> {
+            Ok(IlsArea {
+                name: areas.get(i).ok_or("unbekannter Bereich")?.clone(),
+                global: i,
+                local: Some(i),
+            })
+        };
+        let mut pairs: Vec<IlsPair> = Vec::new();
         for (a, borders) in peers.iter().enumerate() {
             for (i, peer) in borders.iter().enumerate() {
                 let here = BorderId::from_index(i).ok_or("zu viele Grenzen")?;
@@ -281,58 +322,126 @@ impl IlsNet {
                 if b < a {
                     continue;
                 }
-                let known = links
-                    .iter()
-                    .position(|l| l.sides[0].area == a && l.sides[1].area == b);
-                let k = if let Some(k) = known {
-                    k
-                } else {
-                    let name_a = areas.get(a).ok_or("unbekannter Bereich")?;
-                    let name_b = areas.get(b).ok_or("unbekannter Bereich")?;
-                    links.push(IlsLink::new(a, name_a, b, name_b));
-                    links.len() - 1
-                };
-                let link = links.get_mut(k).ok_or("Verbindung fehlt")?;
-                if link.borders.len() > usize::from(u8::MAX) {
-                    return Err(format!("zu viele Grenzen über {}", link.name));
+                match pairs
+                    .iter_mut()
+                    .find(|p| p.areas[0].global == a && p.areas[1].global == b)
+                {
+                    Some(p) => p.borders.push((here, j)),
+                    None => pairs.push(IlsPair {
+                        areas: [area(a)?, area(b)?],
+                        borders: vec![(here, j)],
+                    }),
                 }
-                link.borders.push((here, j));
             }
         }
-        Ok(Self { links, now: 0 })
+        Self::from_pairs(pairs)
     }
 
-    /// Schickt eine Grenzmeldung an den Nachbarn `to` (Bereich und Grenze aus dessen Sicht).
-    /// Steht die Verbindung nicht, geht sie verloren; der Nachbar bemerkt es am Alter seiner
-    /// letzten Meldung.
-    pub fn send(&mut self, to: Endpoint, message: BorderMessage) {
+    /// Verbindungen für die Paare `pairs`; Paare ohne Bereich in diesem Prozess entfallen.
+    ///
+    /// # Errors
+    /// Beschreibung, wenn ein Bereichsname keine gültige Kennung ist, die Bereiche eines
+    /// Paars nicht nach ihrem Index geordnet sind oder zwischen zwei Bereichen mehr als 256
+    /// Grenzen liegen.
+    pub fn from_pairs(pairs: Vec<IlsPair>) -> Result<Self, String> {
+        let mut links = Vec::new();
+        for pair in pairs {
+            for a in &pair.areas {
+                if !valid_identifier(&a.name) {
+                    return Err(format!(
+                        "Stellbereich „{}“: keine gültige SCI-Kennung (höchstens 20 Byte, ohne „_“)",
+                        a.name
+                    ));
+                }
+            }
+            let [a, b] = pair.areas;
+            if a.global >= b.global {
+                return Err(format!(
+                    "Verbindung {}-{}: Bereiche nicht geordnet",
+                    a.name, b.name
+                ));
+            }
+            if a.local.is_none() && b.local.is_none() {
+                continue;
+            }
+            if pair.borders.is_empty() || pair.borders.len() > usize::from(u8::MAX) + 1 {
+                return Err(format!(
+                    "Verbindung {}-{}: {} Grenzen",
+                    a.name,
+                    b.name,
+                    pair.borders.len()
+                ));
+            }
+            let mut link = IlsLink::new(a, b);
+            link.borders = pair.borders;
+            links.push(link);
+        }
+        Ok(Self {
+            links,
+            outgoing: Vec::new(),
+            now: 0,
+        })
+    }
+
+    /// Schickt eine Grenzmeldung des Bereichs `from` (Bereich dieses Prozesses und Grenze aus
+    /// seiner Sicht) an den Nachbarn. Steht die Verbindung nicht, geht sie verloren; der
+    /// Nachbar bemerkt es am Alter seiner letzten Meldung.
+    pub fn send_from(&mut self, from: Endpoint, message: BorderMessage) {
         let t = rasta_now(self.now);
         for link in &mut self.links {
-            let Some((side, number)) = link.locate(to) else {
+            let Some((side, number)) = link.locate(from) else {
                 continue;
             };
-            let from = 1 - side;
+            let to = 1 - side;
             let tg = IlsTelegram {
-                sender: link.sides[from].name.clone(),
-                receiver: link.sides[side].name.clone(),
+                sender: link.sides[side].area.name.clone(),
+                receiver: link.sides[to].area.name.clone(),
                 border: number,
                 message,
             };
             if let Ok(raw) = tg.encode() {
-                let _ = link.sides[from].conn.send(t, &raw);
+                let _ = link.sides[side].conn.send(t, &raw);
             }
             return;
         }
     }
 
-    /// Gibt die gesendeten PDUs auf die Strecken (nach allen [`Self::send`] eines Zyklus).
+    /// Gibt die gesendeten PDUs auf die Strecken (nach allen [`Self::send_from`] eines Zyklus).
     pub fn flush(&mut self) {
         let now = self.now;
         for link in &mut self.links {
-            for side in &mut link.sides {
+            for side in link.sides.iter_mut().filter(|s| s.is_local()) {
                 flush(&mut side.conn, &mut side.out, now);
             }
+            link.forward(now, &mut self.outgoing);
         }
+    }
+
+    /// Nimmt eine PDU aus dem Netz an; zugeordnet wird sie über die RaSTA-Kennungen von
+    /// Empfänger und Absender. Fremde PDUs werden verworfen.
+    pub fn receive_pdu(&mut self, pdu: &[u8]) {
+        let Some((receiver, sender)) = railit_rasta::addresses(pdu) else {
+            return;
+        };
+        for link in &mut self.links {
+            let [a, b] = &link.sides;
+            let fits = |near: &Side, far: &Side| {
+                near.is_local()
+                    && !far.is_local()
+                    && rasta_id(near.area.global) == receiver
+                    && rasta_id(far.area.global) == sender
+            };
+            if fits(a, b) || fits(b, a) {
+                link.inbound.push(pdu.to_vec());
+                return;
+            }
+        }
+    }
+
+    /// PDUs an Bereiche anderer Prozesse seit dem letzten Aufruf: Name des Empfängerbereichs
+    /// und PDU.
+    pub fn take_outgoing(&mut self) -> Vec<(String, Vec<u8>)> {
+        std::mem::take(&mut self.outgoing)
     }
 
     /// Schreibt die Verbindungen bis `now` fort: Auf- und Abbau, Lebenszeichen, Empfang.
@@ -343,12 +452,19 @@ impl IlsNet {
         let now = self.now;
         let mut delivered = Vec::new();
         for link in &mut self.links {
-            if link.sides[0].conn.state() == State::Closed {
+            if link.sides[0].is_local() && link.sides[0].conn.state() == State::Closed {
                 link.sides[0].conn.open(t);
             }
             for to in 0..2 {
+                if !link.sides[to].is_local() {
+                    continue;
+                }
                 let from = 1 - to;
-                let pdus = link.sides[from].out.due(now);
+                let pdus = if link.sides[from].is_local() {
+                    link.sides[from].out.due(now)
+                } else {
+                    std::mem::take(&mut link.inbound)
+                };
                 for pdu in pdus {
                     let mut telegrams = Vec::new();
                     let r = link.sides[to]
@@ -368,15 +484,17 @@ impl IlsNet {
                     }
                 }
             }
-            for side in &mut link.sides {
+            for side in link.sides.iter_mut().filter(|s| s.is_local()) {
                 side.conn.tick(t);
                 flush(&mut side.conn, &mut side.out, now);
             }
+            link.forward(now, &mut self.outgoing);
         }
         delivered
     }
 
-    /// Störungen der Verbindung `link` setzen (beide Richtungen).
+    /// Störungen der Verbindung `link` setzen (beide Richtungen; zu einem anderen Prozess nur
+    /// die abgehende).
     ///
     /// # Errors
     /// Beschreibung, wenn es die Verbindung nicht gibt.
@@ -392,63 +510,67 @@ impl IlsNet {
         Ok(())
     }
 
-    /// Zustand aller Verbindungen.
+    /// Zustand aller Verbindungen (aus Sicht der Bereiche dieses Prozesses).
     pub fn links(&self) -> Vec<IlsStatus> {
         self.links
             .iter()
-            .map(|l| IlsStatus {
-                link: l.name.clone(),
-                areas: [l.sides[0].name.clone(), l.sides[1].name.clone()],
-                borders: l.borders.len(),
-                up: l.sides.iter().all(|s| s.conn.is_up()),
-                discarded: l
-                    .sides
-                    .iter()
-                    .map(|s| s.conn.discarded())
-                    .fold(0, u32::saturating_add),
-                bad_telegrams: l.bad_telegrams,
-                delivered: l.delivered,
-                faults: l.sides[0].out.faults,
+            .map(|l| {
+                let local = || l.sides.iter().filter(|s| s.is_local());
+                IlsStatus {
+                    link: l.name.clone(),
+                    areas: [l.sides[0].area.name.clone(), l.sides[1].area.name.clone()],
+                    borders: l.borders.len(),
+                    up: local().all(|s| s.conn.is_up()),
+                    discarded: local()
+                        .map(|s| s.conn.discarded())
+                        .fold(0, u32::saturating_add),
+                    bad_telegrams: l.bad_telegrams,
+                    delivered: l.delivered,
+                    faults: local().next().map(|s| s.out.faults).unwrap_or_default(),
+                    remote: l
+                        .sides
+                        .iter()
+                        .find(|s| !s.is_local())
+                        .map(|s| s.area.name.clone()),
+                }
             })
             .collect()
     }
 }
 
 impl IlsLink {
-    fn new(a: usize, name_a: &str, b: usize, name_b: &str) -> Self {
-        let id = |area: usize| RASTA_BASE.wrapping_add(u32::try_from(area).unwrap_or(u32::MAX));
-        let (ia, ib) = (id(a), id(b));
+    fn new(a: IlsArea, b: IlsArea) -> Self {
+        let (ia, ib) = (rasta_id(a.global), rasta_id(b.global));
         let mut server = Config::new(ib, ia, Role::Server);
         server.initial_sn = 0x2000;
-        let side = |area, name: &str, cfg, seed: u64| {
+        let side = |area: IlsArea, cfg, seed: u64| {
             Box::new(Side {
                 area,
-                name: name.to_string(),
                 conn: Connection::new(cfg),
                 out: Link::new(seed),
             })
         };
         Self {
-            name: format!("{name_a}-{name_b}"),
+            name: format!("{}-{}", a.name, b.name),
             sides: [
                 side(
                     a,
-                    name_a,
                     Config::new(ia, ib, Role::Client),
                     u64::from(ia).wrapping_mul(29),
                 ),
-                side(b, name_b, server, u64::from(ib).wrapping_mul(13)),
+                side(b, server, u64::from(ib).wrapping_mul(13)),
             ],
             borders: Vec::new(),
+            inbound: Vec::new(),
             bad_telegrams: 0,
             delivered: 0,
         }
     }
 
-    /// Seite und Nummer der Grenze zum Empfänger `to`.
-    fn locate(&self, to: Endpoint) -> Option<(usize, u8)> {
-        let (area, border) = to;
-        let side = self.sides.iter().position(|s| s.area == area)?;
+    /// Seite des lokalen Absenders `from` und Nummer seiner Grenze.
+    fn locate(&self, from: Endpoint) -> Option<(usize, u8)> {
+        let (area, border) = from;
+        let side = self.sides.iter().position(|s| s.area.local == Some(area))?;
         let k = self.borders.iter().position(|(b0, b1)| {
             if side == 0 {
                 *b0 == border
@@ -459,16 +581,99 @@ impl IlsLink {
         Some((side, u8::try_from(k).ok()?))
     }
 
+    /// Fällige PDUs der lokalen Seite an einen Bereich in einem anderen Prozess.
+    fn forward(&mut self, now: u64, outgoing: &mut Vec<(String, Vec<u8>)>) {
+        for i in 0..2 {
+            let far = 1 - i;
+            if self.sides[i].is_local() && !self.sides[far].is_local() {
+                let to = self.sides[far].area.name.clone();
+                outgoing.extend(
+                    self.sides[i]
+                        .out
+                        .due(now)
+                        .into_iter()
+                        .map(|p| (to.clone(), p)),
+                );
+            }
+        }
+    }
+
     /// Empfang auf Seite `to`: Telegramm prüfen und dem Empfänger zuordnen.
     fn accept(&self, to: usize, raw: &[u8]) -> Option<(Endpoint, BorderMessage)> {
         let tg = IlsTelegram::decode(raw).ok()?;
         let from = 1 - to;
-        if tg.sender != self.sides[from].name || tg.receiver != self.sides[to].name {
+        if tg.sender != self.sides[from].area.name || tg.receiver != self.sides[to].area.name {
             return None;
         }
         let (b0, b1) = *self.borders.get(usize::from(tg.border))?;
         let border = if to == 0 { b0 } else { b1 };
-        Some(((self.sides[to].area, border), tg.message))
+        Some(((self.sides[to].area.local?, border), tg.message))
+    }
+}
+
+/// [`IlsNet`] mit Übertragung über UDP: je Bereich eines anderen Prozesses eine Adresse.
+pub struct UdpIls {
+    socket: std::net::UdpSocket,
+    peers: Vec<(String, std::net::SocketAddr)>,
+    /// Datagramme, die keinem Bereich zugeordnet werden konnten oder zu lang waren.
+    rejected: u64,
+}
+
+impl UdpIls {
+    /// Lauscht auf `listen`; `peers` nennt je Bereich eines anderen Prozesses seine Adresse.
+    ///
+    /// # Errors
+    /// Socketfehler.
+    pub fn bind(
+        listen: std::net::SocketAddr,
+        peers: Vec<(String, std::net::SocketAddr)>,
+    ) -> Result<Self, String> {
+        let socket =
+            std::net::UdpSocket::bind(listen).map_err(|e| format!("SCI-ILS {listen}: {e}"))?;
+        socket
+            .set_nonblocking(true)
+            .map_err(|e| format!("SCI-ILS: {e}"))?;
+        Ok(Self {
+            socket,
+            peers,
+            rejected: 0,
+        })
+    }
+
+    /// Adresse, auf der gelauscht wird.
+    ///
+    /// # Errors
+    /// Socketfehler.
+    pub fn local_addr(&self) -> Result<std::net::SocketAddr, String> {
+        self.socket.local_addr().map_err(|e| e.to_string())
+    }
+
+    /// Eingegangene Datagramme an `net` übergeben. Angenommen werden nur Datagramme von den
+    /// Adressen der Nachbarn.
+    pub fn receive(&mut self, net: &mut IlsNet) {
+        let mut buf = [0u8; railit_rasta::MAX_PDU + 1];
+        while let Ok((n, from)) = self.socket.recv_from(&mut buf) {
+            let known = self.peers.iter().any(|(_, a)| *a == from);
+            match buf.get(..n) {
+                Some(pdu) if known && n <= railit_rasta::MAX_PDU => net.receive_pdu(pdu),
+                _ => self.rejected = self.rejected.saturating_add(1),
+            }
+        }
+    }
+
+    /// Abgehende PDUs von `net` versenden.
+    pub fn send(&mut self, net: &mut IlsNet) {
+        for (area, pdu) in net.take_outgoing() {
+            if let Some((_, addr)) = self.peers.iter().find(|(n, _)| *n == area) {
+                // Verlust ist für RaSTA ein gewöhnlicher Fall.
+                let _ = self.socket.send_to(&pdu, addr);
+            }
+        }
+    }
+
+    /// Verworfene Datagramme.
+    pub const fn rejected(&self) -> u64 {
+        self.rejected
     }
 }
 
@@ -545,9 +750,9 @@ mod tests {
         while t <= to_ms {
             got.extend(net.advance(Tick::from_millis(t)));
             // West → Mitte, Mitte → West, Mitte → Ost (Empfänger und seine Grenze).
-            net.send((1, b(0)), msg(u32::try_from(t).unwrap()));
-            net.send((0, b(0)), msg(7));
-            net.send((2, b(0)), msg(9));
+            net.send_from((0, b(0)), msg(u32::try_from(t).unwrap()));
+            net.send_from((1, b(0)), msg(7));
+            net.send_from((1, b(1)), msg(9));
             net.flush();
             t += 100;
         }
@@ -620,6 +825,75 @@ mod tests {
         }
         assert!(to_ost > 10, "nur {to_ost} Meldungen trotz Wiederholung");
         assert!(net.links()[1].discarded > 0);
+    }
+
+    /// West und Mitte rechnen in einem Prozess, Ost in einem anderen; die PDUs zwischen
+    /// beiden gehen über das „Netz“ (hier eine Liste, teils verloren).
+    #[test]
+    fn split_processes_exchange_over_the_network() {
+        let area = |name: &str, global, local| IlsArea {
+            name: name.into(),
+            global,
+            local,
+        };
+        let pairs = |here: [Option<usize>; 3]| {
+            vec![
+                IlsPair {
+                    areas: [area("West", 0, here[0]), area("Mitte", 1, here[1])],
+                    borders: vec![(b(0), b(0))],
+                },
+                IlsPair {
+                    areas: [area("Mitte", 1, here[1]), area("Ost", 2, here[2])],
+                    borders: vec![(b(1), b(0))],
+                },
+            ]
+        };
+        let mut one = IlsNet::from_pairs(pairs([Some(0), Some(1), None])).unwrap();
+        let mut two = IlsNet::from_pairs(pairs([None, None, Some(0)])).unwrap();
+        assert_eq!(
+            two.links().len(),
+            1,
+            "West-Mitte betrifft den zweiten Prozess nicht"
+        );
+        assert_eq!(one.links()[1].remote.as_deref(), Some("Ost"));
+        let (mut to_ost, mut to_mitte, mut sent, mut last) = (0, 0, 0u32, None);
+        for k in 0..400u32 {
+            let now = Tick::from_millis(u64::from(k) * 100);
+            for ((a, g), m) in one.advance(now) {
+                if (a, g) == (1, b(1)) {
+                    assert_eq!(m, msg(5));
+                    to_mitte += 1;
+                }
+            }
+            // RaSTA liefert lückenlos in Sendereihenfolge, Verlorenes wiederholt.
+            for ((a, g), m) in two.advance(now) {
+                assert_eq!((a, g), (0, b(0)));
+                assert_eq!(m, msg(last.map_or(m.seq, |l: u32| l + 1)));
+                assert!(m.seq < k);
+                last = Some(m.seq);
+                to_ost += 1;
+            }
+            one.send_from((1, b(1)), msg(k));
+            two.send_from((0, b(0)), msg(5));
+            one.flush();
+            two.flush();
+            // Jede siebte PDU geht verloren; fremde PDUs werden verworfen.
+            for (dest, pdu) in one.take_outgoing() {
+                assert_eq!(dest, "Ost");
+                sent += 1;
+                if sent % 7 != 3 {
+                    two.receive_pdu(&pdu);
+                }
+                one.receive_pdu(&pdu);
+            }
+            for (dest, pdu) in two.take_outgoing() {
+                assert_eq!(dest, "Mitte");
+                one.receive_pdu(&pdu);
+            }
+        }
+        assert!(one.links()[1].up && two.links()[0].up);
+        assert!(to_ost > 300 && to_mitte > 300, "{to_ost} {to_mitte}");
+        assert_eq!(one.links()[1].bad_telegrams, 0);
     }
 
     #[test]

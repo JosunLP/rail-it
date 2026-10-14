@@ -15,7 +15,7 @@ use std::io::Write;
 use std::time::Instant;
 
 use railit_adapters::LinkFaults;
-use railit_adapters::ils::{IlsNet, IlsStatus};
+use railit_adapters::ils::{IlsArea, IlsNet, IlsPair, IlsStatus, UdpIls};
 use railit_etcs::{PositionReport, Rbc, RbcEvent, RbcView};
 use railit_journal::{Header, JournalWriter, SafetyKind};
 use railit_kernel::{
@@ -404,6 +404,10 @@ pub struct Runtime<F> {
     gate: Option<Gate>,
     /// Grenzmeldungen über SCI-ILS und RaSTA statt ideal im Prozess.
     ils: Option<IlsNet>,
+    /// Übertragung zu Stellbereichen in anderen Prozessen.
+    ils_udp: Option<UdpIls>,
+    /// Paare benachbarter Bereiche im Gesamtnetz (mit Bereichen dieses Prozesses).
+    ils_pairs: Option<Vec<IlsPair>>,
 }
 
 impl<F: FieldAdapter> Runtime<F> {
@@ -415,11 +419,12 @@ impl<F: FieldAdapter> Runtime<F> {
     }
 
     /// Runtime für ein Netz mit Stellbereichen: je Bereich Plan und Teilnetz
-    /// (siehe `railit_planning::compile_areas`).
+    /// (siehe `railit_planning::compile_areas`). Fehlen Bereiche des Netzes, rechnen sie in
+    /// anderen Prozessen; ihre Grenzmeldungen kommen dann über [`Self::use_ils_udp`].
     ///
     /// # Errors
-    /// Beschreibung, wenn ein Plan nicht zu seinem Teilnetz passt oder sich Grenzen nicht
-    /// paaren lassen.
+    /// Beschreibung, wenn ein Plan nicht zu seinem Teilnetz passt oder sich Grenzen im
+    /// Gesamtnetz nicht paaren lassen.
     pub fn for_network(
         net: &Topology,
         areas: Vec<(PlanView<'static>, AreaCut)>,
@@ -451,29 +456,68 @@ impl<F: FieldAdapter> Runtime<F> {
             built.push(Area::new(name, plan, rules, AreaMap::from_cut(&cut)));
             cuts.push(cut);
         }
-        // Grenzen paaren: Innen- und Außenport sind auf beiden Seiten vertauscht.
-        for (a, cut) in cuts.iter().enumerate() {
+        // Grenzen im Gesamtnetz paaren: Innen- und Außenport sind auf beiden Seiten
+        // vertauscht. Bereiche, die hier nicht rechnen, laufen in anderen Prozessen.
+        let all: Vec<(String, AreaCut)> = net
+            .areas()
+            .map(|(id, area)| {
+                let cut = cuts
+                    .iter()
+                    .find(|c| c.area == id)
+                    .cloned()
+                    .map_or_else(|| net.area_cut(id), Ok)
+                    .map_err(|e| format!("Stellbereich „{}“: {e}", area.name))?;
+                Ok((area.name.clone(), cut))
+            })
+            .collect::<Result<_, String>>()?;
+        let local_of = |g: usize| {
+            all.get(g)
+                .and_then(|(_, c)| cuts.iter().position(|x| x.area == c.area))
+        };
+        let mut pairs: Vec<IlsPair> = Vec::new();
+        for (g, (name, cut)) in all.iter().enumerate() {
             for (i, border) in cut.borders.iter().enumerate() {
-                let peer = cuts.iter().enumerate().find_map(|(b, other)| {
+                let here = BorderId::from_index(i).ok_or("zu viele Grenzen")?;
+                let peer = all.iter().enumerate().find_map(|(h, (_, other))| {
                     other
                         .borders
                         .iter()
                         .position(|o| o.inside == border.outside && o.outside == border.inside)
                         .and_then(BorderId::from_index)
-                        .map(|j| (b, j))
+                        .map(|j| (h, j))
                 });
-                let Some(peer) = peer else {
-                    return Err(format!(
-                        "Grenze {i} von „{}“ hat keinen Gegenpart",
-                        built.get(a).map_or("?", |x| x.name.as_str())
-                    ));
+                let Some((h, j)) = peer else {
+                    return Err(format!("Grenze {i} von „{name}“ hat keinen Gegenpart"));
                 };
-                if let Some(slot) = built.get_mut(a).and_then(|x| x.peers.get_mut(i)) {
-                    *slot = Some(peer);
+                if let Some(slot) = local_of(g)
+                    .and_then(|a| built.get_mut(a))
+                    .and_then(|x| x.peers.get_mut(i))
+                {
+                    *slot = local_of(h).map(|b| (b, j));
+                }
+                if h <= g {
+                    continue;
+                }
+                let area = |k: usize| IlsArea {
+                    name: all.get(k).map(|(n, _)| n.clone()).unwrap_or_default(),
+                    global: k,
+                    local: local_of(k),
+                };
+                match pairs
+                    .iter_mut()
+                    .find(|p| p.areas[0].global == g && p.areas[1].global == h)
+                {
+                    Some(p) => p.borders.push((here, j)),
+                    None => pairs.push(IlsPair {
+                        areas: [area(g), area(h)],
+                        borders: vec![(here, j)],
+                    }),
                 }
             }
         }
-        Ok(Self::assemble(net.name().to_string(), built, field, cycle))
+        let mut rt = Self::assemble(net.name().to_string(), built, field, cycle);
+        rt.ils_pairs = Some(pairs);
+        Ok(rt)
     }
 
     fn assemble(network: String, areas: Vec<Area>, field: F, cycle: Duration) -> Self {
@@ -530,6 +574,8 @@ impl<F: FieldAdapter> Runtime<F> {
             snapshot_every: None,
             gate: None,
             ils: None,
+            ils_udp: None,
+            ils_pairs: None,
         }
     }
 
@@ -630,11 +676,62 @@ impl<F: FieldAdapter> Runtime<F> {
         if self.now != Tick::ZERO {
             return Err("SCI-ILS nur vor dem ersten Zyklus einschalten".into());
         }
-        let names: Vec<String> = self.areas.iter().map(|a| a.name.clone()).collect();
-        let peers: Vec<Vec<Option<(usize, BorderId)>>> =
-            self.areas.iter().map(|a| a.peers.clone()).collect();
-        self.ils = Some(IlsNet::new(&names, &peers)?);
+        self.ils = Some(if let Some(pairs) = &self.ils_pairs {
+            IlsNet::from_pairs(pairs.clone())?
+        } else {
+            let names: Vec<String> = self.areas.iter().map(|a| a.name.clone()).collect();
+            let peers: Vec<Vec<Option<(usize, BorderId)>>> =
+                self.areas.iter().map(|a| a.peers.clone()).collect();
+            IlsNet::new(&names, &peers)?
+        });
         Ok(())
+    }
+
+    /// Bindet Stellbereiche an, die in anderen Prozessen rechnen (Runtime für einen Teil des
+    /// Netzes, siehe [`Self::for_network`]): SCI-ILS über UDP, lauschend auf `listen`, je
+    /// fremdem Nachbarbereich eine Adresse. Schaltet SCI-ILS ein.
+    ///
+    /// # Errors
+    /// Schon gelaufene Zyklen, fehlende oder unbekannte Nachbarn, Socketfehler.
+    pub fn use_ils_udp(
+        &mut self,
+        listen: std::net::SocketAddr,
+        peers: Vec<(String, std::net::SocketAddr)>,
+    ) -> Result<std::net::SocketAddr, String> {
+        let remote = self.remote_neighbours();
+        for name in &remote {
+            if !peers.iter().any(|(n, _)| n == name) {
+                return Err(format!("Adresse des Nachbarbereichs „{name}“ fehlt"));
+            }
+        }
+        for (name, _) in &peers {
+            if !remote.contains(name) {
+                return Err(format!(
+                    "„{name}“ ist kein Nachbarbereich in einem anderen Prozess"
+                ));
+            }
+        }
+        self.use_ils()?;
+        let udp = UdpIls::bind(listen, peers)?;
+        let addr = udp.local_addr()?;
+        self.ils_udp = Some(udp);
+        Ok(addr)
+    }
+
+    /// Nachbarbereiche, die in anderen Prozessen rechnen.
+    pub fn remote_neighbours(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for pair in self.ils_pairs.iter().flatten() {
+            if pair.areas.iter().all(|a| a.local.is_none()) {
+                continue;
+            }
+            for a in &pair.areas {
+                if a.local.is_none() && !out.contains(&a.name) {
+                    out.push(a.name.clone());
+                }
+            }
+        }
+        out
     }
 
     /// Zustand der SCI-ILS-Verbindungen (leer ohne SCI-ILS).
@@ -1014,7 +1111,14 @@ impl<F: FieldAdapter> Runtime<F> {
         self.field_inputs.clear();
         self.field.reports(&mut self.field_inputs);
         if let Some(ils) = &mut self.ils {
-            for ((area, border), message) in ils.advance(self.now) {
+            if let Some(udp) = &mut self.ils_udp {
+                udp.receive(ils);
+            }
+            let arrived = ils.advance(self.now);
+            if let Some(udp) = &mut self.ils_udp {
+                udp.send(ils);
+            }
+            for ((area, border), message) in arrived {
                 if let Some(slot) = self
                     .areas
                     .get_mut(area)
@@ -1054,11 +1158,7 @@ impl<F: FieldAdapter> Runtime<F> {
             }));
             for c in &area.out.commands {
                 match *c {
-                    Command::Border { border, message } => {
-                        if let Some(Some(peer)) = border.index().and_then(|i| area.peers.get(i)) {
-                            mail.push((*peer, message));
-                        }
-                    }
+                    Command::Border { border, message } => mail.push(((index, border), message)),
                     other => {
                         if let Some(global) = globalize(&area.map, other) {
                             commands.push(global);
@@ -1153,12 +1253,20 @@ impl<F: FieldAdapter> Runtime<F> {
         for batch in batches {
             for ((area, border), message) in batch.mail {
                 if let Some(ils) = &mut self.ils {
-                    ils.send((area, border), message);
-                } else if let Some(slot) = self
+                    ils.send_from((area, border), message);
+                    continue;
+                }
+                let peer = self
                     .areas
-                    .get_mut(area)
-                    .and_then(|a| border.index().and_then(|i| a.inbox.get_mut(i)))
-                {
+                    .get(area)
+                    .and_then(|a| border.index().and_then(|i| a.peers.get(i)))
+                    .copied()
+                    .flatten();
+                if let Some(slot) = peer.and_then(|(a, b)| {
+                    self.areas
+                        .get_mut(a)
+                        .and_then(|x| b.index().and_then(|i| x.inbox.get_mut(i)))
+                }) {
                     *slot = Some(message);
                 }
             }
@@ -1170,6 +1278,9 @@ impl<F: FieldAdapter> Runtime<F> {
         }
         if let Some(ils) = &mut self.ils {
             ils.flush();
+            if let Some(udp) = &mut self.ils_udp {
+                udp.send(ils);
+            }
         }
         count
     }

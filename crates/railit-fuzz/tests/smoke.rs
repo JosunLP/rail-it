@@ -41,6 +41,7 @@ fn seeds_pass() {
     railit_fuzz::rasta(&[]);
     railit_fuzz::sci(&[]);
     railit_fuzz::sci_ils(&[]);
+    railit_fuzz::ils_net(&[]);
     railit_fuzz::node_wire(&[]);
     railit_fuzz::mirror_state(&[]);
     railit_fuzz::field_server(&[]);
@@ -110,6 +111,7 @@ proptest! {
         railit_fuzz::rasta(&data);
         railit_fuzz::sci(&data);
         railit_fuzz::sci_ils(&data);
+        railit_fuzz::ils_net(&data);
         railit_fuzz::node_wire(&data);
         railit_fuzz::mirror_state(&data);
         railit_fuzz::field_server(&data);

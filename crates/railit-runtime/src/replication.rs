@@ -104,7 +104,7 @@ pub(crate) struct Batch {
     pub(crate) marks: Vec<Option<Mark>>,
     /// Stellbefehle (global).
     pub(crate) commands: Vec<Command>,
-    /// Grenzmeldungen an (Bereich, Grenze).
+    /// Grenzmeldungen von (Bereich, Grenze) an den Nachbarn.
     pub(crate) mail: Vec<((usize, BorderId), BorderMessage)>,
     /// Fahrerlaubnisse an ETCS-Fahrzeuge (global).
     pub(crate) cab: Vec<(String, Option<Vec<SignalId>>)>,

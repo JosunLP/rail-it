@@ -198,3 +198,93 @@ fn standby_leads_after_the_leader_is_lost() {
     b.move_point(0, "W2", PointPosition::Right);
     assert_eq!(b.position("W2"), Some(PointPosition::Left.into()));
 }
+
+const NORDBAHN: &str = include_str!("../../../examples/nordbahn.toml");
+
+/// REQ-COM-010: Bei Netzen mit Stellbereichen schaltet der Feldrechner je Bereich um. Zwei
+/// Stellwerke führen je ihre Bereiche; ein drittes für das ganze Netz kommt nur zum Zug, wo
+/// eines ausfällt.
+#[test]
+fn switch_per_area() {
+    const WHOLE: u32 = 0x0A00_0003;
+    let net = railit_import::toml_format::parse(NORDBAHN)
+        .unwrap()
+        .topology;
+    let sim = Simulator::new(net.clone(), SimConfig::default());
+    let mut server = FieldServer::new(sim, &[PRIMARY_ID, STANDBY_ID, WHOLE], SWITCH_MS).unwrap();
+    let west_areas = ["Adorf".to_string(), "Strecke".to_string()];
+    let mut clients = [
+        FieldClient::for_areas(&net, PRIMARY_ID, Some(&west_areas)).unwrap(),
+        FieldClient::for_areas(&net, STANDBY_ID, Some(&["Bstadt".to_string()])).unwrap(),
+        FieldClient::new(&net, WHOLE).unwrap(),
+    ];
+    assert!(FieldClient::for_areas(&net, WHOLE, Some(&["Cdorf".to_string()])).is_err());
+    // Jedes Element gehört zu genau einer Objektsteuerung.
+    let count = |c: &FieldClient| c.links().iter().map(|l| l.elements).sum::<usize>();
+    assert_eq!(count(&clients[0]) + count(&clients[1]), count(&clients[2]));
+    assert!(
+        clients[1]
+            .links()
+            .iter()
+            .all(|l| l.controller.ends_with("-Bstadt"))
+    );
+
+    let mut alive = [true, true, false];
+    let mut now = 0;
+    let mut run =
+        |server: &mut FieldServer, clients: &mut [FieldClient; 3], alive: [bool; 3], ms| {
+            let end = now + ms;
+            while now < end {
+                now += STEP_MS;
+                for (i, c) in clients.iter_mut().enumerate() {
+                    if alive[i] {
+                        for pdu in c.tick(now) {
+                            server.receive(addr(i), &pdu);
+                        }
+                    }
+                }
+                for (to, pdu) in server.tick(Tick::from_millis(now)) {
+                    let i = usize::from(to.port() - 1000);
+                    if alive[i] {
+                        clients[i].receive(now, &pdu);
+                    }
+                }
+            }
+        };
+    run(&mut server, &mut clients, alive, 1_000);
+    alive[2] = true;
+    run(&mut server, &mut clients, alive, 2_000);
+    let leaders = server.leaders();
+    let lead = |area: &str| {
+        leaders
+            .iter()
+            .find(|(a, _)| a.as_deref() == Some(area))
+            .and_then(|(_, l)| *l)
+    };
+    assert_eq!(lead("Adorf"), Some(PRIMARY_ID));
+    assert_eq!(lead("Strecke"), Some(PRIMARY_ID));
+    assert_eq!(lead("Bstadt"), Some(STANDBY_ID));
+    assert_eq!(server.leader(), None, "kein Stellwerk führt alles");
+    assert!(clients[0].connected() && clients[1].connected());
+    assert!(
+        !clients[2].connected(),
+        "das dritte Stellwerk führt nirgends"
+    );
+    let status = server.status();
+    assert_eq!(status.areas.len(), 3);
+
+    // Bstadt fällt aus: nach der Umschaltzeit führt dort das dritte Stellwerk, Adorf und die
+    // Strecke bleiben beim ersten.
+    alive[1] = false;
+    run(&mut server, &mut clients, alive, 5_000);
+    let leaders = server.leaders();
+    let lead = |area: &str| {
+        leaders
+            .iter()
+            .find(|(a, _)| a.as_deref() == Some(area))
+            .and_then(|(_, l)| *l)
+    };
+    assert_eq!(lead("Bstadt"), Some(WHOLE));
+    assert_eq!(lead("Adorf"), Some(PRIMARY_ID));
+    assert!(clients[0].connected());
+}

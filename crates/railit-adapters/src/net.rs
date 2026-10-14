@@ -19,6 +19,11 @@
 //! Rückfallebene der Objektsteuerungen die Signale bereits auf Halt gestellt. Der erste
 //! Verbindungsaufbau eines zugelassenen Stellwerks danach macht es zum führenden. Damit stellen
 //! nie zwei Stellwerke zugleich, auch nicht bei getrennter Verbindung zwischen ihnen.
+//!
+//! **Stellbereiche.** Hat das Netz Stellbereiche, gibt es je Bereich und Elementart eine
+//! Objektsteuerung (`OC-Weichen-Adorf`) und je Bereich einen Umschalter. So können
+//! Stellbereiche in getrennten Prozessen rechnen ([`FieldClient::for_areas`]); jedes
+//! Stellwerk stellt nur seine Bereiche (REQ-COM-010).
 
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
@@ -33,7 +38,7 @@ use serde::Serialize;
 
 use crate::sci::{Message, Protocol, Telegram};
 use crate::{
-    Element, Elements, INTERLOCKING_ID, LinkFaults, LinkStatus, command_of, input_of, layout,
+    Element, Elements, INTERLOCKING_ID, LinkFaults, LinkStatus, area_layout, command_of, input_of,
     message_of, rasta_now, status_of,
 };
 
@@ -67,6 +72,7 @@ struct ServerConn {
 }
 
 struct ServerOc {
+    group: usize,
     name: String,
     protocol: Protocol,
     elements: Elements,
@@ -114,6 +120,26 @@ pub struct FieldStatus {
     pub rejected: u64,
     /// Seit wann (ms, Uhr des Feldrechners) das führende Stellwerk ohne Verbindung ist.
     pub leader_lost_ms: Option<u64>,
+    /// Bei Netzen mit Stellbereichen: Umschalter je Bereich.
+    pub areas: Vec<AreaLeader>,
+}
+
+/// Umschalter eines Stellbereichs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AreaLeader {
+    /// Stellbereich.
+    pub area: String,
+    /// Führendes Stellwerk.
+    pub leader: Option<u32>,
+    /// Seit wann das führende Stellwerk ohne Verbindung ist.
+    pub leader_lost_ms: Option<u64>,
+}
+
+/// Umschalter einer Gruppe von Objektsteuerungen (eines Stellbereichs bzw. des ganzen Netzes).
+struct Group {
+    area: Option<String>,
+    leader: Option<u32>,
+    lost_at: Option<u64>,
 }
 
 /// Feldrechner: Simulator, Objektsteuerungen und Umschalter.
@@ -121,8 +147,7 @@ pub struct FieldServer {
     sim: Simulator,
     ocs: Vec<ServerOc>,
     interlockings: Vec<(u32, Option<SocketAddr>)>,
-    leader: Option<u32>,
-    lost_at: Option<u64>,
+    groups: Vec<Group>,
     switch_ms: u64,
     switches: u32,
     rejected: u64,
@@ -138,26 +163,34 @@ impl FieldServer {
         if interlockings.is_empty() {
             return Err("Feldrechner ohne zugelassenes Stellwerk".into());
         }
-        let ocs = layout(sim.topology())?
-            .into_iter()
-            .map(|oc| ServerOc {
-                conns: interlockings
-                    .iter()
-                    .map(|i| server_conn(oc.id, *i))
-                    .collect(),
-                name: oc.name,
-                protocol: oc.protocol,
-                elements: oc.elements,
-                id: oc.id,
-                bad_telegrams: 0,
-            })
-            .collect();
+        let mut ocs = Vec::new();
+        let mut groups = Vec::new();
+        for (g, (area, layout)) in area_layout(sim.topology())?.into_iter().enumerate() {
+            groups.push(Group {
+                area,
+                leader: None,
+                lost_at: None,
+            });
+            ocs.extend(layout.into_iter().map(|oc| {
+                ServerOc {
+                    group: g,
+                    conns: interlockings
+                        .iter()
+                        .map(|i| server_conn(oc.id, *i))
+                        .collect(),
+                    name: oc.name,
+                    protocol: oc.protocol,
+                    elements: oc.elements,
+                    id: oc.id,
+                    bad_telegrams: 0,
+                }
+            }));
+        }
         Ok(Self {
             sim,
             ocs,
             interlockings: interlockings.iter().map(|i| (*i, None)).collect(),
-            leader: None,
-            lost_at: None,
+            groups,
             switch_ms,
             switches: 0,
             rejected: 0,
@@ -175,13 +208,25 @@ impl FieldServer {
         &mut self.sim
     }
 
-    /// Führendes Stellwerk.
-    pub const fn leader(&self) -> Option<u32> {
-        self.leader
+    /// Führendes Stellwerk: das Stellwerk, das alle Stellbereiche führt (sonst keines).
+    pub fn leader(&self) -> Option<u32> {
+        let first = self.groups.first()?.leader?;
+        self.groups
+            .iter()
+            .all(|g| g.leader == Some(first))
+            .then_some(first)
     }
 
-    /// Nimmt eine PDU von `from` an. Nur das führende Stellwerk – oder, wenn keines führt,
-    /// ein zugelassenes – wird gehört; seine Stellbefehle wirken sofort.
+    /// Führendes Stellwerk je Stellbereich (ohne Stellbereiche: ein Eintrag ohne Namen).
+    pub fn leaders(&self) -> Vec<(Option<String>, Option<u32>)> {
+        self.groups
+            .iter()
+            .map(|g| (g.area.clone(), g.leader))
+            .collect()
+    }
+
+    /// Nimmt eine PDU von `from` an. Je Stellbereich wird nur das führende Stellwerk – oder,
+    /// wenn keines führt, ein zugelassenes – gehört; seine Stellbefehle wirken sofort.
     pub fn receive(&mut self, from: SocketAddr, pdu: &[u8]) {
         let Some((receiver, sender)) = railit_rasta::addresses(pdu) else {
             self.rejected = self.rejected.saturating_add(1);
@@ -191,30 +236,33 @@ impl FieldServer {
             self.rejected = self.rejected.saturating_add(1);
             return;
         };
-        if self.leader.is_some_and(|leader| leader != sender) {
+        let Some(oc) = self.ocs.iter_mut().find(|o| o.id == receiver) else {
+            self.rejected = self.rejected.saturating_add(1);
+            return;
+        };
+        let Some(group) = self.groups.get_mut(oc.group) else {
+            return;
+        };
+        if group.leader.is_some_and(|leader| leader != sender) {
             self.rejected = self.rejected.saturating_add(1);
             return;
         }
         slot.1 = Some(from);
         let t = rasta_now(self.now);
         let sim = &mut self.sim;
-        let Some(oc) = self.ocs.iter_mut().find(|o| o.id == receiver) else {
-            self.rejected = self.rejected.saturating_add(1);
-            return;
-        };
         let Some(c) = oc.conns.iter_mut().find(|c| c.interlocking == sender) else {
             return;
         };
         let mut telegrams = Vec::new();
         c.conn
             .receive(t, pdu, &mut |data| telegrams.push(data.to_vec()));
-        if self.leader.is_none() {
+        if group.leader.is_none() {
             // Führend wird ein Stellwerk erst mit einem echten Verbindungsaufbau.
             if c.conn.state() == State::Closed {
                 return;
             }
-            self.leader = Some(sender);
-            self.lost_at = None;
+            group.leader = Some(sender);
+            group.lost_at = None;
             self.switches = self.switches.saturating_add(1);
         }
         for raw in telegrams {
@@ -294,46 +342,52 @@ impl FieldServer {
         out
     }
 
-    /// Gibt die Führung frei, wenn alle Verbindungen des führenden Stellwerks seit der
-    /// Umschaltzeit abgebaut sind.
+    /// Gibt die Führung eines Stellbereichs frei, wenn alle Verbindungen seiner
+    /// Objektsteuerungen zum führenden Stellwerk seit der Umschaltzeit abgebaut sind.
     fn supervise_leader(&mut self) {
-        let Some(leader) = self.leader else {
-            return;
-        };
-        let alive = self.ocs.iter().any(|oc| {
-            oc.conns
-                .iter()
-                .any(|c| c.interlocking == leader && c.conn.state() != State::Closed)
-        });
-        if alive {
-            self.lost_at = None;
-            return;
-        }
-        let since = *self.lost_at.get_or_insert(self.now);
-        if self.now.saturating_sub(since) >= self.switch_ms {
-            self.leader = None;
-            self.lost_at = None;
-            for oc in &mut self.ocs {
-                for c in &mut oc.conns {
-                    if c.interlocking == leader {
-                        *c = server_conn(oc.id, leader);
+        for (g, group) in self.groups.iter_mut().enumerate() {
+            let Some(leader) = group.leader else {
+                continue;
+            };
+            let alive = self.ocs.iter().filter(|oc| oc.group == g).any(|oc| {
+                oc.conns
+                    .iter()
+                    .any(|c| c.interlocking == leader && c.conn.state() != State::Closed)
+            });
+            if alive {
+                group.lost_at = None;
+                continue;
+            }
+            let since = *group.lost_at.get_or_insert(self.now);
+            if self.now.saturating_sub(since) >= self.switch_ms {
+                group.leader = None;
+                group.lost_at = None;
+                for oc in self.ocs.iter_mut().filter(|oc| oc.group == g) {
+                    for c in &mut oc.conns {
+                        if c.interlocking == leader {
+                            *c = server_conn(oc.id, leader);
+                        }
                     }
                 }
             }
         }
     }
 
+    fn group_leader(&self, oc: &ServerOc) -> Option<u32> {
+        self.groups.get(oc.group).and_then(|g| g.leader)
+    }
+
     /// Zustand für Anzeige und Diagnose.
     pub fn status(&self) -> FieldStatus {
         FieldStatus {
-            leader: self.leader,
+            leader: self.leader(),
             interlockings: self
                 .interlockings
                 .iter()
                 .map(|(id, addr)| InterlockingStatus {
                     id: *id,
                     address: addr.map(|a| a.to_string()),
-                    leading: self.leader == Some(*id),
+                    leading: self.groups.iter().any(|g| g.leader == Some(*id)),
                     connected: self
                         .ocs
                         .iter()
@@ -348,7 +402,18 @@ impl FieldServer {
             controllers: self.ocs.len(),
             switches: self.switches,
             rejected: self.rejected,
-            leader_lost_ms: self.lost_at,
+            leader_lost_ms: self.groups.iter().filter_map(|g| g.lost_at).min(),
+            areas: self
+                .groups
+                .iter()
+                .filter_map(|g| {
+                    Some(AreaLeader {
+                        area: g.area.clone()?,
+                        leader: g.leader,
+                        leader_lost_ms: g.lost_at,
+                    })
+                })
+                .collect(),
         }
     }
 
@@ -357,10 +422,11 @@ impl FieldServer {
         self.ocs
             .iter()
             .map(|oc| {
+                let leader = self.group_leader(oc);
                 let conn = oc
                     .conns
                     .iter()
-                    .find(|c| Some(c.interlocking) == self.leader)
+                    .find(|c| Some(c.interlocking) == leader)
                     .map(|c| &c.conn);
                 LinkStatus {
                     controller: oc.name.clone(),
@@ -415,8 +481,29 @@ impl FieldClient {
     /// # Errors
     /// Ungültige Elementnamen.
     pub fn new(net: &Topology, id: u32) -> Result<Self, String> {
-        let ocs = layout(net)?
+        Self::for_areas(net, id, None)
+    }
+
+    /// Wie [`Self::new`], aber nur an die Objektsteuerungen der Stellbereiche `areas` (für
+    /// ein Stellwerk, das nur einen Teil des Netzes stellt).
+    ///
+    /// # Errors
+    /// Ungültige Elementnamen oder unbekannte Stellbereiche.
+    pub fn for_areas(net: &Topology, id: u32, areas: Option<&[String]>) -> Result<Self, String> {
+        let groups = area_layout(net)?;
+        if let Some(wanted) = areas {
+            for a in wanted {
+                if !groups.iter().any(|(g, _)| g.as_ref() == Some(a)) {
+                    return Err(format!("Stellbereich „{a}“ nicht im Netz"));
+                }
+            }
+        }
+        let ocs = groups
             .into_iter()
+            .filter(|(g, _)| {
+                areas.is_none_or(|wanted| g.as_ref().is_some_and(|g| wanted.contains(g)))
+            })
+            .flat_map(|(_, ocs)| ocs)
             .map(|oc| ClientOc {
                 conn: Connection::new(Config::new(id, oc.id, Role::Client)),
                 name: oc.name,
@@ -573,6 +660,19 @@ impl UdpField {
     /// # Errors
     /// Ungültige Elementnamen oder Socketfehler.
     pub fn connect(net: &Topology, field: SocketAddr, id: u32) -> Result<Self, String> {
+        Self::connect_areas(net, field, id, None)
+    }
+
+    /// Wie [`Self::connect`], nur an die Objektsteuerungen der Stellbereiche `areas`.
+    ///
+    /// # Errors
+    /// Ungültige Elementnamen, unbekannte Stellbereiche oder Socketfehler.
+    pub fn connect_areas(
+        net: &Topology,
+        field: SocketAddr,
+        id: u32,
+        areas: Option<&[String]>,
+    ) -> Result<Self, String> {
         let local: SocketAddr = if field.is_ipv4() {
             ([0, 0, 0, 0], 0).into()
         } else {
@@ -586,7 +686,7 @@ impl UdpField {
             .set_nonblocking(true)
             .map_err(|e| format!("UDP: {e}"))?;
         Ok(Self {
-            client: FieldClient::new(net, id)?,
+            client: FieldClient::for_areas(net, id, areas)?,
             socket,
             clock: Instant::now(),
         })

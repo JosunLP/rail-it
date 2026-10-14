@@ -235,3 +235,124 @@ fn direction_change_waits_for_the_link() {
     let status = &rt.ils_links()[0];
     assert!(status.up && status.discarded > 0, "{status:?}");
 }
+
+/// Zwei Prozesse (hier zwei Runtimes): Adorf und die Strecke in einem, Bstadt im anderen; die
+/// Grenzmeldungen zwischen Strecke und Bstadt laufen über SCI-ILS auf UDP (REQ-COM-010).
+mod split {
+    use super::*;
+
+    fn part(areas: &[&str]) -> Runtime<Simulator> {
+        let net = railit_import::parse("nordbahn.toml", NORDBAHN)
+            .unwrap()
+            .topology;
+        railit_runtime::simulation_areas(
+            net,
+            areas,
+            GenericRules::default(),
+            SimConfig::default(),
+            Duration::from_millis(100),
+        )
+        .unwrap()
+    }
+
+    fn holds(rt: &Runtime<Simulator>, address: &str) -> bool {
+        let (area, border) = rt.find_border(address).unwrap();
+        rt.state_of(area).unwrap().borders()[border.index().unwrap()].holding()
+    }
+
+    fn request(rt: &mut Runtime<Simulator>, id: u64, address: &str) {
+        let (area, border) = rt.find_border(address).unwrap();
+        rt.cycle_addressed(&[Addressed {
+            area,
+            id: RequestId(id),
+            request: Request::RequestPermission(border),
+        }]);
+    }
+
+    fn set_route(rt: &mut Runtime<Simulator>, id: u64, name: &str) {
+        let (area, route) = rt.find_route(name).unwrap();
+        rt.cycle_addressed(&[Addressed {
+            area,
+            id: RequestId(id),
+            request: Request::SetRoute(route),
+        }]);
+    }
+
+    fn connect() -> (Runtime<Simulator>, Runtime<Simulator>) {
+        let any: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let mut west = part(&["Adorf", "Strecke"]);
+        let mut east = part(&["Bstadt"]);
+        assert_eq!(west.remote_neighbours(), ["Bstadt"]);
+        assert_eq!(east.remote_neighbours(), ["Strecke"]);
+        // Adressen erst nach dem Binden bekannt: zuerst mit Platzhalter binden geht nicht,
+        // also zwei feste Sockets über Port 0 und gegenseitig eintragen.
+        let probe_w = std::net::UdpSocket::bind(any).unwrap();
+        let probe_e = std::net::UdpSocket::bind(any).unwrap();
+        let (aw, ae) = (probe_w.local_addr().unwrap(), probe_e.local_addr().unwrap());
+        drop((probe_w, probe_e));
+        west.use_ils_udp(aw, vec![("Bstadt".into(), ae)]).unwrap();
+        east.use_ils_udp(ae, vec![("Strecke".into(), aw)]).unwrap();
+        (west, east)
+    }
+
+    fn run(west: &mut Runtime<Simulator>, east: &mut Runtime<Simulator>, n: usize, both: bool) {
+        for _ in 0..n {
+            assert_eq!(west.cycle_addressed(&[]).safe_state, None);
+            if both {
+                assert_eq!(east.cycle_addressed(&[]).safe_state, None);
+            }
+            // Laufzeit auf localhost: kurz warten, damit die Datagramme da sind.
+            std::thread::sleep(std::time::Duration::from_micros(300));
+        }
+    }
+
+    #[test]
+    fn border_between_processes() {
+        let (mut west, mut east) = connect();
+        assert!(
+            west.use_ils_udp("127.0.0.1:0".parse().unwrap(), vec![])
+                .is_err()
+        );
+        run(&mut west, &mut east, 80, true);
+        assert!(
+            west.ils_links().iter().all(|l| l.up),
+            "{:?}",
+            west.ils_links()
+        );
+        assert!(east.ils_links()[0].up && east.ils_links()[0].remote.as_deref() == Some("Strecke"));
+        assert!(holds(&west, "Adorf>Strecke") && holds(&west, "Strecke>Bstadt"));
+        assert!(!holds(&east, "Bstadt>Strecke"));
+
+        // Richtungswechsel über beide Grenzen, die zweite über UDP.
+        request(&mut west, 1, "Strecke>Adorf");
+        run(&mut west, &mut east, 40, true);
+        request(&mut east, 2, "Bstadt>Strecke");
+        run(&mut west, &mut east, 60, true);
+        assert!(holds(&west, "Strecke>Adorf") && !holds(&west, "Strecke>Bstadt"));
+        assert!(holds(&east, "Bstadt>Strecke"));
+
+        // Ausfahrt aus Bstadt in die Strecke: Fahrt nur mit aktueller Meldung über UDP.
+        set_route(&mut east, 3, "BP2->Strecke");
+        run(&mut west, &mut east, 80, true);
+        let (area, id) = east.find_signal("BP2").unwrap();
+        let aspect = |rt: &Runtime<Simulator>| {
+            rt.state_of(area).unwrap().signals()[id.index().unwrap()].commanded()
+        };
+        assert_eq!(aspect(&east), Aspect::Proceed);
+
+        // Der westliche Prozess fällt aus: Bstadt nimmt die Fahrt zurück.
+        let mut lost = false;
+        for _ in 0..40 {
+            let out = east.cycle_addressed(&[]);
+            lost |= out.events.iter().any(|e| {
+                matches!(
+                    e.event,
+                    railit_kernel::Event::Alarm(railit_kernel::Alarm::BorderLost(_))
+                )
+            });
+        }
+        assert!(lost, "Grenze nicht gestört gemeldet");
+        assert_eq!(aspect(&east), Aspect::Stop);
+        assert!(!east.ils_links()[0].up);
+    }
+}

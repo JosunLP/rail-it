@@ -177,6 +177,55 @@ pub(crate) fn layout(net: &railit_topology::Topology) -> Result<Vec<OcLayout>, S
     Ok(out)
 }
 
+/// Objektsteuerungen eines Stellbereichs (ohne Stellbereiche: des ganzen Netzes).
+pub(crate) type OcGroup = (Option<String>, Vec<OcLayout>);
+
+/// Objektsteuerungen je Stellbereich: ohne Stellbereiche eine Gruppe mit allen
+/// Objektsteuerungen (wie [`layout`]); sonst je Bereich und Elementart eine Objektsteuerung
+/// (`OC-Weichen-Adorf`, RaSTA-Kennung `0x0B00_0000 + 16·(Bereich + 1) + Art`).
+pub(crate) fn area_layout(net: &railit_topology::Topology) -> Result<Vec<OcGroup>, String> {
+    let all = layout(net)?;
+    if net.areas().len() == 0 {
+        return Ok(vec![(None, all)]);
+    }
+    let mut groups = Vec::new();
+    for (g, (id, area)) in net.areas().enumerate() {
+        let cut = net
+            .area_cut(id)
+            .map_err(|e| format!("Stellbereich „{}“: {e}", area.name))?;
+        let mine = |e: &Element| match *e {
+            Element::Point(p) => cut.points.contains(&p),
+            Element::Signal(s) => cut.signals.contains(&s),
+            Element::Tvd(t) => cut.tvds.contains(&t),
+            Element::Lx(l) => cut.lxs.contains(&l),
+        };
+        let base = u32::try_from(g)
+            .ok()
+            .and_then(|g| g.checked_add(1))
+            .and_then(|g| g.checked_mul(16))
+            .ok_or("zu viele Stellbereiche")?;
+        let ocs = all
+            .iter()
+            .filter_map(|oc| {
+                let elements: Elements = oc
+                    .elements
+                    .iter()
+                    .filter(|(_, e)| mine(e))
+                    .cloned()
+                    .collect();
+                (!elements.is_empty()).then(|| OcLayout {
+                    name: format!("{}-{}", oc.name, area.name),
+                    protocol: oc.protocol,
+                    elements,
+                    id: oc.id.wrapping_add(base),
+                })
+            })
+            .collect();
+        groups.push((Some(area.name.clone()), ocs));
+    }
+    Ok(groups)
+}
+
 /// Objektsteuerung mit ihrer Verbindung zum Stellwerk.
 struct ObjectController {
     name: String,

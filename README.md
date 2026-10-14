@@ -40,7 +40,8 @@ Journal, Metriken unter `/v1/metrics`) und Phase 9 (Mitlesen und Rückschau: Ber
 liest das Journal laufend geprüft mit, Rückschau am Bedienplatz) und Phase 10 (Übernahme:
 Feldrechner mit Umschalter, Ausgabe erst nach Quittung, Übernahme des Betriebs durch den
 Bereitschaftsrechner, siehe [Übernahme](#übernahme)) und Phase 11 (Nachbarstellwerke: Grenzmeldungen
-zwischen den Stellbereichen über EULYNX SCI-ILS und RaSTA mit störbarer Strecke, siehe
+zwischen den Stellbereichen über EULYNX SCI-ILS und RaSTA mit störbarer Strecke, auch zwischen
+getrennten Prozessen mit Umschalter je Stellbereich am Feldrechner, siehe
 [ETCS, EULYNX und railML](#etcs-eulynx-und-railml)) sind umgesetzt.
 
 | Crate | Inhalt | |
@@ -223,6 +224,8 @@ railit ils                                  # Verbindungen zwischen den Stellber
 railit ils fault Adorf-Strecke --down       # unterbrechen: Ausfahrt fällt auf Halt
 railit scenario run tests/scenarios/22_nordbahn_sci_ils.toml
 railit scenario run --ils tests/scenarios/*.toml
+# Stellbereiche in getrennten Prozessen: railitd --areas Adorf,Strecke --ils-listen … \
+#   --ils-peer Bstadt=…  (siehe docs/leitfaden/stellbereiche.md)
 
 # Netz als railML 3 ausgeben und wieder einlesen
 railit net export examples/nordbahn.toml --out nordbahn.railml

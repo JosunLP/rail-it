@@ -13,6 +13,7 @@
 //! | [`rasta`] | RaSTA-Verbindung nach dem Aufbau unter beliebigen PDUs |
 //! | [`sci`] | EULYNX-SCI-Telegramme (Rundreise) |
 //! | [`sci_ils`] | SCI-ILS-Telegramme zwischen Stellwerken (Rundreise, bitgleich) |
+//! | [`ils_net`] | SCI-ILS aus dem Netz: beliebige PDUs an ein Stellwerk mit Nachbarn in einem anderen Prozess |
 //! | [`node_wire`] | Binärprotokoll und Knoten des sicheren Rechners |
 //! | [`mirror_state`] | Spiegel: beliebige übertragene Zustandsteile, danach Kernzyklen |
 //! | [`field_server`] | Feldrechner mit Umschalter: beliebige PDUs von beliebigen Absendern neben einem verbundenen Stellwerk |
@@ -457,6 +458,52 @@ pub fn sci_ils(data: &[u8]) {
             Some(t),
             "SCI-ILS-Rundreise"
         );
+    }
+}
+
+/// SCI-ILS aus dem Netz: Beliebige PDUs (Länge u8 · PDU, wiederholt) erreichen ein
+/// Stellwerk, dessen Nachbar in einem anderen Prozess rechnet. Ohne gültige RaSTA-Verbindung
+/// wird keine Grenzmeldung zugestellt, und nichts gerät in einen Panikpfad.
+///
+/// # Panics
+/// Wenn eine Grenzmeldung zugestellt wird (Fund für den Fuzzer).
+pub fn ils_net(data: &[u8]) {
+    use railit_adapters::ils::{IlsArea, IlsNet, IlsPair};
+    let Some(b0) = BorderId::from_index(0) else {
+        return;
+    };
+    let pair = IlsPair {
+        areas: [
+            IlsArea {
+                name: "West".into(),
+                global: 0,
+                local: Some(0),
+            },
+            IlsArea {
+                name: "Ost".into(),
+                global: 1,
+                local: None,
+            },
+        ],
+        borders: vec![(b0, b0)],
+    };
+    let Ok(mut net) = IlsNet::from_pairs(vec![pair]) else {
+        return;
+    };
+    let mut rest = data;
+    let mut now = 0u64;
+    while let Some((&len, tail)) = rest.split_first() {
+        let n = usize::from(len).min(tail.len());
+        let (pdu, tail) = tail.split_at(n);
+        net.receive_pdu(pdu);
+        now = now.saturating_add(50);
+        let got = net.advance(Tick::from_millis(now));
+        assert!(
+            got.is_empty(),
+            "SCI-ILS: Grenzmeldung ohne Verbindung zugestellt"
+        );
+        let _ = net.take_outgoing();
+        rest = tail;
     }
 }
 

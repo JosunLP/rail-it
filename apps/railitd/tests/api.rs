@@ -606,6 +606,93 @@ fn borders_over_sci_ils() {
     assert!(!permission(&d, "Adorf", "Adorf>Strecke"));
 }
 
+/// REQ-COM-010: Stellbereiche in getrennten Prozessen – Adorf und Strecke in einem Dienst,
+/// Bstadt in einem anderen, die Grenze dazwischen über SCI-ILS auf UDP.
+#[test]
+fn areas_in_separate_processes() {
+    let (plans, public) = prepare_areas("nordbahn-split");
+    let free = || {
+        std::net::UdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .to_string()
+    };
+    let (west_ils, east_ils) = (free(), free());
+    let common = [
+        "--plan",
+        plans.to_str().unwrap(),
+        "--trusted-key",
+        public.to_str().unwrap(),
+    ];
+    let west_peer = format!("Bstadt={east_ils}");
+    let east_peer = format!("Strecke={west_ils}");
+    let mut west_args = common.to_vec();
+    west_args.extend([
+        "--areas",
+        "Adorf,Strecke",
+        "--ils-listen",
+        &west_ils,
+        "--ils-peer",
+        &west_peer,
+    ]);
+    let mut east_args = common.to_vec();
+    east_args.extend([
+        "--areas",
+        "Bstadt",
+        "--ils-listen",
+        &east_ils,
+        "--ils-peer",
+        &east_peer,
+    ]);
+    let west = start_for(NORDBAHN, &west_args);
+    let east = start_for(NORDBAHN, &east_args);
+
+    let (_, health) = get(&east, "/v1/health", false);
+    assert_eq!(health["areas"], json!(["Bstadt"]));
+    let up = |d: &Daemon| {
+        let (_, links) = get(d, "/v1/ils", true);
+        links.as_array().unwrap().iter().all(|l| l["up"] == true)
+    };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !(permission(&west, "Strecke", "Strecke>Bstadt") && up(&west) && up(&east)) {
+        assert!(Instant::now() < deadline, "Anlauf über UDP bleibt aus");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let (_, links) = get(&east, "/v1/ils", true);
+    assert_eq!(links[0]["link"], "Strecke-Bstadt");
+    assert_eq!(links[0]["remote"], "Strecke");
+    assert!(!permission(&east, "Bstadt", "Bstadt>Strecke"));
+
+    // Richtungswechsel über die Prozessgrenze.
+    assert_eq!(
+        post(&west, "/v1/borders/Strecke%3EAdorf/request", None).0,
+        200
+    );
+    assert_eq!(
+        post(&east, "/v1/borders/Bstadt%3EStrecke/request", None).0,
+        200
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !permission(&east, "Bstadt", "Bstadt>Strecke") {
+        assert!(
+            Instant::now() < deadline,
+            "Erlaubniswechsel über UDP bleibt aus"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!permission(&west, "Strecke", "Strecke>Bstadt"));
+    // Fahrstraßen gehören dem Prozess ihres Bereichs.
+    assert_eq!(post(&west, "/v1/routes/BP2-%3EStrecke/set", None).0, 404);
+    assert_eq!(post(&east, "/v1/routes/BP2-%3EStrecke/set", None).0, 200);
+    wait_for(&east, "BP2->Strecke", "proceed");
+
+    // Der westliche Dienst fällt aus: Bstadt nimmt die Fahrt zurück.
+    drop(west);
+    wait_for(&east, "BP2->Strecke", "halted");
+    assert!(!up(&east));
+}
+
 fn delete(d: &Daemon, path: &str) -> u16 {
     agent()
         .delete(format!("{}{path}", d.url))

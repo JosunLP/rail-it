@@ -42,7 +42,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-SVC-010 | H-011, H-016 | `apps/railitd/src/api.rs`<br>`apps/railitd/src/review.rs` | `aux_operation_and_journal`<br>`apps/railitd/tests/api.rs` |
 | REQ-SVC-011 | H-011, H-015, H-016 | `apps/railitd/src/api.rs`<br>`apps/railitd/src/standby.rs`<br>`apps/railitd/ui/src/model.ts`<br>`apps/railitd/ui/src/panels.ts`<br>`crates/railit-runtime/src/replication.rs` | `standby_follows_the_primary`<br>`area_names_are_encoded`<br>`apps/railitd/tests/api.rs`<br>`apps/railitd/ui/e2e/bedienplatz.test.ts`<br>`apps/railitd/ui/test/role.test.ts` |
 | REQ-SVC-012 | H-001, H-003, H-010, H-015, H-017 | `apps/railitd/src/auth.rs`<br>`apps/railitd/src/engine.rs`<br>`apps/railitd/src/metrics.rs`<br>`apps/railitd/src/service.rs`<br>`apps/railitd/src/standby.rs`<br>`apps/railitd/src/takeover.rs`<br>`crates/railit-runtime/src/replication.rs`<br>`crates/railit-runtime/src/runtime.rs` | `outputs_wait_for_all_areas`<br>`lapse_releases_everything_and_rearms_after_catching_up`<br>`area_without_journal_lapses`<br>`takeover_in_beispielstadt_is_safe`<br>`takeover_in_nordbahn_is_safe`<br>`stale_takeover_without_gate_opens_the_crossing_before_a_train`<br>`gate_covers_only_a_current_standby`<br>`apps/railitd/tests/field.rs`<br>`crates/railit-runtime/tests/takeover.rs` |
-| REQ-SVC-013 | H-001, H-003, H-015, H-017 | `apps/railit-field/src/main.rs`<br>`apps/railitd/src/takeover.rs`<br>`crates/railit-adapters/src/net.rs`<br>`crates/railit-fuzz/src/lib.rs` | `second_interlocking_is_rejected_while_the_leader_lives`<br>`standby_leads_after_the_leader_is_lost`<br>`apps/railitd/tests/field.rs`<br>`crates/railit-adapters/tests/net.rs` |
+| REQ-SVC-013 | H-001, H-003, H-015, H-017 | `apps/railit-field/src/main.rs`<br>`apps/railitd/src/takeover.rs`<br>`crates/railit-adapters/src/net.rs`<br>`crates/railit-fuzz/src/lib.rs` | `second_interlocking_is_rejected_while_the_leader_lives`<br>`standby_leads_after_the_leader_is_lost`<br>`switch_per_area`<br>`apps/railitd/tests/field.rs`<br>`crates/railit-adapters/tests/net.rs` |
 | REQ-SVC-014 | H-001, H-003, H-015, H-016, H-017 | `apps/railitd/src/takeover.rs`<br>`apps/railitd/ui/src/model.ts` | `standby_takes_over_with_the_followed_state`<br>`standby_restarts_without_a_promise`<br>`apps/railitd/tests/field.rs`<br>`apps/railitd/ui/test/role.test.ts` |
 
 ## [embedded.md](../requirements/embedded.md)
@@ -130,6 +130,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-COM-007 | H-005, H-014 | `crates/railit-rasta/src/lib.rs` | `twenty_percent_loss_does_not_break_the_connection`<br>`both_directions_deliver_in_order_prefixes`<br>`crates/railit-rasta/tests/rasta.rs`<br>Szenario 18 |
 | REQ-COM-008 | H-014, H-015 | `apps/railit-field/src/main.rs`<br>`apps/railitd/src/field.rs`<br>`crates/railit-adapters/src/ils.rs`<br>`crates/railit-adapters/src/net.rs`<br>`crates/railit-fuzz/src/lib.rs` | `leader_connects_and_controls_the_field`<br>`remote_field_over_rasta`<br>`field_network_must_match`<br>`apps/railitd/tests/field.rs`<br>`crates/railit-adapters/tests/net.rs` |
 | REQ-COM-009 | H-012, H-014 | – | `telegram_roundtrip_and_rejects`<br>`interrupted_link_delivers_nothing_and_recovers`<br>`corruption_is_never_delivered`<br>`permission_stays_exclusive_over_disturbed_ils`<br>`direction_change_waits_for_the_link`<br>`all_scenarios_pass_over_sci_ils`<br>`borders_over_sci_ils`<br>`sci_ils`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-runtime/tests/ils.rs`<br>`crates/railit-runtime/tests/scenarios.rs`<br>Szenario 22 |
+| REQ-COM-010 | H-012, H-014 | `crates/railit-adapters/src/net.rs` | `split_processes_exchange_over_the_network`<br>`border_between_processes`<br>`areas_in_separate_processes`<br>`switch_per_area`<br>`ils_net`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-adapters/tests/net.rs`<br>`crates/railit-runtime/tests/ils.rs` |
 
 ## [plan.md](../requirements/plan.md)
 
@@ -194,4 +195,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-121 Anforderungen, davon 121 mit Nachweis.
+122 Anforderungen, davon 122 mit Nachweis.

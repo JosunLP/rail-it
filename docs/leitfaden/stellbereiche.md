@@ -66,6 +66,38 @@ Verlust, Verfälschung, Laufzeiten über `t_max`) Erlaubnisse anfordern und Ausf
 Nie halten beide Seiten einer Grenze die Erlaubnis, nie zeigen Ausfahrten beider Bahnhöfe in die
 Strecke Fahrt (REQ-COM-009).
 
+## Stellbereiche in getrennten Prozessen
+
+Jeder Stellbereich kann in einem eigenen Dienst rechnen – wie getrennte Stellwerke. Die
+Nachbarn finden sich über ihre UDP-Adressen; das Feld liegt in einem gemeinsamen
+Feldrechner, der je Stellbereich umschaltet:
+
+```sh
+railit-field --network nordbahn.toml --listen 127.0.0.1:7900 --control 127.0.0.1:7901 &
+
+# Stellwerk West: Adorf und die Strecke
+railitd --network nordbahn.toml --plan nordbahn/ --trusted-key railit.pub \
+        --listen 127.0.0.1:7410 --field remote --field-addr 127.0.0.1:7900 \
+        --field-control http://127.0.0.1:7901 --field-id 0A000001 \
+        --areas Adorf,Strecke --ils-listen 127.0.0.1:7510 --ils-peer Bstadt=127.0.0.1:7511 &
+
+# Stellwerk Ost: Bstadt
+railitd --network nordbahn.toml --plan nordbahn/ --trusted-key railit.pub \
+        --listen 127.0.0.1:7411 --field remote --field-addr 127.0.0.1:7900 \
+        --field-control http://127.0.0.1:7901 --field-id 0A000002 \
+        --areas Bstadt --ils-listen 127.0.0.1:7511 --ils-peer Strecke=127.0.0.1:7510 &
+
+W="railit --server http://127.0.0.1:7410"; E="railit --server http://127.0.0.1:7411"
+$W sim train add RE1 --at AA --length 100 --speed 80
+$W route set AA-AN1; $W route set 'AN1->Strecke'; $W route set 'Sbk1->Bstadt'
+$E route set BA-BN1          # RE1 fährt über die Prozessgrenze nach Bstadt Gleis 1
+```
+
+Fällt ein Dienst aus, melden seine Nachbarn die Grenze gestört und nehmen Fahrten über sie
+zurück; am Feldrechner wird sein Bereich nach der Umschaltzeit frei, sodass ein
+Bereitschaftsrechner für das ganze Netz ihn übernehmen kann (REQ-COM-010). Betriebsführung
+(Fahrplan, Zuglenkung) und Bereitschaftsrechner gibt es im verteilten Betrieb noch nicht.
+
 ## Bedienen
 
 ```sh

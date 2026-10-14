@@ -813,8 +813,12 @@ pub(crate) fn ils(c: &Client, output: Output) -> Res<ExitCode> {
                 f["loss_percent"], f["corrupt_percent"], f["delay_ms"]
             )
         };
+        let remote = l["remote"]
+            .as_str()
+            .map(|r| format!("  · {r} in anderem Prozess"))
+            .unwrap_or_default();
         println!(
-            "{:<24} {mark:<10} Grenzen {}  zugestellt {}  verworfen {}  unlesbar {}  ({faults})",
+            "{:<24} {mark:<10} Grenzen {}  zugestellt {}  verworfen {}  unlesbar {}  ({faults}){remote}",
             show(&l["link"]),
             l["borders"],
             l["delivered"],

@@ -475,7 +475,10 @@ impl Service {
 
     async fn sim(&self, command: SimCommand) -> Res<SimReply> {
         if let Some(control) = &self.field_control
-            && !matches!(command, SimCommand::Links)
+            && !matches!(
+                command,
+                SimCommand::Links | SimCommand::IlsLinks | SimCommand::IlsLink(..)
+            )
         {
             return Ok(control.call(command, &self.topology).await);
         }

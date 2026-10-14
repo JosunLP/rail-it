@@ -104,6 +104,39 @@ pub fn simulation_with<F: FieldAdapter>(
     Runtime::for_network(&net, areas, rules, field, cycle)
 }
 
+/// Wie [`simulation`], aber nur für die Stellbereiche `areas`; die übrigen rechnen in
+/// anderen Prozessen (siehe [`Runtime::use_ils_udp`]). Der Simulator umfasst das Gesamtnetz,
+/// die Runtime gibt nur die Meldungen ihrer Bereiche an die Kerne.
+///
+/// # Errors
+/// Unbekannter Bereich oder Projektierung fehlgeschlagen.
+pub fn simulation_areas(
+    net: Topology,
+    areas: &[&str],
+    rules: railit_rules::GenericRules,
+    sim: railit_sim::SimConfig,
+    cycle: railit_types::Duration,
+) -> Result<Runtime<railit_sim::Simulator>, String> {
+    for name in areas {
+        if !net.areas().any(|(_, a)| a.name == *name) {
+            return Err(format!("Stellbereich „{name}“ nicht im Netz"));
+        }
+    }
+    let compiled =
+        railit_planning::compile_areas(&net, None, &railit_planning::PlanningConfig::default())
+            .map_err(|e| e.to_string())?;
+    let mut parts = Vec::new();
+    for a in compiled {
+        if areas.contains(&a.name.as_str()) {
+            let plan = load_plan(a.compiled.image, None).map_err(|e| e.to_string())?;
+            parts.push((plan, a.cut));
+        }
+    }
+    let field = railit_sim::Simulator::new(net, sim);
+    let net = field.topology().clone();
+    Runtime::for_network(&net, parts, rules, field, cycle)
+}
+
 /// Prüft, ob Plan und Netz zusammengehören (gleiche Elemente in gleicher Reihenfolge).
 ///
 /// Der Simulator arbeitet auf dem Netz, der Kern auf dem Plan; beide verwenden dieselben
