@@ -240,6 +240,7 @@ fn direction_change_waits_for_the_link() {
 /// Grenzmeldungen zwischen Strecke und Bstadt laufen über SCI-ILS auf UDP (REQ-COM-010).
 mod split {
     use super::*;
+    use railit_runtime::railit_ops::{OpsConfig, OpsEvent, Timetable};
 
     fn part(areas: &[&str]) -> Runtime<Simulator> {
         let net = railit_import::parse("nordbahn.toml", NORDBAHN)
@@ -354,5 +355,124 @@ mod split {
         assert!(lost, "Grenze nicht gestört gemeldet");
         assert_eq!(aspect(&east), Aspect::Stop);
         assert!(!east.ils_links()[0].up);
+    }
+
+    /// Zwei Prozesse mit Zuglenkung und dem Nordbahn-Fahrplan, aus dem nur `train` fährt
+    /// (jeder Prozess hat hier einen eigenen Simulator; ein Zug des anderen Prozesses bliebe
+    /// dort physisch stehen und sperrte die eingleisige Strecke).
+    fn handover(
+        train: &str,
+    ) -> (
+        Runtime<Simulator>,
+        Runtime<Simulator>,
+        Vec<OpsEvent>,
+        Vec<OpsEvent>,
+    ) {
+        const FAHRPLAN: &str = include_str!("../../../examples/nordbahn-fahrplan.toml");
+        let net = railit_import::parse("nordbahn.toml", NORDBAHN)
+            .unwrap()
+            .topology;
+        let mut timetable = Timetable::parse(FAHRPLAN).unwrap();
+        timetable.trains.retain(|t| t.number == train);
+        let (mut west, mut east) = connect();
+        let cfg = OpsConfig {
+            ars: true,
+            ..OpsConfig::default()
+        };
+        for rt in [&mut west, &mut east] {
+            rt.enable_ops(&net, cfg, timetable.clone()).unwrap();
+        }
+        let (mut w_events, mut e_events) = (Vec::new(), Vec::new());
+        for i in 0..6000 {
+            w_events.extend(west.cycle_addressed(&[]).ops);
+            e_events.extend(east.cycle_addressed(&[]).ops);
+            std::thread::sleep(std::time::Duration::from_micros(200));
+            let requested = |events: &[OpsEvent]| {
+                events.iter().any(|e| {
+                    matches!(e, OpsEvent::TakenOver { .. })
+                }) && events.iter().rev().take_while(|e| !matches!(e, OpsEvent::TakenOver { .. })).any(
+                    |e| matches!(e, OpsEvent::RouteRequested { train: t, .. } if t == train),
+                )
+            };
+            if i > 10 && (requested(&w_events) || requested(&e_events)) {
+                break;
+            }
+        }
+        (west, east, w_events, e_events)
+    }
+
+    fn spawned(events: &[OpsEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                OpsEvent::Spawned { train, .. } => Some(train.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn taken_over(events: &[OpsEvent], train: &str) -> Option<String> {
+        events.iter().find_map(|e| match e {
+            OpsEvent::TakenOver { train: t, signal } if t == train => Some(signal.clone()),
+            _ => None,
+        })
+    }
+
+    /// REQ-OPS-006: Betriebsführung über Prozessgrenzen, von West nach Ost. Jeder Prozess setzt
+    /// die Züge seiner Bereiche ein und lenkt sie; an der Grenze zum anderen Prozess übergibt
+    /// er Zugnummer und Fahrplanstand über SCI-ILS, und drüben stellt die Zuglenkung ab dem
+    /// Einfahrsignal weiter.
+    #[test]
+    fn trains_are_handed_over_eastwards() {
+        let (west, east, w_events, e_events) = handover("RE1");
+        assert_eq!(spawned(&w_events), ["RE1"]);
+        assert!(spawned(&e_events).is_empty());
+        assert!(
+            w_events.iter().any(|e| matches!(e, OpsEvent::HandedOver { train, area, .. } if train == "RE1" && area == "Bstadt")),
+            "{w_events:?}"
+        );
+        let entry = taken_over(&e_events, "RE1")
+            .unwrap_or_else(|| panic!("RE1 nicht übernommen: {e_events:?}"));
+        assert_eq!(east.ops().unwrap().berth_of("RE1"), Some(entry.as_str()));
+        assert!(
+            e_events
+                .iter()
+                .any(|e| matches!(e, OpsEvent::RouteRequested { train, .. } if train == "RE1")),
+            "{e_events:?}"
+        );
+        // Im abgebenden Prozess steht der Zug als übergeben; nichts wartet auf die Verbindung.
+        let snap = west.ops().unwrap().snapshot();
+        let re1 = snap.trains.iter().find(|t| t.number == "RE1").unwrap();
+        assert_eq!(re1.elsewhere.as_deref(), Some("Bstadt"));
+        assert_eq!(re1.berth, None);
+        assert!(west.ils_links().iter().all(|l| l.pending_handovers == 0));
+        // Vormeldung und Übergabe.
+        assert_eq!(east.ils_links()[0].handovers, 2);
+        let announced = e_events
+            .iter()
+            .position(|e| matches!(e, OpsEvent::Announced { train, .. } if train == "RE1"));
+        let taken = e_events
+            .iter()
+            .position(|e| matches!(e, OpsEvent::TakenOver { train, .. } if train == "RE1"));
+        assert!(announced.is_some() && announced < taken, "{e_events:?}");
+        // Fremde Signale nimmt die Zugnummernmeldung nicht an.
+        let mut west = west;
+        assert!(west.ops_mut().unwrap().describe("X1", "BP1").is_err());
+    }
+
+    /// REQ-OPS-006: dasselbe von Ost nach West (der annehmende Prozess baut die Verbindung
+    /// auf).
+    #[test]
+    fn trains_are_handed_over_westwards() {
+        let (west, _east, w_events, e_events) = handover("RE2");
+        assert_eq!(spawned(&e_events), ["RE2"]);
+        assert!(spawned(&w_events).is_empty());
+        let entry = taken_over(&w_events, "RE2")
+            .unwrap_or_else(|| panic!("RE2 nicht übernommen: {w_events:?}\n{e_events:?}"));
+        assert_eq!(west.ops().unwrap().berth_of("RE2"), Some(entry.as_str()));
+        // Fahrplanstand: Bstadt ist erledigt, nächster Halt Adorf.
+        let snap = west.ops().unwrap().snapshot();
+        let re2 = snap.trains.iter().find(|t| t.number == "RE2").unwrap();
+        assert_eq!(re2.next_stop.as_deref(), Some("Adorf/2"), "{re2:?}");
     }
 }

@@ -93,10 +93,32 @@ $W route set AA-AN1; $W route set 'AN1->Strecke'; $W route set 'Sbk1->Bstadt'
 $E route set BA-BN1          # RE1 fährt über die Prozessgrenze nach Bstadt Gleis 1
 ```
 
+Jeder Dienst braucht am Feldrechner eine eigene RaSTA-Kennung (`--field-id`); zwei Dienste mit
+derselben Kennung stören sich gegenseitig die Verbindungen.
+
 Fällt ein Dienst aus, melden seine Nachbarn die Grenze gestört und nehmen Fahrten über sie
 zurück; am Feldrechner wird sein Bereich nach der Umschaltzeit frei, sodass ein
-Bereitschaftsrechner für das ganze Netz ihn übernehmen kann (REQ-COM-010). Betriebsführung
-(Fahrplan, Zuglenkung) und Bereitschaftsrechner gibt es im verteilten Betrieb noch nicht.
+Bereitschaftsrechner für das ganze Netz ihn übernehmen kann (REQ-COM-010). Einen
+Bereitschaftsrechner je Teil des Netzes gibt es noch nicht.
+
+### Fahrplan und Zuglenkung über Prozessgrenzen
+
+Mit `--timetable` und `--ars` lenkt jeder Dienst die Züge seiner Bereiche (REQ-OPS-006):
+
+- Eingesetzt wird ein Zug von dem Dienst, in dessen Bereich sein Einsetzsignal liegt; mit
+  entferntem Feld setzt ihn die Steuerung des Feldrechners ein (`--field-control`).
+- Führt der Weg eines Zuges in einen Bereich eines anderen Dienstes, **meldet** ihn die
+  Zuglenkung dort über die SCI-ILS-Verbindung **vor** – wie beim Anbieten eines Zuges. Der
+  Nachbar fordert daraufhin die Erlaubnisse auf seinem Teil des Weges an, damit er seine
+  Erlaubnis zur Grenze abgeben kann.
+- Fährt der Zug in die Fahrstraße über die Grenze ein, **übergibt** die Zuglenkung Zugnummer,
+  nächsten Halt, Verspätung und verfügte Wartezeit. Der Nachbar trägt die Nummer am
+  Einfahrsignal der Grenze ein und lenkt den Zug weiter; im abgebenden Dienst steht der Zug als
+  übergeben (`railit ops`: „in Bstadt“).
+
+Vormeldung und Übergabe sind Erweiterungen von rail-it im SCI-ILS-Telegramm und nicht
+sicherheitsrelevant: Jede Anforderung prüft der Kern. Geht eine Übergabe verloren, trägt der
+Fahrdienstleiter die Nummer drüben von Hand ein (`railit ops describe`).
 
 ## Bedienen
 

@@ -146,7 +146,7 @@ struct Args {
         long,
         value_delimiter = ',',
         requires = "ils_listen",
-        conflicts_with_all = ["standby", "timetable", "ars"]
+        conflicts_with = "standby"
     )]
     areas: Vec<String>,
     /// UDP-Adresse für SCI-ILS zu den Stellbereichen anderer Prozesse.
@@ -328,8 +328,14 @@ fn load(args: &Args) -> Result<(Topology, Runtime<ServiceField>), String> {
                 railit_runtime::railit_adapters::net::PRIMARY_ID
             });
             tracing::info!(%addr, id = format!("{id:08X}"), "Feld über den Feldrechner");
+            if !args.areas.is_empty() && args.field_id.is_none() {
+                tracing::warn!(
+                    "verteilte Stellbereiche am Feldrechner: jeder Dienst braucht eine eigene \
+                     RaSTA-Kennung (--field-id)"
+                );
+            }
             let areas = (!args.areas.is_empty()).then_some(args.areas.as_slice());
-            ServiceField::remote(&net, addr, id, areas)?
+            ServiceField::remote(&net, addr, id, areas, field_control(args))?
         }
         (FieldArg::Remote, None) => return Err("--field remote verlangt --field-addr".into()),
     };

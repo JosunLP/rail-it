@@ -692,6 +692,8 @@ pub(crate) fn ops_list(c: &Client, output: Output) -> Res<ExitCode> {
     for t in ops["trains"].as_array().cloned().unwrap_or_default() {
         let place = if t["left"] == true {
             "hat das Netz verlassen".to_string()
+        } else if let Some(area) = t["elsewhere"].as_str() {
+            format!("in {area} (übergeben)")
         } else {
             format!("an {}", show(&t["berth"]))
         };

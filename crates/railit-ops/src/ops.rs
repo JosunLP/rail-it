@@ -147,6 +147,36 @@ pub enum OpsEvent {
         /// Grund.
         reason: String,
     },
+    /// Zug an ein Stellwerk in einem anderen Prozess übergeben (REQ-OPS-006).
+    HandedOver {
+        /// Zugnummer.
+        train: String,
+        /// Letztes Signal in diesem Prozess.
+        from: String,
+        /// Übernehmender Stellbereich.
+        area: String,
+    },
+    /// Zug von einem Stellwerk in einem anderen Prozess vorgemeldet (REQ-OPS-006).
+    Announced {
+        /// Zugnummer.
+        train: String,
+        /// Einfahrsignal, an das er kommt.
+        signal: String,
+    },
+    /// Zug von einem Stellwerk in einem anderen Prozess übernommen (REQ-OPS-006).
+    TakenOver {
+        /// Zugnummer.
+        train: String,
+        /// Einfahrsignal, an dem die Nummer jetzt steht.
+        signal: String,
+    },
+    /// Übergabe nicht möglich; die Nummer ist verloren und muss drüben eingetragen werden.
+    HandoverFailed {
+        /// Zugnummer.
+        train: String,
+        /// Grund.
+        reason: String,
+    },
 }
 
 impl OpsEvent {
@@ -163,6 +193,10 @@ impl OpsEvent {
             Self::PermissionRequested { .. } => "permission_requested",
             Self::Spawned { .. } => "spawned",
             Self::SpawnFailed { .. } => "spawn_failed",
+            Self::HandedOver { .. } => "handed_over",
+            Self::Announced { .. } => "announced",
+            Self::TakenOver { .. } => "taken_over",
+            Self::HandoverFailed { .. } => "handover_failed",
         }
     }
 }
@@ -184,6 +218,8 @@ struct TrainState {
     delay_s: Option<i64>,
     left: bool,
     spawned: bool,
+    /// An dieses Stellwerk eines anderen Prozesses übergeben.
+    elsewhere: Option<String>,
 }
 
 /// Zug im Zustandsbild der Betriebsführung.
@@ -207,6 +243,27 @@ pub struct TrainSnapshot {
     pub delay_s: Option<i64>,
     /// Vom Disponenten verfügte zusätzliche Wartezeit in Sekunden.
     pub extra_delay_s: u64,
+    /// An dieses Stellwerk eines anderen Prozesses übergeben (REQ-OPS-006).
+    pub elsewhere: Option<String>,
+}
+
+/// Zug, der über eine Grenze an ein Stellwerk in einem anderen Prozess geht (REQ-OPS-006).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Handover {
+    /// Bereich dieses Prozesses, aus dem der Zug ausfährt.
+    pub area: usize,
+    /// Grenze aus dessen Sicht.
+    pub border: BorderId,
+    /// Zugnummer.
+    pub train: String,
+    /// Index des nächsten Halts im Fahrplan.
+    pub next_stop: usize,
+    /// Letzte gemessene Verspätung in Sekunden.
+    pub delay_s: Option<i64>,
+    /// Verfügte zusätzliche Wartezeit in Millisekunden.
+    pub extra_delay_ms: u64,
+    /// Nur Vormeldung; die Übergabe folgt, wenn der Zug die Grenze erreicht.
+    pub announce: bool,
 }
 
 /// Zustandsbild der Betriebsführung.
@@ -234,6 +291,11 @@ pub struct Ops {
     route_requests: HashMap<usize, (Tick, String)>,
     permission_requests: HashMap<(usize, BorderId), Tick>,
     events: Vec<OpsEvent>,
+    handovers: Vec<Handover>,
+    /// Gesendete Vormeldungen: Zug, Bereich, Grenze.
+    announced_to: std::collections::HashSet<(String, usize, BorderId)>,
+    /// Empfangene Vormeldungen: Zug → (Einfahrsignal, nächster Halt).
+    announced: BTreeMap<String, (String, usize)>,
 }
 
 fn since_ms(now: Tick, then: Tick) -> u64 {
@@ -270,6 +332,9 @@ impl Ops {
             route_requests: HashMap::new(),
             permission_requests: HashMap::new(),
             events: Vec::new(),
+            handovers: Vec::new(),
+            announced_to: std::collections::HashSet::new(),
+            announced: BTreeMap::new(),
         })
     }
 
@@ -296,6 +361,62 @@ impl Ops {
     /// Ereignisse seit dem letzten Aufruf.
     pub fn take_events(&mut self) -> Vec<OpsEvent> {
         std::mem::take(&mut self.events)
+    }
+
+    /// Züge, die seit dem letzten Aufruf an Stellwerke anderer Prozesse gehen (REQ-OPS-006).
+    pub fn take_handovers(&mut self) -> Vec<Handover> {
+        std::mem::take(&mut self.handovers)
+    }
+
+    /// Übergabe ließ sich nicht senden.
+    pub fn handover_failed(&mut self, train: &str, reason: String) {
+        self.events.push(OpsEvent::HandoverFailed {
+            train: train.to_string(),
+            reason,
+        });
+    }
+
+    /// Vormeldung eines Zuges, der aus einem Bereich eines anderen Prozesses an das
+    /// Einfahrsignal `signal` kommt (REQ-OPS-006): Bis zur Übergabe fordert die Zuglenkung die
+    /// Erlaubnisse auf seinem Weg ab dort an.
+    pub fn announce(&mut self, train: &str, signal: &str, next_stop: usize) {
+        let new = self
+            .announced
+            .insert(train.to_string(), (signal.to_string(), next_stop))
+            .is_none();
+        if new {
+            self.events.push(OpsEvent::Announced {
+                train: train.to_string(),
+                signal: signal.to_string(),
+            });
+        }
+    }
+
+    /// Übernimmt einen Zug, den ein Stellwerk in einem anderen Prozess an der Grenze vor dem
+    /// Einfahrsignal `signal` übergeben hat (REQ-OPS-006): Nummer an das Signal, Fahrplanstand
+    /// übernehmen. Die Zuglenkung stellt ab dort weiter.
+    pub fn take_over(
+        &mut self,
+        train: &str,
+        signal: &str,
+        next_stop: usize,
+        delay_s: Option<i64>,
+        extra_delay_ms: u64,
+    ) {
+        self.announced.remove(train);
+        self.unplace(train);
+        self.place(train, signal, false);
+        if let Some(t) = self.trains.get_mut(train) {
+            t.next_stop = next_stop;
+            t.delay_s = delay_s;
+            t.extra_delay_ms = extra_delay_ms;
+            t.spawned = true;
+            t.elsewhere = None;
+        }
+        self.events.push(OpsEvent::TakenOver {
+            train: train.to_string(),
+            signal: signal.to_string(),
+        });
     }
 
     /// Stellt Ereignisse zurück, damit sie mit dem nächsten Abruf ausgeliefert werden.
@@ -349,6 +470,7 @@ impl Ops {
         t.by_route = by_route;
         t.left = false;
         t.arrived = None;
+        t.elsewhere = None;
     }
 
     /// Zugnummer an einem Signal eintragen (Zugnummernmeldung, REQ-OPS-001).
@@ -358,6 +480,16 @@ impl Ops {
     pub fn describe(&mut self, train: &str, signal: &str) -> Result<(), String> {
         if !self.net.has_signal(signal) {
             return Err(format!("Signal „{signal}“ nicht gefunden"));
+        }
+        if !self.net.is_local_signal(signal) {
+            let area = self
+                .net
+                .area_of_signal(signal)
+                .and_then(|a| self.net.area_name(a))
+                .unwrap_or("?");
+            return Err(format!(
+                "Signal „{signal}“ gehört zu „{area}“, das in einem anderen Prozess rechnet"
+            ));
         }
         if train.is_empty() {
             return Err("Zugnummer fehlt".into());
@@ -467,7 +599,7 @@ impl Ops {
             return;
         };
         match phase {
-            RoutePhase::Occupied => self.advance(now, &route.start, &route.name, &route.next),
+            RoutePhase::Occupied => self.advance(now, &route),
             RoutePhase::Arrived => {
                 if let RouteNext::Signal(s) = &route.next {
                     self.arrive(now, s);
@@ -478,7 +610,8 @@ impl Ops {
     }
 
     /// Ein Zug fährt in eine Fahrstraße ein: Nummer zum Ziel weiterschalten.
-    fn advance(&mut self, now: Tick, start: &str, route: &str, next: &RouteNext) {
+    fn advance(&mut self, now: Tick, r: &crate::net::OpsRoute) {
+        let (start, route, next) = (r.start.as_str(), r.name.as_str(), &r.next);
         let Some(train) = self.berths.get_mut(start).and_then(VecDeque::pop_front) else {
             return;
         };
@@ -504,6 +637,38 @@ impl Ops {
             });
         }
         match next {
+            RouteNext::Signal(to) if !self.net.is_local_signal(to) => {
+                // Über die Grenze zu einem Stellwerk in einem anderen Prozess (REQ-OPS-006).
+                let area = self
+                    .net
+                    .area_of_signal(to)
+                    .and_then(|a| self.net.area_name(a))
+                    .unwrap_or("?")
+                    .to_string();
+                let state = self.trains.entry(train.clone()).or_default();
+                state.berth = None;
+                state.arrived = None;
+                state.elsewhere = Some(area.clone());
+                let (next_stop, delay_s, extra_delay_ms) =
+                    (state.next_stop, state.delay_s, state.extra_delay_ms);
+                if let Some(border) = r.border {
+                    self.handovers.push(Handover {
+                        area: r.area,
+                        border,
+                        train: train.clone(),
+                        next_stop,
+                        delay_s,
+                        extra_delay_ms,
+                        announce: false,
+                    });
+                }
+                self.announced_to.retain(|(t, _, _)| *t != train);
+                self.events.push(OpsEvent::HandedOver {
+                    train,
+                    from: start.to_string(),
+                    area,
+                });
+            }
             RouteNext::Signal(to) => {
                 self.place(&train, to, true);
                 self.events.push(OpsEvent::TrainMoved {
@@ -590,8 +755,23 @@ impl Ops {
             .filter_map(|(s, q)| q.front().map(|t| (s.clone(), t.clone())))
             .collect();
         for (signal, train) in fronts {
-            if let Some(path) = self.desired_path(now, &signal, &train) {
-                self.request_path(now, &train, &path, view, &mut actions);
+            if let Some((path, target)) = self.desired_path(now, &signal, &train) {
+                self.request_path(now, &train, &path, target, view, &mut actions);
+            }
+        }
+        // Vorgemeldete Züge aus anderen Prozessen: Erlaubnisse auf dem eigenen Teil ihres
+        // Weges anfordern, damit der Nachbar seine abgeben kann (REQ-OPS-006).
+        if self.cfg.ars {
+            let announced: Vec<(String, String, usize)> = self
+                .announced
+                .iter()
+                .map(|(t, (s, n))| (t.clone(), s.clone(), *n))
+                .collect();
+            for (train, signal, next) in announced {
+                let exit = self.timetable.train(&train).is_some_and(|r| r.exit);
+                if let Some(path) = self.target_path(&train, &signal, next, exit) {
+                    self.request_permissions(now, &train, &path, next, view, &mut actions);
+                }
             }
         }
         actions
@@ -604,6 +784,10 @@ impl Ops {
             .iter()
             .filter_map(|run| {
                 let e = run.enter.as_ref()?;
+                // Züge, die in einem Bereich eines anderen Prozesses beginnen, setzt dieser ein.
+                if !self.net.is_local_signal(&e.signal) {
+                    return None;
+                }
                 let spawned = self.trains.get(&run.number).is_some_and(|t| t.spawned);
                 (!spawned && now >= e.at).then(|| Spawn {
                     train: run.number.clone(),
@@ -629,7 +813,12 @@ impl Ops {
     }
 
     /// Fahrweg, den der Zug am Signal als Nächstes befahren soll.
-    fn desired_path(&mut self, now: Tick, signal: &str, train: &str) -> Option<Vec<usize>> {
+    fn desired_path(
+        &mut self,
+        now: Tick,
+        signal: &str,
+        train: &str,
+    ) -> Option<(Vec<usize>, usize)> {
         let state = self.trains.get(train)?;
         if state.hold {
             return None;
@@ -642,8 +831,9 @@ impl Ops {
         let Some(run) = run else {
             // Selbstblock: die einzige Fahrstraße ab dem Signal.
             let routes = self.net.routes_from(signal);
+            let next = state.next_stop;
             return (self.cfg.auto_signals && self.net.is_auto(signal) && routes.len() == 1)
-                .then(|| routes.to_vec());
+                .then(|| (routes.to_vec(), next));
         };
         let exit = run.exit;
         let (by_route, arrived, extra) = (state.by_route, state.arrived, state.extra_delay_ms);
@@ -667,26 +857,42 @@ impl Ops {
             }
             target = target.saturating_add(1);
         }
+        self.target_path(train, signal, target, exit)
+            .map(|path| (path, target))
+    }
+
+    /// Fahrweg ab `from` zum Halt `target` des Fahrplans bzw. aus dem Netz hinaus.
+    fn target_path(
+        &self,
+        train: &str,
+        from: &str,
+        target: usize,
+        exit: bool,
+    ) -> Option<Vec<usize>> {
         if let Some((_, signals)) = self.stop(train, target) {
             self.net.path(
-                signal,
+                from,
                 |n| matches!(n, RouteNext::Signal(s) if signals.contains(s)),
             )
         } else if exit {
-            self.net.path(signal, |n| *n == RouteNext::Leave)
+            self.net.path(from, |n| *n == RouteNext::Leave)
         } else {
             None
         }
     }
 
-    fn request_path(
+    /// Erlaubnisse für die Grenzen auf dem eigenen Teil des Weges anfordern; führt der Weg in
+    /// einen Bereich eines anderen Prozesses, den Zug dort einmal vormelden (REQ-OPS-006).
+    fn request_permissions(
         &mut self,
         now: Tick,
         train: &str,
         path: &[usize],
+        target: usize,
         view: &dyn OpsView,
         actions: &mut OpsActions,
     ) {
+        let mut announce = None;
         // Erlaubnisse für alle Grenzen auf dem Weg zum nächsten Ziel anfordern; der Kern
         // gibt sie nur ab, wenn es sicher ist.
         let permission_retry = self.cfg.retry_ms.saturating_mul(5);
@@ -694,9 +900,18 @@ impl Ops {
             let Some(route) = self.net.route(r) else {
                 continue;
             };
+            if !self.net.is_local(route.area) {
+                // Weiter vorn fordert das Stellwerk des anderen Prozesses selbst an.
+                break;
+            }
             let Some(b) = route.border else {
                 continue;
             };
+            if let RouteNext::Signal(next) = &route.next
+                && !self.net.is_local_signal(next)
+            {
+                announce = Some((route.area, b));
+            }
             if view.holding(route.area, b) != Some(false) {
                 continue;
             }
@@ -717,12 +932,41 @@ impl Ops {
                 border: self.net.border_address(route.area, b),
             });
         }
+        if let Some((area, border)) = announce
+            && self.announced_to.insert((train.to_string(), area, border))
+        {
+            let state = self.trains.get(train);
+            self.handovers.push(Handover {
+                area,
+                border,
+                train: train.to_string(),
+                next_stop: target,
+                delay_s: state.and_then(|t| t.delay_s),
+                extra_delay_ms: state.map_or(0, |t| t.extra_delay_ms),
+                announce: true,
+            });
+        }
+    }
+
+    fn request_path(
+        &mut self,
+        now: Tick,
+        train: &str,
+        path: &[usize],
+        target: usize,
+        view: &dyn OpsView,
+        actions: &mut OpsActions,
+    ) {
+        self.request_permissions(now, train, path, target, view, actions);
         let Some(&first) = path.first() else {
             return;
         };
         let Some(route) = self.net.route(first) else {
             return;
         };
+        if !self.net.is_local(route.area) {
+            return;
+        }
         if view.route_phase(route.area, route.id) != Some(RoutePhase::Idle) {
             return;
         }
@@ -768,6 +1012,7 @@ impl Ops {
                         at_stop: next.as_ref().filter(|_| t.arrived.is_some()).map(label),
                         delay_s: t.delay_s,
                         extra_delay_s: t.extra_delay_ms / 1000,
+                        elsewhere: t.elsewhere.clone(),
                     }
                 })
                 .collect(),

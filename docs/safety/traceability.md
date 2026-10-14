@@ -25,6 +25,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-OPS-003 | H-013 | `crates/railit-ops/src/ops.rs` | `ars_departs_on_time_and_requests_permissions`<br>`ars_waits_for_permission_and_follows_platform_changes`<br>`crates/railit-ops/tests/ops.rs`<br>Szenario 14 |
 | REQ-OPS-004 | H-013 | `crates/railit-ops/src/ops.rs` | `auto_signals_clear_for_any_described_train`<br>`crates/railit-ops/tests/ops.rs` |
 | REQ-OPS-005 | H-013 | `crates/railit-ops/src/ops.rs` | `ars_waits_for_permission_and_follows_platform_changes`<br>`timetable_and_dispatching_over_api`<br>Szenario 15 |
+| REQ-OPS-006 | H-013 | `crates/railit-adapters/src/ils.rs`<br>`crates/railit-ops/src/net.rs`<br>`crates/railit-ops/src/ops.rs`<br>`crates/railit-runtime/src/runtime.rs` | `trains_are_handed_over_eastwards`<br>`trains_are_handed_over_westwards`<br>`handover_telegram_roundtrip`<br>`handover_waits_for_the_link`<br>`sci_ils`<br>`crates/railit-runtime/tests/ils.rs` |
 
 ## [dienst.md](../requirements/dienst.md)
 
@@ -200,4 +201,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-127 Anforderungen, davon 127 mit Nachweis.
+128 Anforderungen, davon 128 mit Nachweis.

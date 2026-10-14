@@ -15,7 +15,7 @@ use std::io::Write;
 use std::time::Instant;
 
 use railit_adapters::LinkFaults;
-use railit_adapters::ils::{IlsArea, IlsNet, IlsPair, IlsStatus, UdpIls};
+use railit_adapters::ils::{IlsArea, IlsNet, IlsPair, IlsStatus, TrainHandover, UdpIls};
 use railit_etcs::{PositionReport, Rbc, RbcEvent, RbcView};
 use railit_journal::{Header, JournalWriter, SafetyKind};
 use railit_kernel::{
@@ -926,19 +926,7 @@ impl<F: FieldAdapter> Runtime<F> {
         cfg: OpsConfig,
         timetable: Timetable,
     ) -> Result<(), String> {
-        let plans: Vec<(&str, &PlanView<'_>)> = self
-            .areas
-            .iter()
-            .map(|a| (a.name.as_str(), a.plan()))
-            .collect();
-        let peer = |area: usize, b: BorderId| {
-            self.areas
-                .get(area)
-                .and_then(|a| b.index().and_then(|i| a.peers.get(i)))
-                .copied()
-                .flatten()
-        };
-        let net = OpsNet::new(&plans, peer, topology);
+        let net = self.ops_net(topology)?;
         let ops = Ops::new(net, cfg, timetable)
             .map_err(|e| format!("Fahrplan passt nicht zum Netz:\n  {}", e.join("\n  ")))?;
         self.ops = Some(ops);
@@ -951,6 +939,75 @@ impl<F: FieldAdapter> Runtime<F> {
             }
         }
         Ok(())
+    }
+
+    /// Fahrstraßengraph der Betriebsführung. Rechnen Bereiche des Netzes in anderen
+    /// Prozessen, werden ihre Pläne hier projektiert und hinter den eigenen eingereiht, damit
+    /// Wege über sie hinweg bekannt sind (REQ-OPS-006).
+    fn ops_net(&self, topology: &Topology) -> Result<OpsNet, String> {
+        let local = self.areas.len();
+        let remote: Vec<(String, AreaCut)> = topology
+            .areas()
+            .filter(|(_, a)| !self.areas.iter().any(|x| x.name == a.name))
+            .map(|(id, a)| {
+                topology
+                    .area_cut(id)
+                    .map(|cut| (a.name.clone(), cut))
+                    .map_err(|e| format!("Stellbereich „{}“: {e}", a.name))
+            })
+            .collect::<Result<_, _>>()?;
+        if remote.is_empty() {
+            let plans: Vec<(&str, &PlanView<'_>)> = self
+                .areas
+                .iter()
+                .map(|a| (a.name.as_str(), a.plan()))
+                .collect();
+            let peer = |area: usize, b: BorderId| {
+                self.areas
+                    .get(area)
+                    .and_then(|a| b.index().and_then(|i| a.peers.get(i)))
+                    .copied()
+                    .flatten()
+            };
+            return Ok(OpsNet::new(&plans, peer, topology));
+        }
+        let mut images = Vec::with_capacity(remote.len());
+        for (name, cut) in &remote {
+            let compiled = railit_planning::compile(&cut.topology, None)
+                .map_err(|e| format!("Stellbereich „{name}“: {e}"))?;
+            images.push(compiled.image);
+        }
+        let views: Vec<PlanView<'_>> = images
+            .iter()
+            .map(|i| PlanView::parse(i).map_err(|e| e.to_string()))
+            .collect::<Result<_, _>>()?;
+        // Schnitte aller Bereiche in der Reihenfolge des Graphen: erst die eigenen.
+        let mut cuts: Vec<AreaCut> = Vec::with_capacity(local + remote.len());
+        for a in &self.areas {
+            let id = topology
+                .find_area(&a.name)
+                .ok_or_else(|| format!("Stellbereich „{}“ nicht im Netz", a.name))?;
+            cuts.push(topology.area_cut(id).map_err(|e| e.to_string())?);
+        }
+        cuts.extend(remote.iter().map(|(_, c)| c.clone()));
+        let mut plans: Vec<(&str, &PlanView<'_>)> = self
+            .areas
+            .iter()
+            .map(|a| (a.name.as_str(), a.plan()))
+            .collect();
+        plans.extend(remote.iter().map(|(n, _)| n.as_str()).zip(&views));
+        let peer = |area: usize, b: BorderId| {
+            let border = cuts.get(area)?.borders.get(b.index()?)?;
+            cuts.iter().enumerate().find_map(|(h, other)| {
+                other
+                    .borders
+                    .iter()
+                    .position(|o| o.inside == border.outside && o.outside == border.inside)
+                    .and_then(BorderId::from_index)
+                    .map(|j| (h, j))
+            })
+        };
+        Ok(OpsNet::new(&plans, peer, topology).with_local_areas(local))
     }
 
     /// Betriebsführung, falls eingeschaltet.
@@ -995,6 +1052,25 @@ impl<F: FieldAdapter> Runtime<F> {
                 .and_then(|signal| self.field.spawn_train(&spawn, signal));
             if let Err(reason) = result {
                 ops.spawn_failed(&spawn.train, reason);
+            }
+        }
+        for h in ops.take_handovers() {
+            let handover = TrainHandover {
+                train: h.train.clone(),
+                next_stop: u16::try_from(h.next_stop).unwrap_or(u16::MAX),
+                delay_s: h.delay_s.map(|d| {
+                    i32::try_from(d).unwrap_or(if d < 0 { i32::MIN + 1 } else { i32::MAX })
+                }),
+                extra_delay_ms: u32::try_from(h.extra_delay_ms).unwrap_or(u32::MAX),
+                announce: h.announce,
+            };
+            let sent = self
+                .ils
+                .as_mut()
+                .ok_or_else(|| "keine SCI-ILS-Verbindung".to_string())
+                .and_then(|ils| ils.send_train((h.area, h.border), handover));
+            if let Err(reason) = sent {
+                ops.handover_failed(&h.train, reason);
             }
         }
         ops.take_events()
@@ -1103,13 +1179,9 @@ impl<F: FieldAdapter> Runtime<F> {
         self.cycle_addressed(&addressed)
     }
 
-    /// Führt einen Zyklus aus: Feld fortschreiben, Meldungen und Anforderungen an die Kerne,
-    /// Stellbefehle ans Feld, Grenzmeldungen an die Nachbarn.
-    pub fn cycle_addressed(&mut self, requests: &[Addressed]) -> CycleOutput {
-        self.now = self.now.checked_add(self.cycle).unwrap_or(self.now);
-        self.field.advance(self.now);
-        self.field_inputs.clear();
-        self.field.reports(&mut self.field_inputs);
+    /// SCI-ILS fortschreiben: Grenzmeldungen in die Eingänge der Kerne, vorgemeldete und
+    /// übernommene Züge an die Betriebsführung (REQ-OPS-006).
+    fn receive_ils(&mut self) {
         if let Some(ils) = &mut self.ils {
             if let Some(udp) = &mut self.ils_udp {
                 udp.receive(ils);
@@ -1127,7 +1199,41 @@ impl<F: FieldAdapter> Runtime<F> {
                     *slot = Some(message);
                 }
             }
+            // Vorgemeldete und übernommene Züge an das Einfahrsignal der Grenze (REQ-OPS-006).
+            for ((area, border), h) in ils.take_trains() {
+                let (Some(ops), Some(a)) = (&mut self.ops, self.areas.get(area)) else {
+                    continue;
+                };
+                let plan = a.plan();
+                let Some(signal) = plan
+                    .border_entry_signal(border)
+                    .and_then(|s| plan.signal_name(s))
+                else {
+                    continue;
+                };
+                if h.announce {
+                    ops.announce(&h.train, signal, usize::from(h.next_stop));
+                } else {
+                    ops.take_over(
+                        &h.train,
+                        signal,
+                        usize::from(h.next_stop),
+                        h.delay_s.map(i64::from),
+                        u64::from(h.extra_delay_ms),
+                    );
+                }
+            }
         }
+    }
+
+    /// Führt einen Zyklus aus: Feld fortschreiben, Meldungen und Anforderungen an die Kerne,
+    /// Stellbefehle ans Feld, Grenzmeldungen an die Nachbarn.
+    pub fn cycle_addressed(&mut self, requests: &[Addressed]) -> CycleOutput {
+        self.now = self.now.checked_add(self.cycle).unwrap_or(self.now);
+        self.field.advance(self.now);
+        self.field_inputs.clear();
+        self.field.reports(&mut self.field_inputs);
+        self.receive_ils();
 
         let mut all = std::mem::take(&mut self.ops_pending);
         all.extend_from_slice(requests);

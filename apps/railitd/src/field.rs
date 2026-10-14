@@ -26,8 +26,9 @@ pub(crate) const REMOTE: &str =
 pub(crate) enum ServiceField {
     /// Simulator im Dienst.
     Local(DynField),
-    /// Feldrechner über RaSTA/UDP.
-    Remote(Box<UdpField>),
+    /// Feldrechner über RaSTA/UDP, optional mit seiner Steuerung zum Einsetzen der Züge des
+    /// Fahrplans.
+    Remote(Box<UdpField>, Option<FieldControl>),
 }
 
 impl ServiceField {
@@ -38,17 +39,19 @@ impl ServiceField {
         addr: SocketAddr,
         id: u32,
         areas: Option<&[String]>,
+        control: Option<FieldControl>,
     ) -> Result<Self, String> {
-        Ok(Self::Remote(Box::new(UdpField::connect_areas(
-            net, addr, id, areas,
-        )?)))
+        Ok(Self::Remote(
+            Box::new(UdpField::connect_areas(net, addr, id, areas)?),
+            control,
+        ))
     }
 
     /// Das eingebaute Feld.
     pub(crate) fn local_mut(&mut self) -> Option<&mut DynField> {
         match self {
             Self::Local(f) => Some(f),
-            Self::Remote(_) => None,
+            Self::Remote(..) => None,
         }
     }
 
@@ -56,7 +59,7 @@ impl ServiceField {
     pub(crate) fn links(&self) -> Vec<LinkStatus> {
         match self {
             Self::Local(f) => f.links(),
-            Self::Remote(f) => f.client().links(),
+            Self::Remote(f, _) => f.client().links(),
         }
     }
 
@@ -65,7 +68,7 @@ impl ServiceField {
     pub(crate) fn connected(&self) -> bool {
         match self {
             Self::Local(_) => true,
-            Self::Remote(f) => f.client().connected(),
+            Self::Remote(f, _) => f.client().connected(),
         }
     }
 
@@ -73,7 +76,7 @@ impl ServiceField {
     pub(crate) fn take_sim_events(&mut self) -> Vec<SimEvent> {
         match self {
             Self::Local(f) => f.simulator_mut().take_events(),
-            Self::Remote(_) => Vec::new(),
+            Self::Remote(..) => Vec::new(),
         }
     }
 }
@@ -83,21 +86,21 @@ impl FieldAdapter for ServiceField {
         match self {
             Self::Local(f) => f.advance(now),
             // Der Feldrechner hat seine eigene Uhr; RaSTA läuft mit der Wanduhr.
-            Self::Remote(f) => f.advance(),
+            Self::Remote(f, _) => f.advance(),
         }
     }
 
     fn reports(&self, out: &mut Vec<Input>) {
         match self {
             Self::Local(f) => f.reports(out),
-            Self::Remote(f) => out.extend(f.reports()),
+            Self::Remote(f, _) => out.extend(f.reports()),
         }
     }
 
     fn apply(&mut self, commands: &[Command]) {
         match self {
             Self::Local(f) => f.apply(commands),
-            Self::Remote(f) => f.apply(commands),
+            Self::Remote(f, _) => f.apply(commands),
         }
     }
 
@@ -108,14 +111,34 @@ impl FieldAdapter for ServiceField {
     ) -> Result<(), String> {
         match self {
             Self::Local(f) => f.spawn_train(spawn, signal),
-            Self::Remote(_) => Err(REMOTE.into()),
+            // Züge des Fahrplans setzt die Steuerung des Feldrechners ein, im Hintergrund:
+            // Der Zyklus wartet nicht auf HTTP.
+            Self::Remote(_, Some(control)) => {
+                let control = control.clone();
+                let body = json!({
+                    "name": spawn.train,
+                    "signal": spawn.signal,
+                    "length_m": spawn.length_m,
+                    "speed_kmh": spawn.speed_kmh,
+                    "ignore_signals": false,
+                    "etcs": spawn.etcs,
+                });
+                let train = spawn.train.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = control.request("POST", "/v1/sim/trains", Some(body)) {
+                        tracing::warn!(train, "Zug nicht eingesetzt: {e}");
+                    }
+                });
+                Ok(())
+            }
+            Self::Remote(_, None) => Err(REMOTE.into()),
         }
     }
 
     fn etcs_reports(&self) -> Vec<(String, SignalId, bool)> {
         match self {
             Self::Local(f) => f.etcs_reports(),
-            Self::Remote(_) => Vec::new(),
+            Self::Remote(..) => Vec::new(),
         }
     }
 

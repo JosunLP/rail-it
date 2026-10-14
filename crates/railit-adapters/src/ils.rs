@@ -25,6 +25,23 @@
 //! Annäherungsabschnitt frei, Bit 3 Anforderung, Bit 4 ausschließlich verschlossen; die
 //! übrigen Bits müssen 0 sein.
 //!
+//! **Zugübergabe** (Erweiterung von rail-it, nicht Teil der Baseline; nicht
+//! sicherheitsrelevant, wie eine Zugnummernmeldeanlage): Fährt ein Zug über eine Grenze zu
+//! einem Stellwerk in einem anderen Prozess, übergibt die Betriebsführung seine Zugnummer
+//! und seinen Fahrplanstand über dieselbe Verbindung (REQ-OPS-006):
+//!
+//! ```text
+//! Protokoll 0x60 · Nachrichtentyp 0x0101 · Absender 20 Byte · Empfänger 20 Byte · Grenze u8
+//! · Zugnummer 20 Byte · nächster Halt u16 · Verspätung in s i32 (oder i32::MIN) · Zusatz-
+//! verspätung in ms u32 (alle big-endian)
+//! ```
+//!
+//! Die **Zugvormeldung** (Nachrichtentyp 0x0102, gleicher Aufbau) meldet einen Zug an, bevor
+//! er die Grenze erreicht – wie das Anbieten eines Zuges im Zugmeldeverfahren: Der Nachbar
+//! fordert damit auf seinem Teil des Weges die Erlaubnisse an, die der Zug braucht.
+//! Übergaben und Vormeldungen, die bei unterbrochener Verbindung anfallen, warten, bis sie
+//! wieder steht.
+//!
 //! Zugestellt wird nur, was über eine stehende Verbindung **neu** eingetroffen ist: Bleiben
 //! die Meldungen eines Nachbarn aus – weil die Verbindung gestört ist oder sein Kern nicht
 //! mehr rechnet, während die RaSTA-Lebenszeichen weiterlaufen –, bemerkt der Kern das am
@@ -49,6 +66,12 @@ pub const PROTOCOL: u8 = 0x60;
 pub const BORDER_STATUS: u16 = 0x0001;
 /// Länge eines Telegramms.
 pub const TELEGRAM_LEN: usize = 3 + 2 * ID_LEN + 6;
+/// Nachrichtentyp „Zugübergabe“ (Erweiterung von rail-it).
+pub const TRAIN_HANDOVER: u16 = 0x0101;
+/// Nachrichtentyp „Zugvormeldung“ (Erweiterung von rail-it), gleicher Aufbau.
+pub const TRAIN_ANNOUNCE: u16 = 0x0102;
+/// Länge eines Telegramms „Zugübergabe“.
+pub const HANDOVER_LEN: usize = 3 + 3 * ID_LEN + 1 + 2 + 4 + 4;
 /// RaSTA-Kennungen der Stellwerke: diese Basis plus Index des Bereichs.
 const RASTA_BASE: u32 = 0x0C00_0000;
 
@@ -196,6 +219,95 @@ impl IlsTelegram {
     }
 }
 
+/// Zug, den die Betriebsführung an ein Stellwerk in einem anderen Prozess übergibt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrainHandover {
+    /// Zugnummer (SCI-Kennung).
+    pub train: String,
+    /// Index des nächsten Halts im Fahrplan.
+    pub next_stop: u16,
+    /// Letzte bekannte Verspätung in Sekunden.
+    pub delay_s: Option<i32>,
+    /// Verfügte Zusatzverspätung in Millisekunden.
+    pub extra_delay_ms: u32,
+    /// Nur Vormeldung: Der Zug kommt erst noch.
+    pub announce: bool,
+}
+
+/// Telegramm „Zugübergabe“ bzw. „Zugvormeldung“.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandoverTelegram {
+    /// Absender (Name des Stellbereichs).
+    pub sender: String,
+    /// Empfänger (Name des Stellbereichs).
+    pub receiver: String,
+    /// Nummer der Grenze innerhalb des Paars.
+    pub border: u8,
+    /// Übergebener Zug.
+    pub handover: TrainHandover,
+}
+
+impl HandoverTelegram {
+    /// Kodiert das Telegramm.
+    ///
+    /// # Errors
+    /// [`IlsError::Identifier`] bei zu langen oder unzulässigen Kennungen oder Zugnummern.
+    pub fn encode(&self) -> Result<Vec<u8>, IlsError> {
+        let mut out = Vec::with_capacity(HANDOVER_LEN);
+        out.push(PROTOCOL);
+        let kind = if self.handover.announce {
+            TRAIN_ANNOUNCE
+        } else {
+            TRAIN_HANDOVER
+        };
+        out.extend_from_slice(&kind.to_be_bytes());
+        put_id(&mut out, &self.sender)?;
+        put_id(&mut out, &self.receiver)?;
+        out.push(self.border);
+        let h = &self.handover;
+        put_id(&mut out, &h.train)?;
+        out.extend_from_slice(&h.next_stop.to_be_bytes());
+        out.extend_from_slice(&h.delay_s.unwrap_or(i32::MIN).to_be_bytes());
+        out.extend_from_slice(&h.extra_delay_ms.to_be_bytes());
+        Ok(out)
+    }
+
+    /// Liest ein Telegramm.
+    ///
+    /// # Errors
+    /// [`IlsError`], wenn Länge, Teilschnittstelle, Nachricht oder Kennungen ungültig sind.
+    pub fn decode(raw: &[u8]) -> Result<Self, IlsError> {
+        if raw.len() != HANDOVER_LEN {
+            return Err(IlsError::Length);
+        }
+        let byte = |i: usize| raw.get(i).copied().ok_or(IlsError::Length);
+        let kind = u16::from_be_bytes([byte(1)?, byte(2)?]);
+        if byte(0)? != PROTOCOL || !matches!(kind, TRAIN_HANDOVER | TRAIN_ANNOUNCE) {
+            return Err(IlsError::Unknown);
+        }
+        let id = |at: usize| get_id(raw.get(at..at + ID_LEN).ok_or(IlsError::Length)?);
+        let word = |at: usize| -> Result<[u8; 4], IlsError> {
+            Ok([byte(at)?, byte(at + 1)?, byte(at + 2)?, byte(at + 3)?])
+        };
+        let at = 3 + 2 * ID_LEN;
+        let train_at = at + 1;
+        let rest = train_at + ID_LEN;
+        let delay = i32::from_be_bytes(word(rest + 2)?);
+        Ok(Self {
+            sender: id(3)?,
+            receiver: id(3 + ID_LEN)?,
+            border: byte(at)?,
+            handover: TrainHandover {
+                train: id(train_at)?,
+                next_stop: u16::from_be_bytes([byte(rest)?, byte(rest + 1)?]),
+                delay_s: (delay != i32::MIN).then_some(delay),
+                extra_delay_ms: u32::from_be_bytes(word(rest + 6)?),
+                announce: kind == TRAIN_ANNOUNCE,
+            },
+        })
+    }
+}
+
 /// Ende einer Grenze: Bereich (Index) und Grenze aus dessen Sicht.
 pub type Endpoint = (usize, BorderId);
 
@@ -216,6 +328,10 @@ pub struct IlsStatus {
     pub bad_telegrams: u32,
     /// Zugestellte Grenzmeldungen.
     pub delivered: u64,
+    /// Empfangene Zugübergaben.
+    pub handovers: u64,
+    /// Zugübergaben, die auf die Verbindung warten.
+    pub pending_handovers: usize,
     /// Eingestellte Störungen.
     pub faults: LinkFaults,
     /// Bereich, der in einem anderen Prozess rechnet (über UDP angebunden).
@@ -268,8 +384,11 @@ struct IlsLink {
     borders: Vec<(BorderId, BorderId)>,
     /// Aus dem Netz eingegangene PDUs für die lokale Seite.
     inbound: Vec<Vec<u8>>,
+    /// Zugübergaben je Seite, die auf eine stehende Verbindung warten.
+    pending: [Vec<Vec<u8>>; 2],
     bad_telegrams: u32,
     delivered: u64,
+    handovers: u64,
 }
 
 /// SCI-ILS zwischen Stellbereichen: Verbindungen zwischen zwei Bereichen dieses Prozesses
@@ -279,6 +398,8 @@ pub struct IlsNet {
     links: Vec<IlsLink>,
     /// PDUs an Bereiche anderer Prozesse: Name des Empfängerbereichs und PDU.
     outgoing: Vec<(String, Vec<u8>)>,
+    /// Eingegangene Zugübergaben mit ihrem Empfänger.
+    trains: Vec<(Endpoint, TrainHandover)>,
     now: u64,
 }
 
@@ -379,6 +500,7 @@ impl IlsNet {
         Ok(Self {
             links,
             outgoing: Vec::new(),
+            trains: Vec::new(),
             now: 0,
         })
     }
@@ -404,6 +526,38 @@ impl IlsNet {
             }
             return;
         }
+    }
+
+    /// Übergibt einen Zug über die Grenze `from` an den Nachbarn oder meldet ihn vor
+    /// ([`TrainHandover::announce`], REQ-OPS-006). Steht die Verbindung nicht, wartet die
+    /// Nachricht, bis sie wieder steht.
+    ///
+    /// # Errors
+    /// Beschreibung, wenn es die Grenze nicht gibt oder die Zugnummer keine gültige Kennung
+    /// ist.
+    pub fn send_train(&mut self, from: Endpoint, handover: TrainHandover) -> Result<(), String> {
+        let link = self
+            .links
+            .iter_mut()
+            .find(|l| l.locate(from).is_some())
+            .ok_or("keine SCI-ILS-Verbindung an dieser Grenze")?;
+        let (side, number) = link.locate(from).ok_or("Grenze unbekannt")?;
+        let tg = HandoverTelegram {
+            sender: link.sides[side].area.name.clone(),
+            receiver: link.sides[1 - side].area.name.clone(),
+            border: number,
+            handover,
+        };
+        let raw = tg
+            .encode()
+            .map_err(|e| format!("Zug „{}“: {e}", tg.handover.train))?;
+        link.pending[side].push(raw);
+        Ok(())
+    }
+
+    /// Eingegangene Zugübergaben seit dem letzten Aufruf mit ihrem Empfänger.
+    pub fn take_trains(&mut self) -> Vec<(Endpoint, TrainHandover)> {
+        std::mem::take(&mut self.trains)
     }
 
     /// Gibt die gesendeten PDUs auf die Strecken (nach allen [`Self::send_from`] eines Zyklus).
@@ -474,6 +628,11 @@ impl IlsNet {
                         continue;
                     }
                     for raw in telegrams {
+                        if let Some(train) = link.accept_train(to, &raw) {
+                            link.handovers = link.handovers.saturating_add(1);
+                            self.trains.push(train);
+                            continue;
+                        }
                         match link.accept(to, &raw) {
                             Some(m) => {
                                 link.delivered = link.delivered.saturating_add(1);
@@ -481,6 +640,13 @@ impl IlsNet {
                             }
                             None => link.bad_telegrams = link.bad_telegrams.saturating_add(1),
                         }
+                    }
+                }
+            }
+            for (side, pending) in link.sides.iter_mut().zip(&mut link.pending) {
+                if side.is_local() && side.conn.is_up() {
+                    for raw in pending.drain(..) {
+                        let _ = side.conn.send(t, &raw);
                     }
                 }
             }
@@ -526,6 +692,8 @@ impl IlsNet {
                         .fold(0, u32::saturating_add),
                     bad_telegrams: l.bad_telegrams,
                     delivered: l.delivered,
+                    handovers: l.handovers,
+                    pending_handovers: l.pending.iter().map(Vec::len).sum(),
                     faults: local().next().map(|s| s.out.faults).unwrap_or_default(),
                     remote: l
                         .sides
@@ -562,8 +730,10 @@ impl IlsLink {
             ],
             borders: Vec::new(),
             inbound: Vec::new(),
+            pending: [Vec::new(), Vec::new()],
             bad_telegrams: 0,
             delivered: 0,
+            handovers: 0,
         }
     }
 
@@ -596,6 +766,18 @@ impl IlsLink {
                 );
             }
         }
+    }
+
+    /// Empfang einer Zugübergabe auf Seite `to`.
+    fn accept_train(&self, to: usize, raw: &[u8]) -> Option<(Endpoint, TrainHandover)> {
+        let tg = HandoverTelegram::decode(raw).ok()?;
+        let from = 1 - to;
+        if tg.sender != self.sides[from].area.name || tg.receiver != self.sides[to].area.name {
+            return None;
+        }
+        let (b0, b1) = *self.borders.get(usize::from(tg.border))?;
+        let border = if to == 0 { b0 } else { b1 };
+        Some(((self.sides[to].area.local?, border), tg.handover))
     }
 
     /// Empfang auf Seite `to`: Telegramm prüfen und dem Empfänger zuordnen.
@@ -729,6 +911,56 @@ mod tests {
         assert_eq!(bad.encode(), Err(IlsError::Identifier));
     }
 
+    fn train(announce: bool) -> TrainHandover {
+        TrainHandover {
+            train: "RE 4711".into(),
+            next_stop: 2,
+            delay_s: Some(-30),
+            extra_delay_ms: 60_000,
+            announce,
+        }
+    }
+
+    /// REQ-OPS-006: Zugübergabe und -vormeldung hin und zurück; Fehler werden erkannt.
+    #[test]
+    fn handover_telegram_roundtrip() {
+        for (announce, delay) in [(false, Some(-30)), (true, None), (false, Some(i32::MAX))] {
+            let t = HandoverTelegram {
+                sender: "Strecke".into(),
+                receiver: "Bstadt".into(),
+                border: 1,
+                handover: TrainHandover {
+                    delay_s: delay,
+                    ..train(announce)
+                },
+            };
+            let raw = t.encode().unwrap();
+            assert_eq!(raw.len(), HANDOVER_LEN);
+            assert_eq!(HandoverTelegram::decode(&raw).unwrap(), t);
+            assert!(IlsTelegram::decode(&raw).is_err());
+        }
+        let mut raw = HandoverTelegram {
+            sender: "A".into(),
+            receiver: "B".into(),
+            border: 0,
+            handover: train(false),
+        }
+        .encode()
+        .unwrap();
+        raw[2] = 0x03;
+        assert_eq!(HandoverTelegram::decode(&raw), Err(IlsError::Unknown));
+        let bad = HandoverTelegram {
+            sender: "A".into(),
+            receiver: "B".into(),
+            border: 0,
+            handover: TrainHandover {
+                train: "RE_1".into(),
+                ..train(false)
+            },
+        };
+        assert_eq!(bad.encode(), Err(IlsError::Identifier));
+    }
+
     fn b(i: usize) -> BorderId {
         BorderId::from_index(i).unwrap()
     }
@@ -800,6 +1032,34 @@ mod tests {
         assert!(net.links()[0].up);
         assert!(after.iter().any(|((a, _), _)| *a == 0));
         assert!(net.set_faults("Nord-Süd", LinkFaults::default()).is_err());
+    }
+
+    /// REQ-OPS-006: Eine Übergabe bei unterbrochener Verbindung wartet und kommt danach genau
+    /// einmal an der richtigen Grenze an.
+    #[test]
+    fn handover_waits_for_the_link() {
+        let mut net = line();
+        let down = LinkFaults {
+            down: true,
+            ..LinkFaults::default()
+        };
+        net.set_faults("West-Mitte", down).unwrap();
+        net.send_train((0, b(0)), train(true)).unwrap();
+        net.send_train((0, b(0)), train(false)).unwrap();
+        assert!(net.send_train((0, b(5)), train(false)).is_err());
+        run(&mut net, 0, 3000);
+        assert!(net.take_trains().is_empty());
+        assert_eq!(net.links()[0].pending_handovers, 2);
+        net.set_faults("West-Mitte", LinkFaults::default()).unwrap();
+        run(&mut net, 3100, 6000);
+        let got = net.take_trains();
+        assert_eq!(got, [((1, b(0)), train(true)), ((1, b(0)), train(false))]);
+        assert_eq!(net.links()[0].pending_handovers, 0);
+        assert_eq!(net.links()[0].handovers, 2);
+        // Die Gegenrichtung (Server sendet) ebenso.
+        net.send_train((2, b(0)), train(false)).unwrap();
+        run(&mut net, 6100, 7000);
+        assert_eq!(net.take_trains(), [((1, b(1)), train(false))]);
     }
 
     #[test]

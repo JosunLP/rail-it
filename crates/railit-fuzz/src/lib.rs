@@ -454,7 +454,15 @@ pub fn sci(data: &[u8]) {
 /// # Panics
 /// Wenn Rundreise oder Kodierung abweichen (Fund für den Fuzzer).
 pub fn sci_ils(data: &[u8]) {
-    use railit_adapters::ils::IlsTelegram;
+    use railit_adapters::ils::{HandoverTelegram, IlsTelegram};
+    if let Ok(t) = HandoverTelegram::decode(data) {
+        let raw = t.encode();
+        assert_eq!(
+            raw.as_deref().ok(),
+            Some(data),
+            "Zugübergabe: mehrdeutige Kodierung"
+        );
+    }
     if let Ok(t) = IlsTelegram::decode(data) {
         let raw = t.encode();
         assert_eq!(

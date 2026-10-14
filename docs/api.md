@@ -62,7 +62,7 @@ Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`; mit
 | GET | `/v1/aux` | Offene Hilfshandlungen mit Prüfcode (`check`) und Zählwerk | `{"pending": […], "counter"}` |
 | POST | `/v1/aux` | Hilfshandlung anfordern, Body `{"kind","element","position"?}`; ohne Benutzerverwaltung Kopf `X-Railit-Operator` | 200 / 409 / 400 |
 | POST | `/v1/aux/{id}/confirm` | Hilfshandlung bestätigen (anderer Bediener), Body `{"kind","element","position"?,"check"}` (wiederholte Hilfshandlung und Prüfcode der Anzeige), `?area=` bei mehreren Bereichen | 200 / 409 / 400 |
-| GET | `/v1/ops` | Betriebsführung: Fahrplan, Zuglenkung, Züge mit Zugnummer, Halt, Verspätung | JSON |
+| GET | `/v1/ops` | Betriebsführung: Fahrplan, Zuglenkung, Züge mit Zugnummer, Halt, Verspätung; `elsewhere`: an ein Stellwerk eines anderen Prozesses übergeben | JSON |
 | POST | `/v1/ops/ars` | Zuglenkung ein/aus, Body `{"on":true}` | 200 |
 | POST | `/v1/ops/trains/{zug}/describe` | Zugnummer eintragen, Body `{"signal"}` | 200 / 400 |
 | DELETE | `/v1/ops/trains/{zug}` | Zugnummer löschen | 200 / 400 |
@@ -215,7 +215,7 @@ Jedes Ereignis trägt `time_ms` (Simulationszeit) und `type`:
 | `alarm` | `alarm`, `element` | `setting_timeout`, `signal_dropped`, `train_entered_cancelled_route`, `signal_defective`, `signal_mismatch`, `unknown_element`, `unauthorized_occupancy`, `signal_passed_at_danger`, `border_lost` (keine aktuelle Meldung des Nachbarn), `permission_conflict` |
 | `permission` | `border`, `holding` | Erlaubnis an einer Grenze übernommen bzw. abgegeben |
 | `aux_pending` / `aux_executed` / `aux_expired` | `aux`, `op`, `operator` bzw. `counter` | Hilfshandlung angefordert, ausgeführt, verfallen |
-| `train_described`, `train_moved`, `train_left`, `train_erased`, `arrived`, `departed`, `route_requested`, `permission_requested`, `spawned`, `spawn_failed` | `train`, … (`"source":"ops"`) | Betriebsführung: Zugnummern, Halte mit `delay_s`, Anforderungen der Zuglenkung |
+| `train_described`, `train_moved`, `train_left`, `train_erased`, `arrived`, `departed`, `route_requested`, `permission_requested`, `spawned`, `spawn_failed`, `announced`, `handed_over`, `taken_over`, `handover_failed` | `train`, … (`"source":"ops"`) | Betriebsführung: Zugnummern, Halte mit `delay_s`, Anforderungen der Zuglenkung, Vormeldung und Übergabe an Stellwerke anderer Prozesse (REQ-OPS-006) |
 | `train_registered`, `train_deregistered`, `authority_granted`, `authority_shortened`, `emergency_stop` | `train`, `end`, `eoa_mm` bzw. `reason` (`"source":"etcs"`) | RBC: Anmeldung, Fahrerlaubnis, Verkürzung, Notbremsung |
 | `safety` | `event` (`channel_excluded` mit `channel`, `divergence`; `tripped` mit `trip`), `area` | Sicherheitsschicht: Kanal ausgeschlossen, Abschaltung |
 | `sim` | `event`, `train`, … | Simulation: `train_stopped`, `train_started`, `train_left`, `train_arrived`, `train_derailed`, `point_trailed`, `signal_passed_at_danger`, `substitute_passed`, `level_crossing_not_closed`, `emergency_brake`, `crossing_collision` (mit `crossing`, `train`, `other`) |
@@ -255,7 +255,9 @@ Mit `railitd --borders ils` tauschen die Stellbereiche ihre Grenzmeldungen als
 EULYNX-SCI-ILS-Telegramme über RaSTA aus, je Paar benachbarter Bereiche eine Verbindung
 (`Adorf-Strecke`, `Strecke-Bstadt`). `/v1/ils` zeigt je Verbindung `link`, `areas`,
 `borders`, `up`, `discarded` (verworfene PDUs), `bad_telegrams`, `delivered` (zugestellte
-Grenzmeldungen) und die eingestellten `faults`; `POST /v1/ils/{Verbindung}` stört die Strecke.
+Grenzmeldungen), `handovers` (empfangene Zugvormeldungen und -übergaben),
+`pending_handovers` (wartende) und die eingestellten `faults`; `POST /v1/ils/{Verbindung}`
+stört die Strecke.
 Bleiben die Meldungen aus, fällt eine Ausfahrt über die Grenze auf Halt, die Grenze wird
 gestört gemeldet, und die Erlaubnis wandert erst wieder, wenn die Verbindung steht
 (REQ-COM-009). `railit ils` zeigt dasselbe auf der Kommandozeile, `railit ils fault

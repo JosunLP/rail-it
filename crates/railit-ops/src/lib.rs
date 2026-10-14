@@ -18,5 +18,7 @@ mod ops;
 mod timetable;
 
 pub use net::{OpsNet, OpsRoute, PlatformInfo, RouteNext, StationInfo};
-pub use ops::{Ops, OpsActions, OpsConfig, OpsEvent, OpsSnapshot, OpsView, Spawn, TrainSnapshot};
+pub use ops::{
+    Handover, Ops, OpsActions, OpsConfig, OpsEvent, OpsSnapshot, OpsView, Spawn, TrainSnapshot,
+};
 pub use timetable::{Enter, Stop, Timetable, TrainRun, format_time, parse_time};

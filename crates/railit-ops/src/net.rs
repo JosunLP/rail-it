@@ -67,6 +67,11 @@ pub struct OpsNet {
     signals: BTreeSet<String>,
     stations: Vec<StationInfo>,
     auto: BTreeSet<String>,
+    /// Bereich je Hauptsignal.
+    signal_area: HashMap<String, usize>,
+    /// Anzahl der Bereiche dieses Prozesses (die ersten); die übrigen rechnen in anderen
+    /// Prozessen (REQ-OPS-006).
+    local: Option<usize>,
 }
 
 impl OpsNet {
@@ -90,6 +95,7 @@ impl OpsNet {
             for s in (0..plan.signal_count()).filter_map(railit_types::SignalId::from_index) {
                 if let Some(name) = plan.signal_name(s) {
                     graph.signals.insert(name.to_string());
+                    graph.signal_area.insert(name.to_string(), area);
                 }
             }
             for r in plan.routes() {
@@ -153,6 +159,30 @@ impl OpsNet {
             .map(|(_, s)| s.name.clone())
             .collect();
         graph
+    }
+
+    /// Nur die ersten `count` Bereiche rechnen in diesem Prozess; die übrigen stehen im
+    /// Graphen, damit Wege über sie hinweg bekannt sind (REQ-OPS-006).
+    #[must_use]
+    pub const fn with_local_areas(mut self, count: usize) -> Self {
+        self.local = Some(count);
+        self
+    }
+
+    /// Rechnet der Bereich in diesem Prozess?
+    pub fn is_local(&self, area: usize) -> bool {
+        area < self.areas.len() && self.local.is_none_or(|n| area < n)
+    }
+
+    /// Bereich, in dem das Hauptsignal steht.
+    pub fn area_of_signal(&self, signal: &str) -> Option<usize> {
+        self.signal_area.get(signal).copied()
+    }
+
+    /// Steht das Hauptsignal in einem Bereich dieses Prozesses?
+    pub fn is_local_signal(&self, signal: &str) -> bool {
+        self.area_of_signal(signal)
+            .is_some_and(|a| self.is_local(a))
     }
 
     /// Name eines Stellbereichs.
