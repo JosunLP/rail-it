@@ -16,6 +16,9 @@
 //!   von einem Strang auf eine falsch liegende Weiche, schneidet er sie auf.
 //! - An einer Netzgrenze verlässt er das Netz, am Prellbock bleibt er stehen.
 //! - Leuchtet an einem Halt zeigenden Signal das Ersatzsignal (Zs1), fährt er vorbei.
+//! - Mit PZB-Fahrzeuggerät bremst ihn ein wirksamer Gleismagnet (1000 Hz bei „Halt
+//!   erwarten“, 2000 Hz am Halt zeigenden Hauptsignal) zwangsweise; er steht nach dem
+//!   Bremsweg v²/2a (REQ-MOV-007).
 //! - Bahnübergänge schließen mit einer Schließzeit; befährt ein Zug einen nicht
 //!   geschlossenen Bahnübergang, meldet der Simulator das.
 
@@ -40,6 +43,8 @@ pub struct SimConfig {
     pub point_length: Length,
     /// Schließzeit eines Bahnübergangs (Gelblicht, Rotlicht, Schranken).
     pub lx_close_time: Duration,
+    /// Verzögerung bei einer Zwangsbremsung durch die PZB in mm/s².
+    pub pzb_deceleration_mm_s2: u32,
 }
 
 impl Default for SimConfig {
@@ -48,6 +53,7 @@ impl Default for SimConfig {
             point_move_time: Duration::from_millis(4_000),
             point_length: Length::from_mm(30_000),
             lx_close_time: Duration::from_millis(8_000),
+            pzb_deceleration_mm_s2: 1_000,
         }
     }
 }
@@ -68,6 +74,8 @@ pub enum TrainState {
     Derailed,
     /// ETCS: Notbremsung (Trip), wartet auf eine neue Fahrerlaubnis.
     Tripped,
+    /// PZB: nach einer Zwangsbremsung zum Stehen gekommen.
+    Braked,
 }
 
 /// Neuer Zug.
@@ -86,6 +94,9 @@ pub struct TrainSpec {
     /// Zug mit ETCS-Fahrzeuggerät (Level 2): fährt nach der Fahrerlaubnis des RBC statt nach
     /// den Signalbegriffen.
     pub etcs: bool,
+    /// Zug mit PZB-Fahrzeuggerät: Überfährt er einen wirksamen Gleismagneten, wird er
+    /// zwangsgebremst (siehe [`Simulator`]).
+    pub pzb: bool,
 }
 
 /// Einspeisbare Störung.
@@ -169,6 +180,24 @@ pub enum SimEvent {
         /// Zug auf der zweiten Kreuzungsstelle.
         other: String,
     },
+    /// PZB: Zwangsbremsung an einem wirksamen Gleismagneten.
+    PzbBrake {
+        /// Zug.
+        train: String,
+        /// Signal mit dem Gleismagneten.
+        signal: String,
+        /// Frequenz des Gleismagneten (1000 Hz am Vorsignal, 2000 Hz am Hauptsignal).
+        frequency_hz: u16,
+        /// Geschwindigkeit bei Beginn der Bremsung.
+        speed_kmh: u16,
+    },
+    /// PZB: Nach der Zwangsbremsung steht der Zug.
+    PzbStopped {
+        /// Zug.
+        train: String,
+        /// Bremsweg in Metern (ganzzahlig gerundet).
+        braking_distance_m: u32,
+    },
     /// Zug hat ein Halt zeigendes Signal überfahren.
     SignalPassedAtDanger {
         /// Zug.
@@ -218,6 +247,9 @@ pub struct TrainInfo {
     pub occupied: Vec<String>,
     /// Zug mit ETCS-Fahrzeuggerät.
     pub etcs: bool,
+    /// Zug mit PZB-Fahrzeuggerät.
+    #[serde(default)]
+    pub pzb: bool,
     /// Zuletzt passiertes Signal bzw. Signal, vor dem der Zug steht.
     pub reference: Option<String>,
 }
@@ -270,6 +302,10 @@ struct Train {
     /// ETCS-Fahrzeuggerät mit den Signalen, die die Fahrerlaubnis freigibt (leer: keine
     /// Fahrerlaubnis); `None` bei Zügen ohne ETCS.
     cab: Option<HashSet<SignalId>>,
+    /// PZB-Fahrzeuggerät.
+    pzb: bool,
+    /// Zwangsbremsung: aktuelle Geschwindigkeit in mm/s und bisheriger Bremsweg in mm.
+    braking: Option<(u64, u64)>,
 }
 
 /// Simulierte Feldebene.
@@ -624,6 +660,8 @@ impl Simulator {
             head,
             reference: (spec.signal, false),
             cab: spec.etcs.then(HashSet::new),
+            pzb: spec.pzb,
+            braking: None,
         });
         Ok(())
     }
@@ -699,14 +737,20 @@ impl Simulator {
         }
         #[allow(clippy::cast_precision_loss)]
         let head_offset_m = t.head as f64 / 1000.0;
+        let speed_kmh = match t.braking {
+            Some((v, _)) => u16::try_from(v * 36 / 10_000).unwrap_or(u16::MAX),
+            None if t.state == TrainState::Braked => 0,
+            None => t.speed.as_kmh(),
+        };
         TrainInfo {
             name: t.name.clone(),
             state: t.state,
-            speed_kmh: t.speed.as_kmh(),
+            speed_kmh,
             head_element,
             head_offset_m,
             occupied,
             etcs: t.cab.is_some(),
+            pzb: t.pzb,
             reference: self.net.signal(t.reference.0).map(|s| s.name.clone()),
         }
     }
@@ -825,11 +869,25 @@ impl Simulator {
     fn move_train(&mut self, t: &mut Train, dt: u64) {
         if matches!(
             t.state,
-            TrainState::Arrived | TrainState::Left | TrainState::Derailed | TrainState::Tripped
+            TrainState::Arrived
+                | TrainState::Left
+                | TrainState::Derailed
+                | TrainState::Tripped
+                | TrainState::Braked
         ) {
             return;
         }
-        let mut remaining = u64::from(t.speed.as_kmh()) * dt * 10 / 36;
+        let mut remaining = match t.braking {
+            // Zwangsbremsung: gleichmäßig verzögert bis zum Stillstand.
+            Some((v, distance)) => {
+                let a = u64::from(self.cfg.pzb_deceleration_mm_s2);
+                let v1 = v.saturating_sub(a * dt / 1000);
+                let step = (v + v1) * dt / 2000;
+                t.braking = Some((v1, distance + step));
+                step
+            }
+            None => u64::from(t.speed.as_kmh()) * dt * 10 / 36,
+        };
 
         loop {
             let Some(seg) = t.path.back().cloned() else {
@@ -884,6 +942,7 @@ impl Simulator {
                     signal: name,
                 });
             }
+            self.pzb_check(t, &seg, &mut remaining);
             let advance_by = remaining.min(limit.saturating_sub(t.head));
             if let Some(s) = self.passing(t, &seg, t.head, t.head.saturating_add(advance_by)) {
                 t.reference = (s, true);
@@ -905,7 +964,155 @@ impl Simulator {
                 t.reference = (s, true);
             }
         }
+        if let Some((0, distance)) = t.braking
+            && matches!(t.state, TrainState::Running | TrainState::Waiting)
+        {
+            t.braking = None;
+            t.state = TrainState::Braked;
+            self.events.push(SimEvent::PzbStopped {
+                train: t.name.clone(),
+                braking_distance_m: u32::try_from((distance + 500) / 1000).unwrap_or(u32::MAX),
+            });
+        }
         self.trim_tail(t);
+    }
+
+    /// PZB: Ein wirksamer Gleismagnet vor der Zugspitze löst die Zwangsbremsung aus, sobald
+    /// die Spitze ihn erreicht (REQ-MOV-007).
+    fn pzb_check(&mut self, t: &mut Train, seg: &Seg, remaining: &mut u64) {
+        if t.pzb
+            && t.ignore_signals
+            && t.braking.is_none()
+            && let Some((offset, signal, hz)) = self.pzb_magnet(seg, t.head, *remaining)
+        {
+            let delta = offset.saturating_sub(t.head);
+            if let Some(s) = self.passing(t, seg, t.head, t.head.saturating_add(delta)) {
+                t.reference = (s, true);
+            }
+            t.head = t.head.saturating_add(delta);
+            *remaining = remaining.saturating_sub(delta);
+            let v = u64::from(t.speed.as_kmh()) * 10_000 / 36;
+            t.braking = Some((v, 0));
+            self.events.push(SimEvent::PzbBrake {
+                train: t.name.clone(),
+                signal: self
+                    .net
+                    .signal(signal)
+                    .map(|s| s.name.clone())
+                    .unwrap_or_default(),
+                frequency_hz: hz,
+                speed_kmh: t.speed.as_kmh(),
+            });
+        }
+    }
+
+    /// REQ-MOV-007: Nächster wirksamer PZB-Gleismagnet im Element `seg` zwischen `head` und
+    /// `head + ahead`: Position, Signal und Frequenz.
+    ///
+    /// - 2000 Hz am Hauptsignal, solange es Halt zeigt (ohne Ersatzsignal),
+    /// - 1000 Hz am Vorsignal bzw. am Mehrabschnittssignal mit Fahrt, wenn das angekündigte
+    ///   Hauptsignal Halt zeigt („Halt erwarten“).
+    ///
+    /// Wirksam wird ein Magnet nur für Züge, deren Triebfahrzeugführer Halt zeigende Signale
+    /// überfährt (`ignore_signals`); wer die Signale beachtet, bremst rechtzeitig selbst.
+    /// Vereinfachung: Wer Halt zeigende Signale überfährt, bremst auch nach dem
+    /// 1000-Hz-Magneten nicht; die Überwachung bremst ihn deshalb dort sofort.
+    fn pzb_magnet(&self, seg: &Seg, head: u64, ahead: u64) -> Option<(u64, SignalId, u16)> {
+        let NodeRef::Track(track) = seg.node else {
+            return None;
+        };
+        let dir = travel(seg.entry);
+        let stop = |id: SignalId| {
+            self.signal_report(id) != Some(SignalReport::Proceed) && !self.substitute(id)
+        };
+        self.net
+            .signals_on(track)
+            .filter(|(_, s)| s.direction == dir)
+            .filter_map(|(id, s)| {
+                let pos = u64::from(s.position.as_mm());
+                let offset = if dir == Direction::AToB {
+                    pos
+                } else {
+                    seg.len.saturating_sub(pos)
+                };
+                if offset < head || offset > head.saturating_add(ahead) {
+                    return None;
+                }
+                let warn = || {
+                    self.main_signal_ahead(track, dir, offset)
+                        .is_some_and(|(next, _)| stop(next))
+                };
+                let hz = match s.kind {
+                    SignalKind::Main | SignalKind::Combined if stop(id) => 2000,
+                    SignalKind::Combined | SignalKind::Distant if warn() => 1000,
+                    _ => return None,
+                };
+                Some((offset, id, hz))
+            })
+            .min_by_key(|(offset, _, _)| *offset)
+    }
+
+    /// Nächstes Hauptsignal in Fahrtrichtung hinter Position `offset` (mm in Fahrtrichtung)
+    /// auf `track`, über die aktuellen Weichenlagen hinweg; mit seiner Entfernung.
+    fn main_signal_ahead(
+        &self,
+        track: TrackId,
+        dir: Direction,
+        offset: u64,
+    ) -> Option<(SignalId, u64)> {
+        let (mut track, mut dir, mut after) = (track, dir, Some(offset));
+        let mut distance = 0u64;
+        for _ in 0..64 {
+            let len = u64::from(self.net.track(track)?.length.as_mm());
+            let along = |pos: Length| {
+                let pos = u64::from(pos.as_mm());
+                if dir == Direction::AToB {
+                    pos
+                } else {
+                    len.saturating_sub(pos)
+                }
+            };
+            let start = after.unwrap_or(0);
+            if let Some((id, o)) = self
+                .net
+                .signals_on(track)
+                .filter(|(_, s)| s.direction == dir && delimits(s.kind))
+                .map(|(id, s)| (id, along(s.position)))
+                .filter(|(_, o)| after.is_none_or(|a| *o > a))
+                .min_by_key(|(_, o)| *o)
+            {
+                return Some((id, distance + o.saturating_sub(start)));
+            }
+            distance += len.saturating_sub(start);
+            // Weiter über die Weichen in ihrer aktuellen Lage.
+            let exit = if dir == Direction::AToB {
+                Port::B
+            } else {
+                Port::A
+            };
+            let mut port = PortRef::new(NodeRef::Track(track), exit);
+            let next = loop {
+                let entry = self.net.linked(port)?;
+                match entry.node {
+                    NodeRef::Track(t) => break (t, entry.port),
+                    NodeRef::Point(p) => {
+                        let pos = self.points.get(p.index()?)?.position;
+                        let out = match entry.port {
+                            Port::Tip if pos == PointPosition::Left => Port::Left,
+                            Port::Tip => Port::Right,
+                            _ => Port::Tip,
+                        };
+                        distance += u64::from(self.cfg.point_length.as_mm());
+                        port = PortRef::new(entry.node, out);
+                    }
+                    NodeRef::Terminal(_) => return None,
+                }
+            };
+            track = next.0;
+            dir = travel(next.1);
+            after = None;
+        }
+        None
     }
 
     /// Meldet, was die Zugspitze zwischen `from` (ausschließlich) und `to` (einschließlich)

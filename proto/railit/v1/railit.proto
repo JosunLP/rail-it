@@ -243,6 +243,8 @@ message AddTrainRequest {
   bool ignore_signals = 5;
   // Zug mit ETCS-Fahrzeuggerät (fährt nach der Fahrerlaubnis des RBC).
   bool etcs = 6;
+  // Zug mit PZB-Fahrzeuggerät (Zwangsbremsung an wirksamen Gleismagneten).
+  bool pzb = 7;
 }
 
 message FaultRequest {

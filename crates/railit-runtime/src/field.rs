@@ -62,6 +62,7 @@ impl FieldAdapter for Simulator {
             speed: Speed::from_kmh(spawn.speed_kmh),
             ignore_signals: false,
             etcs: spawn.etcs,
+            pzb: false,
         })
         .map_err(|e| e.to_string())
     }

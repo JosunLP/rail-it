@@ -412,6 +412,7 @@ impl Simulation for Grpc {
                 .map_err(|_| Status::invalid_argument("Geschwindigkeit zu groß"))?,
             ignore_signals: r.ignore_signals,
             etcs: r.etcs,
+            pzb: r.pzb,
         };
         self.service.add_train(&who, train).await?;
         Ok(done())

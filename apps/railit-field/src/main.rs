@@ -160,6 +160,8 @@ struct NewTrain {
     ignore_signals: bool,
     #[serde(default)]
     etcs: bool,
+    #[serde(default)]
+    pzb: bool,
 }
 
 async fn add_train(State(field): State<Arc<Field>>, Json(t): Json<NewTrain>) -> ApiResult {
@@ -181,6 +183,7 @@ async fn add_train(State(field): State<Arc<Field>>, Json(t): Json<NewTrain>) -> 
             speed: Speed::from_kmh(t.speed_kmh),
             ignore_signals: t.ignore_signals,
             etcs: t.etcs,
+            pzb: t.pzb,
         })
         .map_err(|e| error(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(json!({ "status": "ok" })).into_response())

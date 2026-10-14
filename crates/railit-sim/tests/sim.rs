@@ -46,6 +46,7 @@ fn train(name: &str, signal: SignalId, ignore_signals: bool) -> TrainSpec {
         speed: Speed::from_kmh(72),
         ignore_signals,
         etcs: false,
+        pzb: false,
     }
 }
 
@@ -206,4 +207,98 @@ fn faults_override_reports() {
         s.add_train(train("A1", a, false)),
         Err(SimError::DuplicateTrain("A1".into()))
     );
+}
+
+fn pzb_train(name: &str, signal: SignalId, ignore_signals: bool) -> TrainSpec {
+    TrainSpec {
+        pzb: true,
+        ..train(name, signal, ignore_signals)
+    }
+}
+
+fn pzb_events(s: &mut Simulator) -> (Vec<(String, u16)>, Option<u32>, usize) {
+    let events = s.take_events();
+    let brakes = events
+        .iter()
+        .filter_map(|e| match e {
+            SimEvent::PzbBrake {
+                signal,
+                frequency_hz,
+                ..
+            } => Some((signal.clone(), *frequency_hz)),
+            _ => None,
+        })
+        .collect();
+    let stopped = events.iter().find_map(|e| match e {
+        SimEvent::PzbStopped {
+            braking_distance_m, ..
+        } => Some(*braking_distance_m),
+        _ => None,
+    });
+    let spad = events
+        .iter()
+        .filter(|e| matches!(e, SimEvent::SignalPassedAtDanger { .. }))
+        .count();
+    (brakes, stopped, spad)
+}
+
+/// REQ-MOV-007: 2000 Hz am Halt zeigenden Hauptsignal bremst den Zug, der es überfährt, mit
+/// der eingestellten Verzögerung: 72 km/h und 1 m/s² ergeben 200 m Bremsweg.
+#[test]
+fn pzb_2000_hz_brakes_at_a_stop_signal() {
+    let mut s = sim();
+    let a = signal(&s, "A");
+    s.add_train(pzb_train("T", a, true)).unwrap();
+    run(&mut s, 30);
+    let (brakes, stopped, spad) = pzb_events(&mut s);
+    assert_eq!(brakes, [("A".to_string(), 2000)]);
+    assert_eq!(spad, 1);
+    let d = stopped.expect("Zug steht nicht");
+    assert!((195..=205).contains(&d), "Bremsweg {d} m");
+    let info = &s.trains()[0];
+    assert_eq!(info.state, TrainState::Braked);
+    assert_eq!(info.speed_kmh, 0);
+    assert!(info.pzb);
+    // Steht und bleibt stehen.
+    let head = info.head_offset_m;
+    run(&mut s, 10);
+    assert!((s.trains()[0].head_offset_m - head).abs() < f64::EPSILON);
+}
+
+/// REQ-MOV-007: 1000 Hz am Mehrabschnittssignal, das „Halt erwarten“ zeigt: Der Zug kommt vor
+/// dem Halt zeigenden Ausfahrsignal zum Stehen, ohne es zu überfahren. Ohne PZB überfährt er
+/// es; wer die Signale beachtet, wird nie gebremst.
+#[test]
+fn pzb_1000_hz_stops_before_the_announced_signal() {
+    for (pzb, ignore) in [(true, true), (false, true), (true, false)] {
+        let mut s = sim();
+        let a = signal(&s, "A");
+        s.apply(&[Command::SetSignal {
+            signal: a,
+            aspect: Aspect::Proceed,
+        }]);
+        let spec = TrainSpec {
+            pzb,
+            ..train("T", a, ignore)
+        };
+        s.add_train(spec).unwrap();
+        run(&mut s, 60);
+        let (brakes, stopped, spad) = pzb_events(&mut s);
+        match (pzb, ignore) {
+            (true, true) => {
+                assert_eq!(brakes, [("A".to_string(), 1000)]);
+                assert!(stopped.is_some());
+                assert_eq!(spad, 0, "Ausfahrsignal überfahren");
+                assert_eq!(s.trains()[0].state, TrainState::Braked);
+            }
+            (false, true) => {
+                assert!(brakes.is_empty());
+                assert_eq!(spad, 1);
+            }
+            _ => {
+                assert!(brakes.is_empty() && spad == 0);
+                assert_eq!(s.trains()[0].state, TrainState::Waiting);
+            }
+        }
+    }
 }

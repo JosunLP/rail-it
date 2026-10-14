@@ -67,7 +67,7 @@ die Hilfshandlung verfällt.
 
 | Aktion | Wert | Wirkung |
 |--------|------|---------|
-| `add_train` | `{ name, signal, length_m, speed_kmh, ignore_signals, etcs }` | Zug vor einem Signal einsetzen; `ignore_signals` überfährt Halt (Prüfung des Schutzes) |
+| `add_train` | `{ name, signal, length_m, speed_kmh, ignore_signals, etcs, pzb }` | Zug vor einem Signal einsetzen; `ignore_signals` überfährt Halt (Prüfung des Schutzes); `pzb` bremst ihn dann an wirksamen Gleismagneten zwangsweise (REQ-MOV-007) |
 | `fault` / `clear_fault` | `{ kind, element }` | Störung setzen bzw. aufheben |
 | `link` | `{ controller, down, loss_percent, corrupt_percent, delay_ms }` | Übertragungsstrecke zu einer Objektsteuerung stören (nur `field = "eulynx"`) |
 | `ils_link` | `{ link, down, loss_percent, corrupt_percent, delay_ms }` | SCI-ILS-Strecke zwischen zwei Stellwerken stören, z. B. `link = "Adorf-Strecke"` (nur `borders = "ils"`) |
@@ -109,12 +109,12 @@ Mit eingeschalteter Betriebsführung trägt `add_train` die Zugnummer am Signal 
 | `point` | `{ Weiche = Meldung }` | `left`, `right`, `no_end_position`, `disturbed` |
 | `tvd` | `{ Abschnitt = Meldung }` | `clear`, `occupied`, `disturbed` |
 | `lx` | `{ BÜ = Meldung }` | `open`, `closing`, `closed`, `disturbed` |
-| `train` | `{ Zug = Zustand }` | `running`, `waiting`, `arrived`, `left`, `derailed`, `tripped` |
+| `train` | `{ Zug = Zustand }` | `running`, `waiting`, `arrived`, `left`, `derailed`, `tripped`, `braked` (nach PZB-Zwangsbremsung) |
 | `permission` | `{ Grenze = bool }` | Erlaubnis gehalten |
 | `accepted` | bool | Letzte Anforderung angenommen |
 | `rejected` | Grund | Letzte Anforderung abgelehnt, mit Grund ([API](../api#antworten-des-kerns)) |
 | `alarm`, `no_alarm` | Liste | Meldungen der Kerne vorhanden bzw. nicht vorhanden |
-| `sim_event` | Liste | Ereignisse des Simulators |
+| `sim_event` | Liste | Ereignisse des Simulators, z. B. `signal_passed_at_danger`, `point_trailed`, `crossing_collision`, `pzb_brake`, `pzb_stopped` |
 | `aux_counter` | Zahl | Stand des Zählwerks für Hilfshandlungen |
 | `safe_state` | bool | Kern im sicheren Zustand |
 | `berth` | `{ Zugnummer = Signal }` | Zugnummer steht am Signal; `"left"` nach Verlassen des Netzes |

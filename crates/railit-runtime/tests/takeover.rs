@@ -191,6 +191,7 @@ fn operate<F: FieldAdapter>(
                     speed: Speed::from_kmh(40 + u16::try_from(rng.below(60)).unwrap()),
                     ignore_signals: false,
                     etcs: false,
+                    pzb: false,
                 });
             }
         }
@@ -462,6 +463,7 @@ fn crossing(gated: bool, reads_to_end: bool) -> Outcome {
             speed: Speed::from_kmh(60),
             ignore_signals: false,
             etcs: false,
+            pzb: false,
         })
         .unwrap();
     let mut standby = Standby::new(&primary);

@@ -56,6 +56,7 @@ fn run_with_snapshots(every: Option<u64>) -> (Runtime<Simulator>, Vec<u8>) {
             speed: Speed::from_kmh(60),
             ignore_signals: false,
             etcs: false,
+            pzb: false,
         })
         .unwrap();
     let mut id = 0;
@@ -427,6 +428,7 @@ fn node_journal_replays_across_resyncs() {
             speed: Speed::from_kmh(60),
             ignore_signals: false,
             etcs: false,
+            pzb: false,
         })
         .unwrap();
     let mut id = 0;
@@ -528,6 +530,7 @@ fn follower_tracks_the_running_interlocking() {
             speed: Speed::from_kmh(60),
             ignore_signals: false,
             etcs: false,
+            pzb: false,
         })
         .unwrap();
 

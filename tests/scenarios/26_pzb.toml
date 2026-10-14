@@ -1,0 +1,32 @@
+[scenario]
+name = "PZB: Zwangsbremsung an Vorsignal und Hauptsignal"
+description = """
+Zwei Züge mit PZB, deren Triebfahrzeugführer Halt zeigende Signale missachten (REQ-MOV-007).
+RE1 fährt bei „Halt erwarten“ am Mehrabschnittssignal A los: Der 1000-Hz-Magnet an A bremst
+ihn zwangsweise, er kommt nach rund 139 m im Gleis 1 zum Stehen, weit vor dem Halt zeigenden
+Ausfahrsignal N1. RB2 fährt an Hp0 am Einfahrsignal F vorbei: Der 2000-Hz-Magnet bremst ihn
+nach rund 62 m; der Kern meldet die unerlaubte Besetzung hinter F.
+"""
+network = "../../examples/beispielstadt.toml"
+points = { W2 = "right" }
+
+[[step]]
+note = "A-N1 einstellen: A zeigt Ks2 (Halt erwarten), N1 Halt"
+set_route = "A-N1"
+until = { route = { "A-N1" = "proceed" } }
+timeout_s = 15
+expect = { signal = { A = "proceed", N1 = "stop" }, picture = { A = "Ks2" } }
+
+[[step]]
+note = "RE1 fährt los und wird am 1000-Hz-Magneten von A zwangsgebremst"
+add_train = { name = "RE1", signal = "A", length_m = 100, speed_kmh = 60, ignore_signals = true, pzb = true }
+until = { sim_event = ["pzb_brake", "pzb_stopped"], train = { RE1 = "braked" } }
+timeout_s = 60
+expect = { tvd = { T1 = "occupied" }, signal = { N1 = "stop" }, no_alarm = ["signal_passed_at_danger", "unauthorized_occupancy"] }
+
+[[step]]
+note = "RB2 überfährt das Halt zeigende Einfahrsignal F; der 2000-Hz-Magnet bremst ihn"
+add_train = { name = "RB2", signal = "F", length_m = 80, speed_kmh = 40, ignore_signals = true, pzb = true }
+until = { train = { RB2 = "braked" } }
+timeout_s = 60
+expect = { alarm = ["unauthorized_occupancy"], train = { RE1 = "braked" }, signal = { F = "stop" } }

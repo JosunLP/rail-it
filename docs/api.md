@@ -73,7 +73,7 @@ Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`; mit
 | GET | `/v1/audit?last=50` | Auditprotokoll prüfen, letzte Einträge | `{"records","head","last"}` |
 | GET | `/v1/events` | Ereignisstrom (Server-Sent Events, je Ereignis ein JSON-Objekt) | `text/event-stream` |
 | GET | `/v1/sim/trains` | Züge der Simulation | JSON-Liste |
-| POST | `/v1/sim/trains` | Zug einsetzen, Body `{"name","signal","length_m","speed_kmh","ignore_signals"?,"etcs"?}`; mit `"etcs":true` fährt der Zug nach der Fahrerlaubnis des RBC statt nach Signalbegriffen | 200 / 400 |
+| POST | `/v1/sim/trains` | Zug einsetzen, Body `{"name","signal","length_m","speed_kmh","ignore_signals"?,"etcs"?,"pzb"?}`; mit `"etcs":true` fährt der Zug nach der Fahrerlaubnis des RBC statt nach Signalbegriffen | 200 / 400 |
 | DELETE | `/v1/sim/trains/{name}` | Zug entfernen | 200 / 400 |
 | POST | `/v1/sim/faults` | Störung setzen/aufheben, Body `{"kind","element","active"?}` | 200 / 404 |
 | GET | `/v1/etcs` | ETCS-Züge: `train`, `mode` (`stand_by`, `full_supervision`, `trip`), `authority` (siehe unten), `end`, `eoa_mm`, `danger_point_mm` | JSON-Liste |

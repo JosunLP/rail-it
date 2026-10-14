@@ -23,7 +23,7 @@
 //! ```
 //!
 //! **Aktionen:** `set_route`, `cancel_route`, `move_point = { point, position }`,
-//! `add_train = { name, signal, length_m, speed_kmh, ignore_signals, etcs }`,
+//! `add_train = { name, signal, length_m, speed_kmh, ignore_signals, etcs, pzb }`,
 //! `fault` / `clear_fault = { kind, element }` mit `kind` aus `point_disturbed`,
 //! `tvd_disturbed`, `tvd_occupied`, `signal_defective`, `lx_disturbed`,
 //! `aux = { kind, element, position, operator }` (Hilfshandlung anfordern; `kind` aus
@@ -369,6 +369,8 @@ struct TrainEntry {
     ignore_signals: bool,
     #[serde(default)]
     etcs: bool,
+    #[serde(default)]
+    pzb: bool,
 }
 
 // `deny_unknown_fields` verträgt sich nicht mit `flatten`.
@@ -818,6 +820,8 @@ const fn sim_event_kind(e: &SimEvent) -> &'static str {
         SimEvent::LevelCrossingNotClosed { .. } => "level_crossing_not_closed",
         SimEvent::EmergencyBrake { .. } => "emergency_brake",
         SimEvent::CrossingCollision { .. } => "crossing_collision",
+        SimEvent::PzbBrake { .. } => "pzb_brake",
+        SimEvent::PzbStopped { .. } => "pzb_stopped",
     }
 }
 
@@ -1032,6 +1036,7 @@ impl<F: SimulatedField> Ctx<F> {
                 speed: Speed::from_kmh(t.speed_kmh),
                 ignore_signals: t.ignore_signals,
                 etcs: t.etcs,
+                pzb: t.pzb,
             });
         match spec.map(|s| self.rt.field_mut().simulator_mut().add_train(s)) {
             Some(Ok(())) => {

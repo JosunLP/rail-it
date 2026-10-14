@@ -685,6 +685,10 @@ enum TrainCommand {
         /// Zug mit ETCS-Fahrzeuggerät (fährt nach der Fahrerlaubnis des RBC).
         #[arg(long)]
         etcs: bool,
+        /// Zug mit PZB-Fahrzeuggerät: Überfährt er ein Halt zeigendes Signal oder ein
+        /// Vorsignal in Warnstellung, bremst ihn die PZB zwangsweise.
+        #[arg(long)]
+        pzb: bool,
     },
     /// Alle Züge.
     List,
@@ -937,10 +941,11 @@ fn run_sim(
             speed,
             ignore_signals,
             etcs,
+            pzb,
         }) => {
             let body = json!({
                 "name": name, "signal": at, "length_m": length, "speed_kmh": speed,
-                "ignore_signals": ignore_signals, "etcs": etcs,
+                "ignore_signals": ignore_signals, "etcs": etcs, "pzb": pzb,
             });
             online::sim_done(
                 c.post("/v1/sim/trains", Some(body)),
