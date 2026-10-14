@@ -1,0 +1,17 @@
+{
+  "name": "railit-docs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dokumentation von rail-it (VitePress), veröffentlicht auf GitHub Pages.",
+  "license": "SEE LICENSE IN ../LICENSE",
+  "type": "module",
+  "scripts": {
+    "gen": "bun run scripts/reference.ts",
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "vitepress": "1.6.4"
+  }
+}

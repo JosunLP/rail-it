@@ -1,0 +1,7 @@
+node_modules/
+.vitepress/dist/
+.vitepress/cache/
+# Erzeugt beim Bauen (bun run gen bzw. Pages-Workflow):
+referenz/programme/
+public/install.sh
+public/install.ps1

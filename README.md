@@ -311,6 +311,7 @@ cargo build --target armv7r-none-eabihf \
       -p railit-movement -p railit-rasta -p railit-safety -p railit-embedded
 cargo deny check
 cargo xtask trace            # Rückverfolgbarkeit prüfen, docs/safety/traceability.md erzeugen
+(cd docs && bun install && bun run gen && bun run dev)   # Dokumentation lokal (VitePress)
 cargo run --release -p railit -- bench --check   # Leistungsziele (Konzept, Abschnitt 15)
 PROPTEST_CASES=10000 cargo test --release -p railit-kernel --all-features \
       --test invariants --test borders

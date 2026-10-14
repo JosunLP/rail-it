@@ -66,8 +66,8 @@
 //!
 //! Sicherer Rechner: `[scenario] node = true` lässt jeden Stellbereich auf einem Knoten
 //! (`railit-embedded`) im Gleichschritt rechnen, angebunden über RaSTA mit Spiegel und
-//! Zustandsabgleich (siehe [`crate::remote`]). Bedingung `node_synced = true`: Die Spiegel
-//! aller Bereiche stimmen mit ihren Knoten überein.
+//! Zustandsabgleich (siehe [`crate::remote`]). Vor dem ersten Schritt wartet das Szenario,
+//! bis alle Spiegel mit ihren Knoten abgeglichen sind.
 
 use std::collections::BTreeMap;
 use std::fmt;

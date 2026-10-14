@@ -1,0 +1,75 @@
+name: Dokumentation
+
+# Baut die VitePress-Dokumentation (docs/) bei jedem Push und Pull Request und veröffentlicht
+# sie von main aus auf GitHub Pages: https://josunlp.github.io/rail-it/
+# Die Programmreferenz entsteht dabei aus den Hilfetexten der Programme; install.sh und
+# install.ps1 liegen neben den Seiten, damit die Einzeiler der Installation funktionieren.
+# Einmalig nötig: Settings → Pages → Source: „GitHub Actions“.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  BUN_VERSION: "1.4.2"
+
+jobs:
+  build:
+    name: Bauen
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # „Zuletzt geändert“ aus der Git-Historie
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Toolchain installieren
+        run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: docs
+      - name: Programme bauen (für die Programmreferenz)
+        run: cargo build --locked -p railit -p railitd -p railit-field -p railit-node
+      - name: Abhängigkeiten
+        working-directory: docs
+        run: bun install --frozen-lockfile
+      - name: Programmreferenz erzeugen
+        working-directory: docs
+        env:
+          RAILIT_BIN: ${{ github.workspace }}/target/debug
+        run: bun run gen
+      - name: Installer beilegen
+        run: cp scripts/install.sh scripts/install.ps1 docs/public/
+      - name: Bauen (prüft tote Verweise)
+        working-directory: docs
+        run: bun run build
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        with:
+          path: docs/.vitepress/dist
+
+  deploy:
+    name: Veröffentlichen
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
