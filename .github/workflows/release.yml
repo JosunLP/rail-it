@@ -1,0 +1,206 @@
+name: Release
+
+# Ein Release entsteht auf zwei Wegen:
+#   1. Actions → Release → „Run workflow“ mit einer Version (z. B. 0.11.0): Version anheben,
+#      CHANGELOG schreiben, committen, Tag setzen – danach bauen und veröffentlichen.
+#   2. Ein Tag `vX.Y.Z` von Hand pushen, dessen Version schon in Cargo.toml steht.
+# Gebaut wird für Linux (x86_64, aarch64; statisch mit musl), macOS (x86_64, arm64) und
+# Windows (x86_64). Jedes Archiv enthält railit, railitd, railit-field und railit-node.
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version ohne v, z. B. 0.11.0 (Vorabversion: 0.11.0-rc.1)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  BUN_VERSION: "1.4.2"
+
+jobs:
+  prepare:
+    name: Version und Tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Toolchain installieren
+        if: github.event_name == 'workflow_dispatch'
+        run: rustup toolchain install
+      - name: Version anheben, CHANGELOG schreiben, Tag setzen
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          cargo xtask release "$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Release v$VERSION"
+          git tag -a "v$VERSION" -m "rail-it v$VERSION"
+          git push origin HEAD:${{ github.ref_name }} "v$VERSION"
+      - name: Tag und Version bestimmen
+        id: tag
+        env:
+          INPUT: ${{ inputs.version }}
+        run: |
+          set -eu
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${INPUT#v}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+            git checkout "v$version"
+          fi
+          declared=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          if [ "$declared" != "$version" ]; then
+            echo "::error::Tag v$version passt nicht zur Version $declared in Cargo.toml"
+            exit 1
+          fi
+          grep -q "^## \[$version\]" CHANGELOG.md || {
+            echo "::error::CHANGELOG.md ohne Abschnitt für $version (cargo xtask release $version)"
+            exit 1
+          }
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Bauen (${{ matrix.target }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, archive: tar.gz }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, archive: tar.gz }
+          - { os: macos-latest, target: aarch64-apple-darwin, archive: tar.gz }
+          - { os: macos-latest, target: x86_64-apple-darwin, archive: tar.gz }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, archive: zip }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Bedienplatz bauen (TypeScript)
+        shell: bash
+        working-directory: apps/railitd/ui
+        run: bun install --frozen-lockfile && bun run check && bun run build
+      - name: musl installieren
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Toolchain und Ziel installieren
+        shell: bash
+        run: |
+          rustup toolchain install --profile minimal
+          rustup target add "${{ matrix.target }}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - name: Bauen
+        shell: bash
+        env:
+          RAILIT_REQUIRE_UI: "1"
+        run: >
+          cargo build --release --locked --target "${{ matrix.target }}"
+          -p railit -p railitd -p railit-field -p railit-node
+      - name: Packen
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: sh scripts/package.sh "$VERSION" "$TARGET" "$ARCHIVE"
+      - name: Selbsttest
+        if: "!(matrix.target == 'x86_64-apple-darwin')"
+        shell: bash
+        run: |
+          dir="dist/railit-${{ matrix.target }}"
+          ext=""
+          if [ "$RUNNER_OS" = "Windows" ]; then ext=".exe"; fi
+          for bin in railit railitd railit-field railit-node; do "$dir/$bin$ext" --version; done
+          "$dir/railit$ext" net validate "$dir/examples/beispielstadt.toml"
+      - name: Installer gegen das gebaute Archiv prüfen
+        if: "!(matrix.target == 'x86_64-apple-darwin')"
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pwsh -NoProfile -File scripts/test-installer.ps1 -Archive "dist/railit-${{ matrix.target }}.zip" -Version "$VERSION"
+          else
+            sh scripts/test-installer.sh "dist/railit-${{ matrix.target }}.tar.gz" "$VERSION"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: railit-${{ matrix.target }}
+          path: dist/railit-${{ matrix.target }}.${{ matrix.archive }}
+          if-no-files-found: error
+
+  publish:
+    name: Veröffentlichen
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Prüfsummen und Text des Releases
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -eu
+          cp scripts/install.sh scripts/install.ps1 dist/
+          (cd dist && sha256sum railit-* install.sh install.ps1 > SHA256SUMS)
+          cat dist/SHA256SUMS
+          awk -v v="## [$VERSION]" '
+            index($0, v) == 1 { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          {
+            echo
+            echo "### Installation"
+            echo
+            echo '```sh'
+            echo "curl -fsSL https://josunlp.github.io/rail-it/install.sh | sh"
+            echo '```'
+            echo
+            echo 'Windows (PowerShell): `irm https://josunlp.github.io/rail-it/install.ps1 | iex`'
+            echo
+            echo "Dokumentation: https://josunlp.github.io/rail-it/"
+          } >> notes.md
+      - name: GitHub-Release anlegen
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -eu
+          pre=""
+          case "$VERSION" in *-*) pre="--prerelease" ;; esac
+          gh release create "$TAG" dist/* --title "rail-it $TAG" --notes-file notes.md --verify-tag $pre

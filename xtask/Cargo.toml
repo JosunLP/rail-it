@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Werkzeuge für die Entwicklung von rail-it: Rückverfolgbarkeit Anforderung → Code → Test."
+description = "Werkzeuge für die Entwicklung von rail-it: Rückverfolgbarkeit Anforderung → Code → Test, Releases vorbereiten."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

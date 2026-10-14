@@ -21,7 +21,7 @@ pub(crate) struct Client {
 }
 
 /// Fehler mit Exit-Code.
-pub(crate) struct Failure(u8, String);
+pub(crate) struct Failure(pub(crate) u8, pub(crate) String);
 
 impl Failure {
     pub(crate) fn exit(self) -> ExitCode {
@@ -47,7 +47,7 @@ fn read(path: &Path) -> Res<Vec<u8>> {
     std::fs::read(path).map_err(|e| Failure(EXIT_USAGE, format!("{}: {e}", path.display())))
 }
 
-fn tls_config(files: &TlsFiles) -> Res<TlsConfig> {
+pub(crate) fn tls_config(files: &TlsFiles) -> Res<TlsConfig> {
     let bad = |e: ureq::Error| Failure(EXIT_USAGE, format!("TLS: {e}"));
     let mut tls = TlsConfig::builder()
         .provider(TlsProvider::Rustls)

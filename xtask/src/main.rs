@@ -12,6 +12,11 @@
 //! - Jede genannte Gefährdung steht in der Gefährdungsliste.
 //!
 //! Mit `--check` schlägt der Befehl außerdem fehl, wenn der Bericht nicht aktuell ist (CI).
+//!
+//! `cargo xtask release VERSION [--dry-run]` und `cargo xtask notes VERSION` bereiten Releases
+//! vor (siehe [`release`]).
+
+mod release;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -28,11 +33,16 @@ const ANALYSIS: &[&str] = &["Architektur", "Typsystem"];
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("trace") {
-        trace(args.iter().any(|a| a == "--check"))
-    } else {
-        eprintln!("Aufruf: cargo xtask trace [--check]");
-        ExitCode::from(2)
+    match args.first().map(String::as_str) {
+        Some("trace") => trace(args.iter().any(|a| a == "--check")),
+        Some("release") => release::release(&root(), args.get(1..).unwrap_or_default()),
+        Some("notes") => release::notes(&root(), args.get(1..).unwrap_or_default()),
+        _ => {
+            eprintln!(
+                "Aufruf: cargo xtask trace [--check] | release VERSION [--dry-run] | notes VERSION"
+            );
+            ExitCode::from(2)
+        }
     }
 }
 

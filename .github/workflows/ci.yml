@@ -103,6 +103,26 @@ jobs:
       - name: Ende-zu-Ende gegen railitd (Beispielstadt)
         run: bun run e2e
 
+  installer:
+    name: Installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shellcheck
+        if: runner.os == 'Linux'
+        run: shellcheck -s sh scripts/install.sh scripts/package.sh scripts/test-installer.sh
+      - name: install.sh (installieren, aktualisieren, entfernen, Prüfsumme)
+        if: runner.os != 'Windows'
+        run: sh scripts/test-installer.sh
+      - name: install.ps1 (installieren, aktualisieren, entfernen, Prüfsumme)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-installer.ps1
+
   bench:
     name: Leistung (Ziele aus dem Konzept, Abschnitt 15)
     runs-on: ubuntu-latest

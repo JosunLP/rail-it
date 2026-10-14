@@ -46,6 +46,7 @@ mod journal;
 mod net;
 mod online;
 mod plan;
+mod selfcmd;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -168,6 +169,25 @@ enum Command {
     /// Zugangsdaten verwalten.
     #[command(subcommand)]
     Auth(AuthCommand),
+    /// Installation: Version, neue Releases, aktualisieren, entfernen.
+    #[command(name = "self", subcommand)]
+    SelfCmd(SelfCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum SelfCommand {
+    /// Version und Installation.
+    Info,
+    /// Gibt es ein neueres Release? (Exit-Code 1, wenn ja.)
+    Check,
+    /// Auf das neueste (oder ein bestimmtes) Release aktualisieren.
+    Update {
+        /// Bestimmte Version statt der neuesten.
+        #[arg(long)]
+        version: Option<String>,
+    },
+    /// rail-it entfernen (alle Programme und Daten der Installation).
+    Uninstall,
 }
 
 #[derive(Debug, Subcommand)]
@@ -746,6 +766,10 @@ fn main() -> ExitCode {
             require_seal,
         }) => admin::audit_verify(&file, key.as_deref(), require_seal, output),
         Command::Auth(AuthCommand::Token { name }) => admin::token(&name, output),
+        Command::SelfCmd(SelfCommand::Info) => selfcmd::info(output),
+        Command::SelfCmd(SelfCommand::Check) => selfcmd::check(output),
+        Command::SelfCmd(SelfCommand::Update { version }) => selfcmd::update(version.as_deref()),
+        Command::SelfCmd(SelfCommand::Uninstall) => selfcmd::uninstall(),
         online => {
             let tls = online::TlsFiles {
                 ca: cli.ca,
@@ -852,7 +876,8 @@ fn run_online(
         | Command::Bench { .. }
         | Command::Journal(_)
         | Command::Audit(AuditCommand::Verify { .. })
-        | Command::Auth(_) => Ok(ExitCode::SUCCESS),
+        | Command::Auth(_)
+        | Command::SelfCmd(_) => Ok(ExitCode::SUCCESS),
     }
 }
 

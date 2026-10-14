@@ -68,9 +68,32 @@ Bereitschaftsrechner, siehe [Übernahme](#übernahme)) sind umgesetzt.
 | `apps/railitd/ui` | Bedienplatz: Spurplan-UI in TypeScript mit bQuery, gebaut mit Bun | SIL 0, reiner API-Client |
 | `railit` | Kommandozeile (offline und online) | |
 
-## Schnellstart
+## Installation
+
+Fertige Programme (`railit`, `railitd`, `railit-field`, `railit-node`) für Linux (x86_64,
+aarch64), macOS (Intel, Apple Silicon) und Windows (x86_64) liegen bei jedem
+[Release](https://github.com/JosunLP/rail-it/releases):
 
 ```sh
+curl -fsSL https://josunlp.github.io/rail-it/install.sh | sh              # Linux, macOS
+irm https://josunlp.github.io/rail-it/install.ps1 | iex                   # Windows (PowerShell)
+railit self check        # neues Release verfügbar?
+railit self update       # aktualisieren
+railit self uninstall    # entfernen
+```
+
+Der Installer legt die Programme nach `~/.local/bin` (als root `/usr/local/bin`, Windows
+`%LOCALAPPDATA%\Programs\rail-it\bin`), die Beispielnetze nach `…/share/rail-it/examples` und
+prüft jede Datei gegen die Prüfsummen des Releases. Eine bestimmte Version:
+`curl -fsSL https://josunlp.github.io/rail-it/install.sh | sh -s -- --version 0.11.0`.
+Dokumentation: <https://josunlp.github.io/rail-it/>.
+
+## Schnellstart
+
+Aus dem Quelltext (Rust 1.97, für den Bedienplatz Bun ≥ 1.4):
+
+```sh
+(cd apps/railitd/ui && bun install && bun run build)
 cargo build --release
 export PATH="$PWD/target/release:$PATH"
 
@@ -244,6 +267,11 @@ Journal und Auditprotokoll lassen sich mit dem Schlüssel des Stellwerks siegeln
 Für den Betrieb mit Benutzern: `railitd … --users users.toml --audit audit.log
 --tls-cert server.pem --tls-key server.key [--tls-client-ca ca.pem]`; die CLI meldet sich mit
 `--token` bzw. `--ca`, `--cert`, `--key` an (siehe [API](docs/api.md)).
+
+Releases entstehen über den Workflow *Release* (Actions → Release → Version eingeben):
+`cargo xtask release X.Y.Z` hebt die Version an und schreibt `CHANGELOG.md`, der Workflow
+setzt den Tag, baut für alle Plattformen, prüft den Installer gegen jedes Archiv und
+veröffentlicht das Release mit Prüfsummen.
 
 Exit-Codes der CLI: `0` Erfolg, `1` ungültig oder abgelehnt, `2` Bedien-, Lese- oder
 Verbindungsfehler. Mit `--output json` liefern alle Befehle JSON.
