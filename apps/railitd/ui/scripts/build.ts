@@ -1,6 +1,6 @@
 // Baut den Bedienplatz nach `dist/`: ein Modul (`app.js`), `index.html`, `style.css`.
-// `dist/` ist eingecheckt, damit railitd ohne Bun gebaut werden kann; CI prüft, dass es
-// zum Quelltext passt.
+// `dist/` wird nicht eingecheckt: CI und Release bauen es vor railitd, dessen `build.rs` es
+// einbettet.
 
 import { copyFile, mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';

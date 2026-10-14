@@ -133,8 +133,9 @@ railit journal replay betrieb.journal --plan beispielstadt.rplan
 Entwicklung des Bedienplatzes (Bun ≥ 1.4): `cd apps/railitd/ui && bun install && bun run
 build`; Prüfungen mit `bun run check`, `bun run test` und `bun run e2e` (Playwright gegen
 einen echten `railitd`, vorher `cargo build -p railit -p railitd`). Das gebaute Bundle
-`apps/railitd/ui/dist` ist eingecheckt, damit `cargo build` ohne Bun auskommt; die CI prüft,
-dass es zum Quelltext passt.
+`apps/railitd/ui/dist` wird nicht eingecheckt: CI und Release bauen den Bedienplatz in der
+Pipeline, `railitd` bettet ihn beim Bauen ein (`build.rs`). Ohne gebauten Bedienplatz zeigt
+`railitd` unter `/ui/` eine Hinweisseite; mit `RAILIT_REQUIRE_UI=1` bricht der Build ab.
 
 ### Sicherer Rechner
 

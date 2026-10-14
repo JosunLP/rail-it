@@ -2,8 +2,8 @@
 //!
 //! Die Seite ist ein reiner Client der API: Sie liest `/v1/layout` und `/v1/state` und bedient
 //! über dieselben Pfade wie jeder andere Client, mit derselben Anmeldung. Gebaut wird sie mit
-//! Bun aus `apps/railitd/ui` (TypeScript, bQuery); das Ergebnis `ui/dist` ist eingecheckt und
-//! wird hier eingebettet, damit railitd ohne Bun gebaut werden kann.
+//! Bun aus `apps/railitd/ui` (TypeScript, bQuery); `build.rs` bettet das Ergebnis ein (ohne
+//! gebauten Bedienplatz eine Hinweisseite).
 //!
 //! Die Seite selbst ist ohne Anmeldung erreichbar, enthält aber keine Daten. Jede Antwort trägt
 //! eine strenge Content-Security-Policy: nur eigene Skripte und Stile, keine Inline-Skripte,
@@ -14,9 +14,9 @@ use axum::http::{HeaderValue, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 
-const INDEX: &str = include_str!("../ui/dist/index.html");
-const APP: &str = include_str!("../ui/dist/app.js");
-const STYLE: &str = include_str!("../ui/dist/style.css");
+const INDEX: &str = include_str!(concat!(env!("OUT_DIR"), "/ui/index.html"));
+const APP: &str = include_str!(concat!(env!("OUT_DIR"), "/ui/app.js"));
+const STYLE: &str = include_str!(concat!(env!("OUT_DIR"), "/ui/style.css"));
 
 /// Content-Security-Policy des Bedienplatzes.
 pub(crate) const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \

@@ -15,6 +15,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   TOOLCHAIN: "1.97.0"
+  BUN_VERSION: "1.4.2"
+  # railitd bettet den Bedienplatz ein; er wird hier gebaut, nie eingecheckt.
+  RAILIT_REQUIRE_UI: "1"
 
 jobs:
   check:
@@ -22,6 +25,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Bedienplatz bauen
+        working-directory: apps/railitd/ui
+        run: bun install --frozen-lockfile && bun run build
       - name: Toolchain installieren
         run: rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy,rustfmt
       - uses: Swatinem/rust-cache@v2
@@ -73,17 +82,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.2"
+          bun-version: ${{ env.BUN_VERSION }}
       - name: Abhängigkeiten
         run: bun install --frozen-lockfile
       - name: Typprüfung
         run: bun run check
       - name: Unit-Tests (Prüfcode, Anzeigemodell)
         run: bun run test
-      - name: Eingechecktes Bundle passt zum Quelltext
-        run: |
-          bun run build
-          git diff --exit-code -- dist
+      - name: Bauen
+        run: bun run build
       - name: Toolchain installieren
         working-directory: .
         run: rustup toolchain install "$TOOLCHAIN" --profile minimal
