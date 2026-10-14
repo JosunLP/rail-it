@@ -125,6 +125,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/v1/journal/state", get(journal_state))
         .route("/v1/journal/events", get(journal_events))
         .route("/v1/journal/stream", get(journal_stream))
+        .route("/v1/journal/ack", post(journal_ack))
         .route("/v1/areas", get(areas))
         .route("/v1/routes/{name}/set", post(set_route))
         .route("/v1/routes/{name}/cancel", post(cancel_route))
@@ -194,7 +195,9 @@ async fn auth(State(state): State<AppState>, mut request: HttpRequest, next: Nex
         return ApiError(StatusCode::FORBIDDEN, "keine Leseberechtigung".into()).into_response();
     }
     // Der Bereitschaftsrechner zeigt nur an (REQ-SVC-011).
-    if state.standby.is_some() && request.method() != axum::http::Method::GET {
+    if state.standby.as_ref().is_some_and(|s| !s.leading())
+        && request.method() != axum::http::Method::GET
+    {
         const TEXT: &str = "Bereitschaftsrechner: keine Bedienung";
         if grpc {
             return tonic::Status::unavailable(TEXT).into_http();
@@ -231,15 +234,16 @@ fn done() -> Response {
 
 async fn health(State(state): State<AppState>) -> Json<Value> {
     let snap = state.service.snapshot();
-    let standby = state.standby.as_ref().map(|s| {
-        json!({
-            "primary": s.primary,
-            "areas": s.areas(),
-        })
-    });
+    let role = match &state.standby {
+        Some(s) if !s.leading() => "standby",
+        _ => "primary",
+    };
+    let standby = state.standby.as_ref().map(|s| s.health());
+    let replication = state.metrics.borrow().replication.clone();
     Json(json!({
-        "role": if standby.is_some() { "standby" } else { "primary" },
+        "role": role,
         "standby": standby,
+        "replication": replication,
         "status": if snap.safe_state.is_some() { "safe_state" } else { "ok" },
         "network": snap.network,
         "areas": snap.areas.iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
@@ -378,6 +382,34 @@ async fn journal_stream(State(state): State<AppState>, Query(q): Query<StreamQue
         body,
     )
         .into_response())
+}
+
+/// Quittung des Bereitschaftsrechners.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AckBody {
+    area: Option<String>,
+    cycle: u64,
+    head: String,
+}
+
+async fn journal_ack(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Json(body): Json<AckBody>,
+) -> ApiResult {
+    let file = crate::review::pick(&state.journals, body.area.as_deref())
+        .map_err(|e| ApiError(StatusCode::NOT_FOUND, e))?;
+    let index = state
+        .journals
+        .iter()
+        .position(|f| f.area == file.area)
+        .unwrap_or(0);
+    let coverage = state
+        .service
+        .acknowledge(&who, index, &file.area, body.cycle, body.head)
+        .await?;
+    Ok(Json(coverage).into_response())
 }
 
 async fn areas(State(state): State<AppState>) -> Json<Value> {

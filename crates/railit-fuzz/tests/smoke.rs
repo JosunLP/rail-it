@@ -42,6 +42,7 @@ fn seeds_pass() {
     railit_fuzz::sci(&[]);
     railit_fuzz::node_wire(&[]);
     railit_fuzz::mirror_state(&[]);
+    railit_fuzz::field_server(&[]);
 }
 
 /// Jedes Wort des Kopfs und jedes 16. Wort des Rumpfs wird auf typische Grenzwerte gesetzt;
@@ -109,6 +110,7 @@ proptest! {
         railit_fuzz::sci(&data);
         railit_fuzz::node_wire(&data);
         railit_fuzz::mirror_state(&data);
+        railit_fuzz::field_server(&data);
     }
 }
 

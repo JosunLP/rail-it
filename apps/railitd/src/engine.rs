@@ -10,7 +10,7 @@ use railit_kernel::{Request, RequestId};
 use railit_runtime::SimulatedField;
 use railit_runtime::railit_adapters::{LinkFaults, LinkStatus};
 use railit_runtime::railit_safety::SafetyEvent;
-use railit_runtime::{Addressed, AreaSafetyEvent, NamedEvent, Runtime, Snapshot};
+use railit_runtime::{Addressed, AreaSafetyEvent, Coverage, NamedEvent, Runtime, Snapshot};
 use railit_sim::{Fault, SimEvent, TrainInfo, TrainSpec};
 
 use crate::field::{REMOTE, ServiceField};
@@ -108,6 +108,13 @@ pub(crate) enum EngineMsg {
     Safety {
         command: SafetyCommand,
         reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// Quittung des Bereitschaftsrechners (REQ-SVC-012); Antwort sofort mit der Zusage.
+    Ack {
+        area: usize,
+        cycle: u64,
+        head: String,
+        reply: oneshot::Sender<Result<Coverage, String>>,
     },
 }
 
@@ -243,7 +250,13 @@ impl Engine {
             tracing::error!(area, ?reason, "Kern im sicheren Zustand: alle Signale Halt");
             self.safe_state_logged = true;
         }
+        self.publish();
+    }
+
+    /// Zustandsbild und Zähler nach einem Zyklus.
+    fn publish(&mut self) {
         self.ch.snapshot.send_replace(Arc::new(self.rt.snapshot()));
+        self.counters.replication = self.rt.replication();
         self.ch
             .metrics
             .send_replace(Arc::new(self.counters.clone()));
@@ -323,6 +336,14 @@ impl Engine {
                 self.ch.snapshot.send_replace(Arc::new(self.rt.snapshot()));
                 let _ = reply.send(result);
             }
+            EngineMsg::Ack {
+                area,
+                cycle,
+                head,
+                reply,
+            } => {
+                let _ = reply.send(self.rt.acknowledge(area, cycle, &head));
+            }
             EngineMsg::Ops { command, reply } => {
                 let result = ops_command(&mut self.rt, command);
                 // Wer nach der Antwort das Zustandsbild liest, sieht die Änderung.
@@ -358,6 +379,32 @@ pub(crate) async fn run(rt: Runtime<ServiceField>, ch: Channels, period: Duratio
         }
     }
     engine.rt.seal_journals();
+}
+
+/// Engine des Bereitschaftsrechners: weist alle Nachrichten ab (die Antwort bleibt aus,
+/// der Dienst meldet „nicht verfügbar“), bis eine Übernahme die Runtime liefert; dann läuft
+/// sie wie die Engine des Hauptrechners.
+pub(crate) async fn standby(
+    mut ch: Channels,
+    wake: oneshot::Receiver<Runtime<ServiceField>>,
+    period: Duration,
+) {
+    let mut wake = std::pin::pin!(wake);
+    loop {
+        tokio::select! {
+            msg = ch.rx.recv() => {
+                if msg.is_none() {
+                    return;
+                }
+            }
+            rt = &mut wake => {
+                if let Ok(rt) = rt {
+                    run(rt, ch, period).await;
+                }
+                return;
+            }
+        }
+    }
 }
 
 /// Führt einen Befehl an die Betriebsführung aus.

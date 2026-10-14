@@ -14,6 +14,7 @@
 //! | [`sci`] | EULYNX-SCI-Telegramme (Rundreise) |
 //! | [`node_wire`] | Binärprotokoll und Knoten des sicheren Rechners |
 //! | [`mirror_state`] | Spiegel: beliebige übertragene Zustandsteile, danach Kernzyklen |
+//! | [`field_server`] | Feldrechner mit Umschalter: beliebige PDUs von beliebigen Absendern neben einem verbundenen Stellwerk |
 
 use railit_kernel::{
     Input, Interlocking, LxReport, Occupancy, OwnedState, PointReport, Request, RequestId,
@@ -344,6 +345,81 @@ pub fn rasta(data: &[u8]) {
         server.receive(now, pdu, &mut |_| {});
         let _ = server.tick(now);
         while server.poll_transmit(&mut buf).is_some() {}
+        rest = tail;
+    }
+}
+
+/// Feldrechner mit Umschalter (REQ-COM-008, REQ-SVC-013): Ein Stellwerk ist verbunden und
+/// führt; dazwischen kommen beliebige PDUs von drei Absendern, mit echten oder beliebigen
+/// Kennungen. Kein Panikpfad; führend ist höchstens ein zugelassenes Stellwerk.
+///
+/// # Panics
+/// Wenn ein nicht zugelassenes Stellwerk führt (Fund für den Fuzzer).
+pub fn field_server(data: &[u8]) {
+    use railit_adapters::net::{FieldClient, FieldServer, PRIMARY_ID, STANDBY_ID};
+    use std::net::SocketAddr;
+    let Ok(parsed) =
+        railit_import::toml_format::parse(include_str!("../../../examples/beispielstadt.toml"))
+    else {
+        return;
+    };
+    let net = parsed.topology;
+    let sim = railit_sim::Simulator::new(net.clone(), railit_sim::SimConfig::default());
+    let (Ok(mut server), Ok(mut client)) = (
+        FieldServer::new(sim, &[PRIMARY_ID, STANDBY_ID], 500),
+        FieldClient::new(&net, PRIMARY_ID),
+    ) else {
+        return;
+    };
+    let addr = |i: u8| SocketAddr::from(([127, 0, 0, 1], 1000 + u16::from(i % 3)));
+    let mut now = 0u64;
+    let step = |server: &mut FieldServer, client: &mut FieldClient, now: u64| {
+        for pdu in client.tick(now) {
+            server.receive(addr(0), &pdu);
+        }
+        for (to, pdu) in server.tick(railit_types::Tick::from_millis(now)) {
+            if to == addr(0) {
+                client.receive(now, &pdu);
+            }
+        }
+    };
+    for _ in 0..20 {
+        now = now.saturating_add(50);
+        step(&mut server, &mut client, now);
+    }
+    let mut rest = data;
+    while let Some((&head, tail)) = rest.split_first() {
+        let Some((&len, tail)) = tail.split_first() else {
+            break;
+        };
+        let n = usize::from(len).min(tail.len());
+        let (bytes, tail) = tail.split_at(n);
+        let mut pdu = bytes.to_vec();
+        // Kennungen echt machen, damit die PDU bis in die Verbindungen gelangt.
+        if head & 0x10 != 0 && pdu.len() >= 12 {
+            let oc = 0x0B00_0001u32 + u32::from(head >> 6);
+            let from = if head & 0x20 == 0 {
+                PRIMARY_ID
+            } else {
+                STANDBY_ID
+            };
+            if let Some(r) = pdu.get_mut(4..8) {
+                r.copy_from_slice(&oc.to_le_bytes());
+            }
+            if let Some(s) = pdu.get_mut(8..12) {
+                s.copy_from_slice(&from.to_le_bytes());
+            }
+        }
+        server.receive(addr(head), &pdu);
+        if head & 0x08 != 0 {
+            now = now.saturating_add(50);
+            step(&mut server, &mut client, now);
+        }
+        let leader = server.leader();
+        assert!(
+            leader.is_none_or(|l| l == PRIMARY_ID || l == STANDBY_ID),
+            "nicht zugelassenes Stellwerk führt"
+        );
         rest = tail;
     }
 }

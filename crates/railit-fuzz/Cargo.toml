@@ -1,6 +1,6 @@
 [package]
 name = "railit-fuzz"
-description = "Fuzz-Ziele von rail-it: Plan-Image, Netzformate, Fahrplan, Journal, RaSTA, EULYNX SCI, Binärprotokoll des sicheren Rechners. Von cargo-fuzz (fuzz/) und von Tests mit Startkorpus genutzt."
+description = "Fuzz-Ziele von rail-it: Plan-Image, Netzformate, Fahrplan, Journal, RaSTA, EULYNX SCI, Feldrechner, Binärprotokoll des sicheren Rechners. Von cargo-fuzz (fuzz/) und von Tests mit Startkorpus genutzt."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -23,6 +23,7 @@ railit-journal = { workspace = true }
 railit-ops = { workspace = true }
 railit-rasta = { workspace = true }
 railit-adapters = { workspace = true }
+railit-sim = { workspace = true }
 railit-embedded = { workspace = true, features = ["host"] }
 sha2 = { workspace = true }
 

@@ -43,6 +43,8 @@ pub(crate) struct Counters {
     pub(crate) etcs_emergency_stops: u64,
     /// Ein Journal ist abgebrochen.
     pub(crate) journal_failed: bool,
+    /// Ausgabesperre für den Bereitschaftsrechner (REQ-SVC-012), falls eingeschaltet.
+    pub(crate) replication: Option<railit_runtime::ReplicationStatus>,
 }
 
 impl Counters {
@@ -193,18 +195,7 @@ pub(crate) fn render(c: &Counters, snap: &Snapshot) -> String {
         "Ausgeführte Hilfshandlungen seit dem Start des Dienstes.",
         c.aux_executed,
     );
-    o.single(
-        "railit_channel_exclusions_total",
-        "counter",
-        "Vom Voter ausgeschlossene Kanäle.",
-        c.channel_exclusions,
-    );
-    o.single(
-        "railit_safety_trips_total",
-        "counter",
-        "Abschaltungen einer Sicherheitsschicht.",
-        c.safety_trips,
-    );
+    safety(&mut o, c);
     o.single(
         "railit_etcs_emergency_stops_total",
         "counter",
@@ -223,8 +214,73 @@ pub(crate) fn render(c: &Counters, snap: &Snapshot) -> String {
         "Betriebszeit (Simulationszeit) in Sekunden.",
         Duration::from_millis(snap.time_ms).as_secs_f64(),
     );
+    if let Some(r) = &c.replication {
+        replication(&mut o, r);
+    }
     area_gauges(&mut o, snap);
     o.0
+}
+
+/// Sicherheitsschichten.
+fn safety(o: &mut Out, c: &Counters) {
+    o.single(
+        "railit_channel_exclusions_total",
+        "counter",
+        "Vom Voter ausgeschlossene Kanäle.",
+        c.channel_exclusions,
+    );
+    o.single(
+        "railit_safety_trips_total",
+        "counter",
+        "Abschaltungen einer Sicherheitsschicht.",
+        c.safety_trips,
+    );
+}
+
+/// Ausgabesperre für den Bereitschaftsrechner.
+fn replication(o: &mut Out, r: &railit_runtime::ReplicationStatus) {
+    o.single(
+        "railit_replication_gated",
+        "gauge",
+        "1, solange Ausgaben auf die Quittung des Bereitschaftsrechners warten.",
+        flag(r.gated),
+    );
+    o.single(
+        "railit_replication_covered",
+        "gauge",
+        "1, solange der Bereitschaftsrechner alles Freigegebene quittiert hat.",
+        flag(r.coverage.covered),
+    );
+    o.single(
+        "railit_replication_held",
+        "gauge",
+        "Zurückgehaltene Zyklen.",
+        r.held,
+    );
+    o.single(
+        "railit_replication_oldest_seconds",
+        "gauge",
+        "Alter der ältesten zurückgehaltenen Ausgabe in Sekunden.",
+        Duration::from_millis(r.oldest_ms).as_secs_f64(),
+    );
+    o.single(
+        "railit_replication_acks_total",
+        "counter",
+        "Gültige Quittungen des Bereitschaftsrechners.",
+        r.acks,
+    );
+    o.single(
+        "railit_replication_rejected_acks_total",
+        "counter",
+        "Quittungen, die nicht zum Journal passten.",
+        r.rejected_acks,
+    );
+    o.single(
+        "railit_replication_lapses_total",
+        "counter",
+        "Aufhebungen der Sperre wegen ausbleibender Quittungen.",
+        r.lapses,
+    );
 }
 
 /// Momentanwerte je Stellbereich aus dem Zustandsbild.

@@ -1000,17 +1000,12 @@ fn standby_follows_the_primary() {
     }
     assert_eq!(route_phase(&standby, "A-N1"), "proceed");
 
-    // Widersprüchliche Angaben.
-    let out = daemon(&[
-        "--plan",
-        p,
-        "--allow-unsigned",
-        "--standby",
-        "http://x",
-        "--journal",
-        "j",
-    ])
-    .output()
-    .unwrap();
-    assert_eq!(out.status.code(), Some(2));
+    // Widersprüchliche Angaben: Übernahme ohne Feldrechner, Bereitschaftsrechner mit Knoten.
+    for extra in [["--takeover-after-ms", "500"], ["--node", "lockstep"]] {
+        let out = daemon(&["--plan", p, "--allow-unsigned", "--standby", "http://x"])
+            .args(extra)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{extra:?}");
+    }
 }

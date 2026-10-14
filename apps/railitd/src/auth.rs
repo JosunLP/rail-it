@@ -19,6 +19,7 @@
 //! | `disponent` | lesen, Betriebsführung (Zugnummern, Zuglenkung, Disposition) |
 //! | `instandhaltung` | lesen, Simulation (Züge, Störungen), Auditprotokoll |
 //! | `projektierer` | lesen, Auditprotokoll |
+//! | `bereitschaft` | lesen, Journal quittieren (Bereitschaftsrechner, REQ-SVC-012) |
 //! | `administration` | alles |
 
 use std::collections::{BTreeSet, HashMap};
@@ -36,6 +37,8 @@ pub(crate) enum Role {
     Disponent,
     Instandhaltung,
     Projektierer,
+    /// Bereitschaftsrechner: liest das Journal und quittiert es.
+    Bereitschaft,
     Administration,
 }
 
@@ -56,11 +59,13 @@ pub(crate) enum Permission {
     Audit,
     /// Technik: Kanäle der Sicherheitsschicht prüfen, wieder aufnehmen, zurücksetzen.
     Maintain,
+    /// Journal quittieren (Bereitschaftsrechner): gibt zurückgehaltene Ausgaben frei.
+    Replicate,
 }
 
 impl Role {
     const fn grants(self, p: Permission) -> bool {
-        use Permission::{Audit, Aux, Dispatch, Maintain, Operate, Read, Simulate};
+        use Permission::{Audit, Aux, Dispatch, Maintain, Operate, Read, Replicate, Simulate};
         match self {
             Self::Administration => true,
             Self::Beobachter => matches!(p, Read),
@@ -68,6 +73,7 @@ impl Role {
             Self::Disponent => matches!(p, Read | Dispatch),
             Self::Instandhaltung => matches!(p, Read | Simulate | Audit | Maintain),
             Self::Projektierer => matches!(p, Read | Audit),
+            Self::Bereitschaft => matches!(p, Read | Replicate),
         }
     }
 }

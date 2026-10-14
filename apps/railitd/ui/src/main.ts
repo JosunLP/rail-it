@@ -26,8 +26,10 @@ import {
   operable,
   parseCommand,
   reasonText,
+  type Role,
   reviewRows,
   routesFrom,
+  takeoverText,
 } from './model';
 import { displayHealth, messages, report, reviewAt, reviewRowsSignal, snapshot, standbyRole } from './panels';
 import { type PlanTarget, PlanView } from './plan';
@@ -436,12 +438,25 @@ async function main(): Promise<void> {
     const s = reviewAt.value !== undefined ? reviewSnapshot.value : snapshot.value;
     if (s) plan.update(s);
   });
-  const role = await api.getRole().catch(() => ({ role: 'primary' as const, primary: undefined }));
+  const role = await api.getRole().catch((): Role => ({ role: 'primary' }));
   if (role.role === 'standby') {
     standbyRole.value = true;
     $('body').addClass('standby');
     $('#standby-primary').text(role.primary ?? '');
     report('info', `Bereitschaftsrechner: liest das Journal von ${role.primary ?? '?'} mit`);
+    // Übernimmt der Bereitschaftsrechner den Betrieb, wird der Bedienplatz bedienbar.
+    const watch = setInterval(() => {
+      void api
+        .getRole()
+        .then((r) => {
+          if (r.role !== 'primary') return;
+          clearInterval(watch);
+          standbyRole.value = false;
+          $('body').removeClass('standby').addClass('taken-over');
+          if (r.takeover) report('warn', takeoverText(r.takeover));
+        })
+        .catch(() => undefined);
+    }, 1000);
   }
   journals = await api.getJournals().catch(() => []);
   setupReview();

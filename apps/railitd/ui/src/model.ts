@@ -316,3 +316,33 @@ export function reviewRows(perArea: { area: string; cycles: ReviewCycle[] }[]): 
   }
   return rows.sort((a, b) => b.now_ms - a.now_ms);
 }
+
+/** Rolle des Dienstes laut `/v1/health` (REQ-SVC-011, REQ-SVC-014). */
+export interface Role {
+  role: 'primary' | 'standby';
+  /** Hauptrechner, dessen Journal ein Bereitschaftsrechner mitliest. */
+  primary?: string;
+  /** Nach einer Übernahme: mit dem mitgelesenen Zustand (warm) oder als Neustart (kalt). */
+  takeover?: { warm: boolean; detail: string };
+}
+
+/** Rolle aus der Antwort von `/v1/health`. */
+export function roleOf(health: unknown): Role {
+  const h = (health ?? {}) as {
+    role?: string;
+    standby?: { primary?: string; phase?: { phase?: string; warm?: boolean; detail?: string } } | null;
+  };
+  const phase = h.standby?.phase;
+  if (h.role === 'standby') return { role: 'standby', primary: h.standby?.primary };
+  if (phase?.phase === 'leading') {
+    return { role: 'primary', takeover: { warm: phase.warm === true, detail: phase.detail ?? '' } };
+  }
+  return { role: 'primary' };
+}
+
+/** Meldung nach einer Übernahme. */
+export function takeoverText(t: { warm: boolean; detail: string }): string {
+  return t.warm
+    ? `Übernahme: dieser Rechner führt mit dem mitgelesenen Zustand – Fahrstraßen mit Fahrt stehen auf Halt (${t.detail})`
+    : `Übernahme: dieser Rechner führt nach einem Neustart – alle Elemente zunächst unbekannt (${t.detail})`;
+}

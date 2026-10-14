@@ -1,16 +1,20 @@
-//! Bereitschaftsrechner (REQ-SVC-011): `railitd --standby URL` liest die Journale eines
-//! Hauptrechners über `/v1/journal/stream` mit, prüft und rechnet jede Zeile nach
-//! ([`railit_journal::Follower`]) und zeigt den so gewonnenen Zustand über dieselbe API und
-//! denselben Bedienplatz an – ohne Feld, ohne Kern im Betrieb, ohne Bedienung.
+//! Bereitschaftsrechner (REQ-SVC-011, REQ-SVC-012): `railitd --standby URL` liest die
+//! Journale eines Hauptrechners über `/v1/journal/stream` mit, prüft und rechnet jede Zeile
+//! nach ([`railit_journal::Follower`]) und zeigt den so gewonnenen Zustand über dieselbe API
+//! und denselben Bedienplatz an – ohne Feld, ohne Kern im Betrieb, ohne Bedienung.
+//!
+//! Jeden geprüften Stand quittiert er dem Hauptrechner (`/v1/journal/ack`). Arbeitet der
+//! Hauptrechner mit Ausgabesperre, antwortet er mit einer Zusage: Bis zu deren Ablauf gibt er
+//! nichts frei, was der Bereitschaftsrechner nicht kennt. Die Übernahme des Betriebs
+//! (`--takeover-after-ms`, siehe [`crate::takeover`]) stützt sich darauf.
 //!
 //! Bricht die Verbindung ab, setzt der Bereitschaftsrechner an der letzten Position fort.
-//! Passt das Journal dann nicht mehr (der Hauptrechner hat neu begonnen), liest er von
-//! vorn. Die Übernahme des Betriebs durch den Bereitschaftsrechner ist nicht Teil dieser
-//! Stufe.
+//! Passt das Journal dann nicht mehr (der Hauptrechner hat neu begonnen), liest er von vorn.
 
 use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use railit_journal::Follower;
 use railit_kernel::OwnedState;
@@ -18,10 +22,13 @@ use railit_plan::PlanView;
 use railit_runtime::Snapshot;
 use railit_types::Tick;
 use serde::Serialize;
+use serde_json::{Value, json};
 use tokio::sync::watch;
 
 /// Wartezeit vor einem neuen Verbindungsversuch.
 const RETRY: Duration = Duration::from_secs(1);
+/// Sicherheitsabstand zur Zusage des Hauptrechners (Gangunterschied der Uhren, Laufzeit).
+const PROMISE_MARGIN: Duration = Duration::from_millis(200);
 
 /// Stand des Mitlesens je Stellbereich.
 #[derive(Clone, Debug, Default, Serialize)]
@@ -40,8 +47,41 @@ pub(crate) struct AreaStatus {
     pub(crate) bytes: u64,
     /// Neue Verbindungen nach einem Abbruch.
     pub(crate) reconnects: u32,
+    /// Zuletzt quittierter Zyklus des Kerns.
+    pub(crate) acked: Option<u64>,
     /// Letzte Störung (Verbindung, Kette, Abweichung).
     pub(crate) problem: Option<String>,
+}
+
+/// Abschnitt des Bereitschaftsrechners.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub(crate) enum Phase {
+    /// Liest mit.
+    Following,
+    /// Hauptrechner schweigt: versucht, die Führung am Feldrechner zu erhalten.
+    Acquiring {
+        /// Seit wann (ms seit dem Start des Dienstes).
+        since_ms: u64,
+    },
+    /// Hat übernommen und führt.
+    Leading {
+        /// Mit dem mitgelesenen Zustand (warm) oder wie nach einem Neustart (kalt).
+        warm: bool,
+        /// Zeitpunkt (ms seit dem Start des Dienstes).
+        at_ms: u64,
+        /// Begründung.
+        detail: String,
+    },
+}
+
+/// Zusage des Hauptrechners.
+#[derive(Copy, Clone, Debug)]
+struct Promise {
+    /// Absendezeit der Quittung, auf die sie antwortet.
+    sent: Instant,
+    /// Bis dahin gedeckt (`None`: nicht gedeckt).
+    until: Option<Instant>,
 }
 
 /// Stand des Bereitschaftsrechners.
@@ -49,6 +89,12 @@ pub(crate) struct AreaStatus {
 pub(crate) struct Standby {
     pub(crate) primary: String,
     areas: Mutex<Vec<AreaStatus>>,
+    activity: Mutex<Vec<Option<Instant>>>,
+    promise: Mutex<Option<Promise>>,
+    phase: Mutex<Phase>,
+    stop: AtomicBool,
+    started: Instant,
+    shared: Arc<Shared>,
 }
 
 impl Standby {
@@ -64,9 +110,98 @@ impl Standby {
             f(a);
         }
     }
+
+    /// Abschnitt.
+    pub(crate) fn phase(&self) -> Phase {
+        self.phase.lock().map_or(Phase::Following, |p| p.clone())
+    }
+
+    pub(crate) fn set_phase(&self, phase: Phase) {
+        if let Ok(mut p) = self.phase.lock() {
+            *p = phase;
+        }
+    }
+
+    /// Führt dieser Rechner nach einer Übernahme?
+    pub(crate) fn leading(&self) -> bool {
+        matches!(self.phase(), Phase::Leading { .. })
+    }
+
+    /// Millisekunden seit dem Start des Dienstes.
+    pub(crate) fn ms(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// Beendet das Mitlesen.
+    pub(crate) fn stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+
+    fn stopped(&self) -> bool {
+        self.stop.load(Ordering::SeqCst)
+    }
+
+    fn touch(&self, index: usize) {
+        if let Ok(mut a) = self.activity.lock()
+            && let Some(slot) = a.get_mut(index)
+        {
+            *slot = Some(Instant::now());
+        }
+    }
+
+    /// Letzter Empfang vom Hauptrechner (über alle Bereiche).
+    pub(crate) fn last_activity(&self) -> Option<Instant> {
+        self.activity
+            .lock()
+            .ok()
+            .and_then(|a| a.iter().flatten().max().copied())
+    }
+
+    /// Nimmt eine Zusage an; ältere Antworten überschreiben keine neueren.
+    fn promise(&self, sent: Instant, until: Option<Instant>) {
+        if let Ok(mut p) = self.promise.lock()
+            && p.is_none_or(|old| old.sent <= sent)
+        {
+            *p = Some(Promise { sent, until });
+        }
+    }
+
+    /// Bis wann die Zusage des Hauptrechners eine Übernahme mit dem mitgelesenen Zustand
+    /// deckt.
+    pub(crate) fn covered_until(&self) -> Option<Instant> {
+        self.promise
+            .lock()
+            .ok()
+            .and_then(|p| p.and_then(|p| p.until))
+    }
+
+    /// Mitgelesene Zustände aller Bereiche (vollständig oder keine).
+    pub(crate) fn states(&self) -> Option<Vec<OwnedState>> {
+        self.shared
+            .states
+            .lock()
+            .ok()?
+            .iter()
+            .map(Clone::clone)
+            .collect()
+    }
+
+    /// Zustand für `/v1/health`.
+    pub(crate) fn health(&self) -> Value {
+        let now = Instant::now();
+        json!({
+            "primary": self.primary,
+            "areas": self.areas(),
+            "phase": self.phase(),
+            "covered_ms": self
+                .covered_until()
+                .map(|u| u64::try_from(u.saturating_duration_since(now).as_millis()).unwrap_or(0)),
+        })
+    }
 }
 
 /// Zustände aller Bereiche; aus ihnen entsteht das Zustandsbild.
+#[derive(Debug)]
 struct Shared {
     network: String,
     areas: Vec<(String, PlanView<'static>)>,
@@ -116,10 +251,18 @@ pub(crate) fn start(
     snapshot: watch::Sender<Arc<Snapshot>>,
 ) -> Arc<Standby> {
     let primary = primary.trim_end_matches('/').to_string();
+    let count = areas.len();
+    let shared = Arc::new(Shared {
+        network,
+        states: Mutex::new(vec![None; count]),
+        areas,
+        snapshot,
+    });
     let standby = Arc::new(Standby {
         primary: primary.clone(),
         areas: Mutex::new(
-            areas
+            shared
+                .areas
                 .iter()
                 .map(|(area, _)| AreaStatus {
                     area: area.clone(),
@@ -127,23 +270,22 @@ pub(crate) fn start(
                 })
                 .collect(),
         ),
+        activity: Mutex::new(vec![None; count]),
+        promise: Mutex::new(None),
+        phase: Mutex::new(Phase::Following),
+        stop: AtomicBool::new(false),
+        started: Instant::now(),
+        shared,
     });
-    let shared = Arc::new(Shared {
-        network,
-        states: Mutex::new(vec![None; areas.len()]),
-        areas,
-        snapshot,
-    });
-    for index in 0..shared.areas.len() {
-        let (standby, shared, primary, token) = (
+    for index in 0..count {
+        let (standby, primary, token) = (
             Arc::clone(&standby),
-            Arc::clone(&shared),
             primary.clone(),
             token.map(str::to_string),
         );
         let spawned = std::thread::Builder::new()
             .name(format!("bereitschaft-{index}"))
-            .spawn(move || follow(index, &primary, token.as_deref(), &standby, &shared));
+            .spawn(move || follow(index, &primary, token.as_deref(), &standby));
         if let Err(e) = spawned {
             tracing::error!(%e, "Bereitschaftsrechner: Faden startet nicht");
         }
@@ -151,24 +293,61 @@ pub(crate) fn start(
     standby
 }
 
-/// Liest das Journal eines Bereichs mit, solange der Dienst läuft.
-fn follow(index: usize, primary: &str, token: Option<&str>, standby: &Standby, shared: &Shared) {
-    let Some((area, plan)) = shared.areas.get(index).cloned() else {
+/// Verbindung zum Hauptrechner.
+struct Primary<'a> {
+    agent: ureq::Agent,
+    url: &'a str,
+    token: Option<&'a str>,
+}
+
+impl Primary<'_> {
+    /// Quittiert den geprüften Stand und liefert die Zusage (`None`: nicht gedeckt).
+    fn acknowledge(&self, area: &str, cycle: u64, head: &str) -> Option<Instant> {
+        let sent = Instant::now();
+        let mut request = self.agent.post(format!("{}/v1/journal/ack", self.url));
+        if let Some(t) = self.token {
+            request = request.header("Authorization", format!("Bearer {t}"));
+        }
+        let mut response = request
+            .send_json(json!({ "area": area, "cycle": cycle, "head": head }))
+            .ok()?;
+        if response.status() != 200 {
+            return None;
+        }
+        let v: Value = response.body_mut().read_json().ok()?;
+        if v.get("covered").and_then(Value::as_bool) != Some(true) {
+            return None;
+        }
+        let hold = Duration::from_millis(v.get("hold_ms").and_then(Value::as_u64)?);
+        // Zehn Prozent und ein fester Abstand für Gangunterschied und Laufzeit.
+        let hold = hold.saturating_sub(hold / 10).checked_sub(PROMISE_MARGIN)?;
+        Some(sent + hold)
+    }
+}
+
+/// Liest das Journal eines Bereichs mit, bis das Mitlesen beendet wird.
+fn follow(index: usize, url: &str, token: Option<&str>, standby: &Standby) {
+    let Some((area, plan)) = standby.shared.areas.get(index).cloned() else {
         return;
     };
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .build()
-        .into();
+    let primary = Primary {
+        agent: ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_connect(Some(Duration::from_secs(2)))
+            .build()
+            .into(),
+        url,
+        token,
+    };
     let mut follower = Follower::new(&plan, None);
     let mut offset = 0u64;
     let mut buf = vec![0u8; 1 << 16];
-    loop {
-        let url = format!(
-            "{primary}/v1/journal/stream?area={}&offset={offset}",
+    while !standby.stopped() {
+        let stream = format!(
+            "{url}/v1/journal/stream?area={}&offset={offset}",
             encode(&area)
         );
-        let mut request = agent.get(&url);
+        let mut request = primary.agent.get(&stream);
         if let Some(t) = token {
             request = request.header("Authorization", format!("Bearer {t}"));
         }
@@ -179,11 +358,12 @@ fn follow(index: usize, primary: &str, token: Option<&str>, standby: &Standby, s
                     s.problem = None;
                 });
                 let mut reader = response.into_body().into_reader();
-                loop {
+                while !standby.stopped() {
                     let n = match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => n,
                     };
+                    standby.touch(index);
                     offset = offset.saturating_add(u64::try_from(n).unwrap_or(0));
                     if let Err(e) = follower.feed(buf.get(..n).unwrap_or_default()) {
                         // Passt nicht (mehr): von vorn lesen.
@@ -193,14 +373,24 @@ fn follow(index: usize, primary: &str, token: Option<&str>, standby: &Standby, s
                         offset = 0;
                         break;
                     }
+                    if standby.stopped() {
+                        break;
+                    }
                     if let (Some(state), Some(summary)) = (follower.state(), follower.summary()) {
-                        shared.publish(index, state, summary.last_ms);
+                        standby.shared.publish(index, state, summary.last_ms);
+                        let cycle = state.meta().cycle();
+                        let sent = Instant::now();
+                        let until = primary.acknowledge(&area, cycle, &summary.head);
+                        standby.promise(sent, until);
                         standby.update(index, |s| {
                             s.cycles = summary.cycles;
                             s.last_ms = summary.last_ms;
                             s.resyncs = summary.resyncs;
                             s.snapshots = summary.snapshots;
                             s.bytes = offset;
+                            if until.is_some() {
+                                s.acked = Some(cycle);
+                            }
                         });
                     }
                 }
@@ -217,7 +407,9 @@ fn follow(index: usize, primary: &str, token: Option<&str>, standby: &Standby, s
             s.connected = false;
             s.reconnects = s.reconnects.saturating_add(1);
         });
-        std::thread::sleep(RETRY);
+        if !standby.stopped() {
+            std::thread::sleep(RETRY);
+        }
     }
 }
 

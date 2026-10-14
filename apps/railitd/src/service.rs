@@ -696,6 +696,32 @@ impl Service {
         .await
     }
 
+    /// Quittung des Bereitschaftsrechners für das Journal eines Bereichs (REQ-SVC-012).
+    /// Liefert die Zusage; eine Quittung, die nicht zum Journal passt, wird abgewiesen.
+    pub(crate) async fn acknowledge(
+        &self,
+        who: &Principal,
+        area: usize,
+        name: &str,
+        cycle: u64,
+        head: String,
+    ) -> Res<railit_runtime::Coverage> {
+        self.authorize(who, Permission::Replicate, Some(name), "ack", name)?;
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(EngineMsg::Ack {
+                area,
+                cycle,
+                head,
+                reply,
+            })
+            .await
+            .map_err(|_| ServiceError::Unavailable)?;
+        rx.await
+            .map_err(|_| ServiceError::Unavailable)?
+            .map_err(ServiceError::BadRequest)
+    }
+
     /// Prüft das Auditprotokoll und liefert die letzten Einträge.
     pub(crate) fn audit_log(&self, who: &Principal, last: usize) -> Res<Value> {
         self.authorize(who, Permission::Audit, None, "read_audit", "audit")?;

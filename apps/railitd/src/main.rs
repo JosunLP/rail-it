@@ -29,6 +29,7 @@ mod metrics;
 mod review;
 mod service;
 mod standby;
+mod takeover;
 mod tls;
 mod ui;
 
@@ -92,13 +93,22 @@ struct Args {
     #[arg(long)]
     journal: Option<PathBuf>,
     /// Bereitschaftsrechner: liest die Journale des Hauptrechners unter dieser Adresse mit
-    /// (`http://host:port`), rechnet nach und zeigt dessen Zustand an – ohne Feld, ohne
-    /// Kern im Betrieb, ohne Bedienung.
-    #[arg(long, value_name = "URL", conflicts_with_all = ["journal", "nodes"])]
+    /// (`http://host:port`), rechnet nach, quittiert und zeigt dessen Zustand an – ohne Feld,
+    /// ohne Kern im Betrieb, ohne Bedienung. `--journal` gilt erst nach einer Übernahme.
+    #[arg(long, value_name = "URL", conflicts_with = "nodes")]
     standby: Option<String>,
-    /// Zugangstoken beim Hauptrechner (mit `--standby`).
+    /// Zugangstoken beim Hauptrechner (mit `--standby`; Rolle `bereitschaft`).
     #[arg(long, value_name = "TOKEN", requires = "standby")]
     standby_token: Option<String>,
+    /// Übernahme: Schweigt der Hauptrechner so lange (ms), führt der Bereitschaftsrechner am
+    /// Feldrechner, sobald der Umschalter ihn lässt (mit `--standby` und `--field remote`).
+    #[arg(long, value_name = "MS", requires = "standby")]
+    takeover_after_ms: Option<u64>,
+    /// Ausgabesperre für einen Bereitschaftsrechner: Ausgaben gehen erst nach seiner Quittung
+    /// hinaus und warten darauf höchstens so lange (ms). Muss die Umschaltzeit des
+    /// Feldrechners, `t_max` von RaSTA und `--takeover-after-ms` deutlich übersteigen.
+    #[arg(long, value_name = "MS", requires = "journal")]
+    standby_gate_ms: Option<u64>,
     /// Abstand der Zustands-Prüfpunkte im Journal (Zyklen).
     #[arg(long, default_value_t = 600)]
     checkpoint_every: u64,
@@ -394,6 +404,62 @@ fn area_plans(rt: &Runtime<ServiceField>) -> Vec<(String, railit_plan::PlanView<
         .collect()
 }
 
+/// Bereitschaftsrechner (`--standby`): Mitleser je Stellbereich.
+fn start_standby(
+    args: &Args,
+    rt: &Runtime<ServiceField>,
+    snapshot: &watch::Sender<Arc<railit_runtime::Snapshot>>,
+) -> Option<Arc<standby::Standby>> {
+    let url = args.standby.as_deref()?;
+    let areas = area_plans(rt);
+    let network = areas
+        .first()
+        .map(|(_, p)| p.network_name().to_string())
+        .unwrap_or_default();
+    tracing::info!(primary = url, "Bereitschaftsrechner: liest das Journal mit");
+    Some(standby::start(
+        url,
+        args.standby_token.as_deref(),
+        network,
+        areas,
+        snapshot.clone(),
+    ))
+}
+
+/// Vorbereitung des Bereitschaftsrechners auf die Führung: Journale beginnen, Ausgabesperre
+/// für einen neuen Bereitschaftsrechner.
+fn prepare(args: &Args) -> Result<takeover::Prepare, String> {
+    let seal = args
+        .seal_key
+        .as_deref()
+        .map(railit_runtime::keys::read_signing_key)
+        .transpose()?;
+    let journal = args.journal.clone();
+    let (every, seal_every, gate) = (args.checkpoint_every, args.seal_every, args.standby_gate_ms);
+    Ok(Box::new(move |rt| {
+        if let Some(path) = &journal {
+            start_journals(rt, path, every, seal.as_ref().map(|k| (k, seal_every)))?;
+        }
+        if let Some(ms) = gate {
+            enable_gate(rt, ms)?;
+        }
+        Ok(())
+    }))
+}
+
+/// Ausgabesperre für einen Bereitschaftsrechner (`--standby-gate-ms`).
+fn enable_gate(rt: &mut Runtime<ServiceField>, grace_ms: u64) -> Result<(), String> {
+    rt.enable_replication(railit_runtime::ReplicationConfig {
+        grace_ms,
+        ..railit_runtime::ReplicationConfig::default()
+    })?;
+    tracing::info!(
+        grace_ms,
+        "Ausgabe erst nach Quittung des Bereitschaftsrechners"
+    );
+    Ok(())
+}
+
 /// Steuerung des Feldrechners (`--field-control`).
 fn field_control(args: &Args) -> Option<FieldControl> {
     args.field_control
@@ -437,33 +503,25 @@ async fn serve(
             .map(|path| review::files(path, &area_plans(&rt)))
             .unwrap_or_default(),
     );
-    let standby = args.standby.as_deref().map(|url| {
-        let areas = area_plans(&rt);
-        let network = areas
-            .first()
-            .map(|(_, p)| p.network_name().to_string())
-            .unwrap_or_default();
-        tracing::info!(primary = url, "Bereitschaftsrechner: liest das Journal mit");
-        standby::start(
-            url,
-            args.standby_token.as_deref(),
-            network,
-            areas,
-            snapshot_tx.clone(),
-        )
-    });
-    let mut engine = if standby.is_some() {
-        // Ohne Engine scheitert jede Bedienung; das Zustandsbild speisen die Mitleser.
-        drop((rx, rt, metrics_tx));
-        tokio::spawn(async {})
-    } else {
-        let channels = engine::Channels {
-            rx,
-            snapshot: snapshot_tx,
-            events: events_tx.clone(),
-            metrics: metrics_tx,
-        };
-        tokio::spawn(engine::run(rt, channels, period))
+    let standby = start_standby(&args, &rt, &snapshot_tx);
+    let channels = engine::Channels {
+        rx,
+        snapshot: snapshot_tx,
+        events: events_tx.clone(),
+        metrics: metrics_tx,
+    };
+    let mut engine = match &standby {
+        // Bis zu einer Übernahme scheitert jede Bedienung; das Zustandsbild speisen die
+        // Mitleser.
+        Some(s) => {
+            let (wake_tx, wake_rx) = tokio::sync::oneshot::channel();
+            if let Some(ms) = args.takeover_after_ms {
+                let after = std::time::Duration::from_millis(ms);
+                takeover::start(Arc::clone(s), rt, after, prepare(&args)?, wake_tx);
+            }
+            tokio::spawn(engine::standby(channels, wake_rx, period))
+        }
+        None => tokio::spawn(engine::run(rt, channels, period)),
     };
 
     let audit = open_audit(&args)?;
@@ -611,15 +669,26 @@ fn main() -> ExitCode {
         Ok(k) => k,
         Err(e) => return fail(&e),
     };
-    if let Some(path) = &args.journal
-        && let Err(e) = start_journals(
-            &mut rt,
-            path,
-            args.checkpoint_every,
-            seal_key.as_ref().map(|k| (k, args.seal_every)),
-        )
-    {
-        return fail(&e);
+    if args.takeover_after_ms.is_some() && !matches!(args.field, FieldArg::Remote) {
+        return fail("--takeover-after-ms verlangt --field remote (Umschalter im Feldrechner)");
+    }
+    // Der Bereitschaftsrechner beginnt seine Journale erst bei der Übernahme.
+    if args.standby.is_none() {
+        if let Some(path) = &args.journal
+            && let Err(e) = start_journals(
+                &mut rt,
+                path,
+                args.checkpoint_every,
+                seal_key.as_ref().map(|k| (k, args.seal_every)),
+            )
+        {
+            return fail(&e);
+        }
+        if let Some(ms) = args.standby_gate_ms
+            && let Err(e) = enable_gate(&mut rt, ms)
+        {
+            return fail(&e);
+        }
     }
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()

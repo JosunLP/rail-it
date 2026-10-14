@@ -2,6 +2,7 @@
 
 import { createHttp, signal } from '@bquery/bquery/reactive';
 import type { HttpClient } from '@bquery/bquery/reactive';
+import { type Role, roleOf } from './model';
 import type { Answer, JournalInfo, Layout, NamedAux, PendingAux, ReviewCycle, Snapshot } from './types';
 
 const TOKEN_KEY = 'railit.token';
@@ -219,11 +220,7 @@ export async function getJournalEvents(fromMs: number, toMs: number, area: strin
 }
 
 /** Rolle des Dienstes: Hauptrechner oder Bereitschaftsrechner (liest nur mit). */
-export async function getRole(): Promise<{ role: 'primary' | 'standby'; primary?: string }> {
-  const r = await call(() =>
-    http.get<{ role?: string; standby?: { primary: string } | null }>('/v1/health'),
-  );
-  return r.data?.role === 'standby'
-    ? { role: 'standby', primary: r.data.standby?.primary }
-    : { role: 'primary' };
+export async function getRole(): Promise<Role> {
+  const r = await call(() => http.get<unknown>('/v1/health'));
+  return roleOf(r.data);
 }

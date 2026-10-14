@@ -81,3 +81,10 @@ path = "fuzz_targets/mirror_state.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "field_server"
+path = "fuzz_targets/field_server.rs"
+test = false
+doc = false
+bench = false

@@ -52,6 +52,15 @@ impl ServiceField {
         }
     }
 
+    /// Führt dieses Stellwerk am Feld (alle Verbindungen stehen)? Das eingebaute Feld gehört
+    /// immer dem Dienst.
+    pub(crate) fn connected(&self) -> bool {
+        match self {
+            Self::Local(_) => true,
+            Self::Remote(f) => f.client().connected(),
+        }
+    }
+
     /// Ereignisse des eingebauten Simulators.
     pub(crate) fn take_sim_events(&mut self) -> Vec<SimEvent> {
         match self {

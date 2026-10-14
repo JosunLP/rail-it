@@ -1,5 +1,6 @@
 //! Ende-zu-Ende: Feldrechner (`railit-field`) und Stellwerksdienst (`railitd --field remote`)
-//! als Prozesse, RaSTA über UDP (REQ-COM-008, REQ-SVC-013).
+//! als Prozesse, RaSTA über UDP (REQ-COM-008, REQ-SVC-013); Übernahme des Betriebs durch den
+//! Bereitschaftsrechner (REQ-SVC-012, REQ-SVC-014).
 
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -29,6 +30,11 @@ impl Drop for Process {
 }
 
 impl Process {
+    fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+
     fn spawn(mut cmd: Command, prefix: &str) -> Self {
         let mut child = cmd
             .stdout(Stdio::piped())
@@ -228,4 +234,128 @@ fn field_network_must_match() {
         .output()
         .unwrap();
     assert!(!out.status.success());
+}
+
+fn health(url: &str) -> Value {
+    get(&format!("{url}/v1/health")).1
+}
+
+/// Hauptrechner (optional mit Ausgabesperre) und Bereitschaftsrechner mit Übernahme am
+/// selben Feldrechner; der Hauptrechner stellt A-N1 auf Fahrt und fällt dann aus.
+fn takeover(tag: &str, gate: bool) -> (Process, Process, String) {
+    let (field, udp, control) = start_field();
+    let plan = plan(tag);
+    let (j1, j2) = (
+        tmp(&format!("{tag}-1.journal")),
+        tmp(&format!("{tag}-2.journal")),
+    );
+    let _ = std::fs::remove_file(&j1);
+    let _ = std::fs::remove_file(&j2);
+    let common = [
+        "--plan",
+        plan.to_str().unwrap(),
+        "--field",
+        "remote",
+        "--field-addr",
+        &udp,
+        "--field-control",
+        &control,
+    ];
+    let mut primary_args = common.to_vec();
+    primary_args.extend(["--journal", j1.to_str().unwrap()]);
+    if gate {
+        primary_args.extend(["--standby-gate-ms", "8000"]);
+    }
+    let mut primary = railitd(&primary_args);
+    let p = primary.line.clone();
+    wait("Hauptrechner verbunden", || {
+        get(&format!("{p}/v1/field/links"))
+            .1
+            .as_array()
+            .is_some_and(|l| !l.is_empty() && l.iter().all(|x| x["up"] == true))
+    });
+    let mut standby_args = common.to_vec();
+    standby_args.extend([
+        "--journal",
+        j2.to_str().unwrap(),
+        "--standby",
+        &p,
+        "--standby-token",
+        TOKEN,
+        "--takeover-after-ms",
+        "500",
+    ]);
+    let standby = railitd(&standby_args);
+    let s = standby.line.clone();
+    wait("Bereitschaftsrechner liest mit", || {
+        health(&s)["standby"]["areas"][0]["cycles"].as_u64() > Some(0)
+    });
+    assert_eq!(health(&s)["role"], "standby");
+    // Bedienung am Bereitschaftsrechner ist gesperrt.
+    assert_eq!(post(&format!("{s}/v1/routes/A-N2/set"), None).0, 503);
+
+    assert_eq!(post(&format!("{p}/v1/routes/A-N1/set"), None).0, 200);
+    wait("A-N1 auf Fahrt", || route_phase(&p, "A-N1") == "proceed");
+    wait("Bereitschaftsrechner kennt die Fahrt", || {
+        route_phase(&s, "A-N1") == "proceed"
+    });
+    if gate {
+        let h = health(&p);
+        assert_eq!(h["replication"]["gated"], true, "{h}");
+        assert_eq!(h["replication"]["coverage"]["covered"], true, "{h}");
+        assert!(health(&s)["standby"]["covered_ms"].as_u64() > Some(0));
+    }
+    primary.kill();
+    drop(primary);
+    wait("Bereitschaftsrechner führt", || {
+        health(&s)["role"] == "primary"
+    });
+    let (_, status) = get(&format!("{control}/v1/status"));
+    assert_eq!(status["field"]["leader"], 0x0A00_0002, "{status}");
+    (field, standby, s)
+}
+
+/// Warme Übernahme: Die Zusage des Hauptrechners deckt sie; die Fahrstraße bleibt
+/// verschlossen und fällt auf Halt; der neue Hauptrechner nimmt Bedienungen an.
+#[test]
+fn standby_takes_over_with_the_followed_state() {
+    let (_field, _standby, s) = takeover("warm", true);
+    let h = health(&s);
+    assert_eq!(h["standby"]["phase"]["phase"], "leading", "{h}");
+    assert_eq!(h["standby"]["phase"]["warm"], true, "{h}");
+    assert_eq!(route_phase(&s, "A-N1"), "halted");
+    let (_, state) = get(&format!("{s}/v1/state"));
+    let a = state["signals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["name"] == "A")
+        .unwrap()
+        .clone();
+    assert_eq!(a["commanded"], "stop", "{a}");
+    // Feindliche Fahrstraße bleibt ausgeschlossen, Rücknahme mit Zeitverschluss.
+    assert_eq!(post(&format!("{s}/v1/routes/A-N2/set"), None).0, 409);
+    assert_eq!(post(&format!("{s}/v1/routes/A-N1/cancel"), None).0, 200);
+    assert_eq!(route_phase(&s, "A-N1"), "cancelling");
+    // Journal des neuen Hauptrechners läuft, Simulation geht an den Feldrechner.
+    let (_, journals) = get(&format!("{s}/v1/journal"));
+    assert!(
+        journals["journals"][0]["bytes"].as_u64() > Some(0),
+        "{journals}"
+    );
+    let (code, _) = post(
+        &format!("{s}/v1/sim/trains"),
+        Some(json!({"name": "RB2", "signal": "F", "length_m": 80, "speed_kmh": 60})),
+    );
+    assert_eq!(code, 200);
+}
+
+/// Ohne Ausgabesperre gibt es keine Zusage: Der Bereitschaftsrechner beginnt wie nach einem
+/// Neustart.
+#[test]
+fn standby_restarts_without_a_promise() {
+    let (_field, _standby, s) = takeover("cold", false);
+    let h = health(&s);
+    assert_eq!(h["standby"]["phase"]["warm"], false, "{h}");
+    assert_eq!(route_phase(&s, "A-N1"), "idle");
 }
