@@ -810,6 +810,11 @@ impl<'a> PlanView<'a> {
         self.bytes
     }
 
+    /// Der Teil des Images, über den die Prüfsumme läuft (ohne Prüfsumme und Signatur).
+    pub fn body(&self) -> &'a [u8] {
+        self.bytes.get(..self.body_len).unwrap_or_default()
+    }
+
     /// Anzahl Weichen.
     pub const fn point_count(&self) -> usize {
         self.points

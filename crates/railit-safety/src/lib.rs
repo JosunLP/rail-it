@@ -23,6 +23,8 @@
 //!   lehnt alle Anforderungen ab, bis sie zurückgesetzt wird; danach beginnen alle Kanäle wie
 //!   nach einem Neustart (REQ-SAF-004).
 //! - **Watchdog:** überwacht Rechenzeit und Abstand der Zyklen (REQ-SAF-005).
+//! - **Speicherprüfung:** prüft Plan und einen RAM-Prüfbereich zyklisch ([`MemoryCheck`],
+//!   REQ-SAF-008).
 //!
 //! Die Schicht allokiert nicht. Den Zustandsspeicher ([`StateStore`]) und die Ausgabepuffer
 //! ([`ChannelOutputs`]) stellt der Aufrufer: auf dem Server `OwnedState` und `VecOutputs`
@@ -42,6 +44,7 @@
 
 mod channels;
 mod digest;
+mod memory;
 mod outputs;
 #[cfg(kani)]
 mod proofs;
@@ -52,5 +55,6 @@ pub use channels::{
     SafetyEvent, StateStore, Status, Trip, Verdict,
 };
 pub use digest::{Digest, state_digest};
+pub use memory::{MemoryCheck, MemoryRegion, MemoryStats};
 pub use outputs::{ChannelOutputs, FixedOutputs};
 pub use watchdog::Watchdog;

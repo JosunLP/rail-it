@@ -22,6 +22,11 @@ railit safety reset               # nach einer Abschaltung (Instandhaltung)
 
 Der Voter ist mit Kani für alle Eingaben nachgewiesen.
 
+Zusätzlich prüft jeder Stellbereich zyklisch seinen Speicher (REQ-SAF-008): je Zyklus 4 KiB
+des Plan-Images gegen die Prüfsumme vom Laden und 256 Wörter eines eigenen RAM-Prüfbereichs
+mit einem Marsch-Test. Ein Durchlauf über einen Plan von 40 KiB dauert bei 100 ms Zykluszeit
+eine Sekunde. Ein Fehler führt in den sicheren Zustand (`memory_fault`).
+
 ## Knoten des sicheren Rechners
 
 Der Kern eines Stellbereichs kann auf einem eigenen **Knoten** rechnen: `railit-node` führt ihn

@@ -25,7 +25,11 @@ use railit_kernel::{
 use railit_ops::{Ops, OpsConfig, OpsEvent, OpsNet, OpsView, Timetable};
 use railit_plan::PlanView;
 use railit_rules::GenericRules;
-use railit_safety::{Channels, Fault, Redundancy, SafetyEvent, Status, Watchdog};
+use railit_safety::{
+    Channels, Fault, MemoryCheck, Redundancy, SafetyEvent, Status, Trip, Watchdog,
+};
+
+use crate::remote::{PLAN_CHECK_BYTES, RAM_TEST_WORDS};
 use railit_topology::{AreaCut, Topology};
 use railit_types::{BorderId, Duration, LxId, PointId, RouteId, SignalId, Tick, TvdId};
 
@@ -275,6 +279,8 @@ struct Area {
     journal: JournalSlot,
     /// Kern auf einem sicheren Rechner; `channels` ist dann der Spiegel.
     remote: Option<Box<Remote>>,
+    /// Zyklische Speicherprüfung von Plan und RAM-Prüfbereich (REQ-SAF-008).
+    memory: (MemoryCheck, Vec<u32>),
 }
 
 impl Area {
@@ -290,7 +296,21 @@ impl Area {
             inputs: Vec::new(),
             journal: JournalSlot::default(),
             remote: None,
+            memory: (
+                MemoryCheck::new(plan.digest(), plan.body().len(), PLAN_CHECK_BYTES, 256),
+                vec![0; RAM_TEST_WORDS],
+            ),
         }
+    }
+
+    /// Ein Schritt der Speicherprüfung; im Knotenbetrieb prüft der Knoten selbst.
+    fn check_memory(&mut self) -> Option<Trip> {
+        if self.remote.is_some() {
+            return None;
+        }
+        let body = self.channels.kernel().plan().body();
+        let (check, ram) = &mut self.memory;
+        check.step(body, ram).err().map(Trip::MemoryFault)
     }
 
     fn plan(&self) -> &PlanView<'static> {
@@ -1281,8 +1301,14 @@ impl<F: FieldAdapter> Runtime<F> {
                 area.journal
                     .write(|j| j.record(now, &area.inputs, &area.out, state));
             }
-            if watched
-                && let Some(Err(trip)) = area.watchdog.as_mut().map(|w| w.check(started, finished))
+            let trip = area.check_memory().or_else(|| {
+                watched
+                    .then(|| area.watchdog.as_mut().map(|w| w.check(started, finished)))
+                    .flatten()
+                    .and_then(Result::err)
+            });
+            if let Some(trip) = trip
+                && area.channels.status().trip.is_none()
             {
                 area.channels.trip(trip);
                 area.journal_safety(now, SafetyKind::Tripped, &format!("{trip:?}"));

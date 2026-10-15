@@ -4,8 +4,8 @@ use railit_kernel::{Input, Interlocking, KernelState, Occupancy};
 use railit_rasta::{Connection, Received};
 use railit_rules::RuleSet;
 use railit_safety::{
-    ChannelOutputs, Channels, ConfigError, FixedOutputs, MAX_CHANNELS, SafetyEvent, Status, Trip,
-    Verdict, Watchdog, state_digest,
+    ChannelOutputs, Channels, ConfigError, FixedOutputs, MAX_CHANNELS, MemoryCheck, SafetyEvent,
+    Status, Trip, Verdict, Watchdog, state_digest,
 };
 use railit_types::{Tick, TvdId};
 
@@ -75,6 +75,24 @@ pub struct NodeStats {
     pub link_losses: u32,
     /// Zyklen, in denen Eingaben verloren gingen.
     pub input_overflows: u32,
+    /// Vollständige Durchläufe der Speicherprüfung über Plan und RAM-Prüfbereich.
+    pub memory_passes: (u64, u64),
+}
+
+/// Zyklische Speicherprüfung des Knotens (REQ-SAF-008): Plan-Image und RAM-Prüfbereich.
+struct MemoryGuard<'p, 's> {
+    check: MemoryCheck,
+    image: &'p [u8],
+    ram: &'s mut [u32],
+}
+
+impl core::fmt::Debug for MemoryGuard<'_, '_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MemoryGuard")
+            .field("image", &self.image.len())
+            .field("ram", &self.ram.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Zusammenfassung eines Zyklus.
@@ -111,6 +129,7 @@ pub struct Node<'p, 's, R, const I: usize, const C: usize, const E: usize> {
     sync: Option<KernelState<'s>>,
     sync_requested: bool,
     sync_cursor: Option<SyncCursor>,
+    memory: Option<MemoryGuard<'p, 's>>,
 }
 
 impl<'p, 's, R: RuleSet, const I: usize, const C: usize, const E: usize> Node<'p, 's, R, I, C, E> {
@@ -140,7 +159,28 @@ impl<'p, 's, R: RuleSet, const I: usize, const C: usize, const E: usize> Node<'p
             sync: None,
             sync_requested: false,
             sync_cursor: None,
+            memory: None,
         })
+    }
+
+    /// Zyklische Speicherprüfung (REQ-SAF-008): Je Zyklus `plan_chunk` Bytes des Plans
+    /// `plan_body` gegen die beim Laden festgehaltene Prüfsumme `digest` und `ram_chunk`
+    /// Wörter des Prüfbereichs `ram`. Ein Fehler führt in den sicheren Zustand.
+    #[must_use]
+    pub fn with_memory_check(
+        mut self,
+        plan_body: &'p [u8],
+        digest: [u8; 32],
+        ram: &'s mut [u32],
+        plan_chunk: usize,
+        ram_chunk: usize,
+    ) -> Self {
+        self.memory = Some(MemoryGuard {
+            check: MemoryCheck::new(digest, plan_body.len(), plan_chunk, ram_chunk),
+            image: plan_body,
+            ram,
+        });
+        self
     }
 
     /// Abgleichspeicher (gleiche Größe wie die Kanäle) für [`HostMsg::Sync`] (REQ-EMB-006): Der Zustand wird
@@ -260,14 +300,28 @@ impl<'p, 's, R: RuleSet, const I: usize, const C: usize, const E: usize> Node<'p
             .step(Tick::from_millis(now_ms), inputs, &mut self.out);
         self.stats.cycles = self.stats.cycles.saturating_add(1);
 
+        // Gründe von außerhalb der Kanäle (Speicherprüfung, Watchdog) meldet der Knoten selbst.
+        let mut external_trip = None;
+        if let Some(guard) = self.memory.as_mut() {
+            let result = guard.check.step(guard.image, guard.ram);
+            let stats = guard.check.stats();
+            self.stats.memory_passes = (stats.plan_passes, stats.ram_passes);
+            if let Err(region) = result
+                && verdict.trip.is_none()
+            {
+                self.channels.trip(Trip::MemoryFault(region));
+                verdict.trip = Some(Trip::MemoryFault(region));
+                external_trip = Some(Trip::MemoryFault(region));
+            }
+        }
+
         let end_us = clock();
-        let mut watchdog_trip = None;
         if verdict.trip.is_none()
             && let Err(trip) = self.watchdog.check(start_us, end_us)
         {
             self.channels.trip(trip);
             verdict.trip = Some(trip);
-            watchdog_trip = Some(trip);
+            external_trip = Some(trip);
         }
 
         let digest = self
@@ -292,7 +346,7 @@ impl<'p, 's, R: RuleSet, const I: usize, const C: usize, const E: usize> Node<'p
         };
         let sent = self.link.is_up()
             && self
-                .send_outputs(rasta_ms, now_ms, &verdict, watchdog_trip, counts)
+                .send_outputs(rasta_ms, now_ms, &verdict, external_trip, counts)
                 .is_ok();
         if self.link.is_up() && !sent {
             // Sendepuffer voll: Verbindung abbauen; der Host erkennt den Ausfall.
@@ -308,7 +362,7 @@ impl<'p, 's, R: RuleSet, const I: usize, const C: usize, const E: usize> Node<'p
         rasta_ms: u32,
         now_ms: u64,
         verdict: &Verdict,
-        watchdog_trip: Option<Trip>,
+        external_trip: Option<Trip>,
         counts: Counts,
     ) -> Result<(), WireError> {
         let Self {
@@ -341,7 +395,7 @@ impl<'p, 's, R: RuleSet, const I: usize, const C: usize, const E: usize> Node<'p
         }
         for s in verdict
             .events()
-            .chain(watchdog_trip.map(SafetyEvent::Tripped))
+            .chain(external_trip.map(SafetyEvent::Tripped))
         {
             packer.push(&NodeMsg::Safety(s), &mut flush)?;
         }

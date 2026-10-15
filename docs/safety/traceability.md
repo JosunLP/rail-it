@@ -181,6 +181,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-SAF-005 | H-007, H-015 | `crates/railit-safety/src/lib.rs`<br>`crates/railit-safety/src/watchdog.rs` | `deadline_and_gap`<br>`backward_clock_trips_even_without_deadline`<br>`external_trip_holds_all_signals`<br>`watchdog_detects_every_overrun`<br>`watchdog_trips_on_overrun`<br>`crates/railit-safety/tests/voter.rs` |
 | REQ-SAF-006 | H-007, H-014 | – | `voter_forwards_only_confirmed_outputs`<br>`watchdog_detects_every_overrun`<br>`fixed_outputs_never_lose_silently`<br>`bitset_insert_remove_are_exact`<br>`bitset_union_is_exact`<br>`time_never_overflows`<br>`md4_never_panics_on_shortest_pdu`<br>`md4_never_panics_on_two_blocks`<br>`closed_connection_never_delivers`<br>`packer_respects_the_payload_limit`<br>`crates/railit-embedded/src/proofs.rs`<br>`crates/railit-rasta/src/proofs.rs`<br>`crates/railit-safety/src/proofs.rs`<br>`crates/railit-types/src/proofs.rs` |
 | REQ-SAF-007 | H-004, H-008, H-014 | – | `seeds_pass`<br>`plan_mutation_sweep`<br>`truncated_sources`<br>`random_plan_mutations`<br>`random_bytes`<br>`crates/railit-fuzz/tests/smoke.rs` |
+| REQ-SAF-008 | H-015 | `crates/railit-embedded/src/node.rs`<br>`crates/railit-runtime/src/remote.rs`<br>`crates/railit-runtime/src/runtime.rs`<br>`crates/railit-safety/src/channels.rs`<br>`crates/railit-safety/src/lib.rs`<br>`crates/railit-safety/src/memory.rs` | `a_flipped_plan_bit_is_found_within_one_pass`<br>`intact_memory_passes_and_counts_passes`<br>`memory_check_finds_a_corrupted_plan`<br>`crates/railit-embedded/tests/node.rs` |
 
 ## [topologie.md](../requirements/topologie.md)
 
@@ -206,4 +207,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-133 Anforderungen, davon 133 mit Nachweis.
+134 Anforderungen, davon 134 mit Nachweis.

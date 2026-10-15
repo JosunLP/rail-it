@@ -489,3 +489,43 @@ fn state_sync_rebuilds_the_mirror() {
     assert_eq!(&mirror, expected);
     assert_eq!(bench.client.protocol_errors(), 0);
 }
+
+/// REQ-SAF-008: Die zyklische Speicherprüfung findet einen verfälschten Plan im Speicher und
+/// führt in den sicheren Zustand; ein intakter Plan wird Durchlauf um Durchlauf bestätigt.
+#[test]
+fn memory_check_finds_a_corrupted_plan() {
+    let plan = plan();
+    let chunks = plan.body().len().div_ceil(4096);
+    let cycles = 2 * u64::try_from(chunks).unwrap();
+    let run = |body: &'static [u8]| {
+        let mut a = ChannelMemory::<64>::new();
+        let mut ram = [0u32; 128];
+        let states = [a.state(&plan), None, None];
+        let mut node: TestNode<'_> = Node::new(
+            Interlocking::new(plan, GenericRules::default()),
+            states,
+            node_config(),
+        )
+        .unwrap()
+        .with_memory_check(body, plan.digest(), &mut ram, 4096, 32);
+        let mut trips = Vec::new();
+        for cycle in 0..cycles {
+            let t = cycle * 100_000;
+            trips.push(node.tick(t, &mut || t + 10).verdict.trip);
+        }
+        (trips, node.stats().memory_passes)
+    };
+    let (trips, passes) = run(plan.body());
+    assert!(trips.iter().all(Option::is_none));
+    assert_eq!(passes, (2, cycles / 4));
+
+    let mut corrupted = plan.body().to_vec();
+    let middle = corrupted.len() / 2;
+    corrupted[middle] ^= 0x10;
+    let (trips, _) = run(Box::leak(corrupted.into_boxed_slice()));
+    assert_eq!(
+        trips[chunks - 1],
+        Some(Trip::MemoryFault(railit_safety::MemoryRegion::Plan))
+    );
+    assert!(trips[..chunks - 1].iter().all(Option::is_none));
+}

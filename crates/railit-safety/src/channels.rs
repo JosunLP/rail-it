@@ -89,6 +89,8 @@ pub enum Trip {
         /// Grenze in Mikrosekunden.
         limit_us: u64,
     },
+    /// Die zyklische Speicherprüfung hat einen Fehler gefunden (REQ-SAF-008).
+    MemoryFault(crate::MemoryRegion),
 }
 
 /// Fehler, der zu Prüfzwecken in einen Kanal eingebracht wird (Simulation, Prüfstand).

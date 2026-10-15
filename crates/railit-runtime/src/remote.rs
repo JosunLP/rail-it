@@ -58,6 +58,13 @@ pub type ServerNode<'p, 's> = Node<'p, 's, GenericRules, NODE_INPUTS, NODE_OUTPU
 /// Nach so vielen Zyklen des Dienstes ohne Zyklus des Knotens gilt er als ausgefallen.
 const STALE_CYCLES: u32 = 10;
 
+/// RAM-Prüfbereich des Knotens in Wörtern (16 KiB, REQ-SAF-008).
+pub(crate) const RAM_TEST_WORDS: usize = 4096;
+/// Je Zyklus geprüfte Bytes des Plans.
+pub(crate) const PLAN_CHECK_BYTES: usize = 4096;
+/// Je Zyklus geprüfte Wörter des RAM-Prüfbereichs.
+const RAM_CHECK_WORDS: usize = 256;
+
 /// Höchstzahl der Zyklen, die auf einen Zustandsabgleich warten.
 const MAX_BUFFERED: usize = 600;
 
@@ -99,9 +106,17 @@ pub fn with_node<T>(
     let (sync, rest) = memory.split_last_mut().ok_or("kein Zustandsspeicher")?;
     let mut views = rest.iter_mut().map(OwnedState::view);
     let states = [views.next(), views.next(), views.next()];
+    let mut ram = vec![0u32; RAM_TEST_WORDS];
     let node = ServerNode::new(Interlocking::new(plan, rules), states, setup.config())
         .map_err(|e| format!("Knoten: {e:?}"))?
-        .with_sync_buffer(sync.view());
+        .with_sync_buffer(sync.view())
+        .with_memory_check(
+            plan.body(),
+            plan.digest(),
+            &mut ram,
+            PLAN_CHECK_BYTES,
+            RAM_CHECK_WORDS,
+        );
     let mut node = Box::new(node);
     Ok(run(&mut node))
 }
