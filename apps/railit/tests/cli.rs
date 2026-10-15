@@ -166,6 +166,89 @@ fn keygen_compile_verify_info() {
     assert_eq!(out.status.code(), Some(1));
 }
 
+/// REQ-PLN-022: Freigabe im Vier-Augen-Prinzip.
+#[test]
+fn plans_are_approved_by_distinct_reviewers() {
+    let dir = tmp_dir("plan-approval");
+    let s = |p: &PathBuf| p.to_str().unwrap().to_string();
+    let prefix = dir.join("railit");
+    railit(&["plan", "keygen", &s(&prefix)]);
+    let plan = dir.join("bs.rplan");
+    let key = s(&prefix.with_extension("key"));
+    let public = s(&prefix.with_extension("pub"));
+    let out = railit(&[
+        "plan",
+        "compile",
+        &example(),
+        "--out",
+        &s(&plan),
+        "--key",
+        &key,
+    ]);
+    assert_eq!(out.status.code(), Some(0));
+    let other = dir.join("other");
+    railit(&["plan", "keygen", &s(&other)]);
+
+    let approve = |secret: &str, name: &str| {
+        railit(&[
+            "plan",
+            "approve",
+            &s(&plan),
+            "--key",
+            secret,
+            "--creator-key",
+            &public,
+            "--network",
+            &example(),
+            "--name",
+            name,
+        ])
+    };
+    assert_eq!(
+        approve(&key, "Ersteller").status.code(),
+        Some(1),
+        "Selbstfreigabe"
+    );
+    let reviewer = dir.join("pruefer");
+    railit(&["plan", "keygen", &s(&reviewer)]);
+    let out = approve(&s(&reviewer.with_extension("key")), "Prüferin");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let verify_approved = |n: &str| {
+        railit(&[
+            "plan",
+            "verify",
+            &s(&plan),
+            "--key",
+            &public,
+            "--approver-key",
+            &s(&reviewer.with_extension("pub")),
+            "--approver-key",
+            &s(&other.with_extension("pub")),
+            "--approvals",
+            n,
+            "-o",
+            "json",
+        ])
+    };
+    let out = verify_approved("1");
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["approved_by"][0], "Prüferin");
+    assert_eq!(
+        verify_approved("2").status.code(),
+        Some(1),
+        "zweiter Prüfer fehlt"
+    );
+    let out = approve(&s(&other.with_extension("key")), "Prüfer");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(verify_approved("2").status.code(), Some(0));
+}
+
 #[test]
 fn scenarios_run_from_cli() {
     let scenario = concat!(

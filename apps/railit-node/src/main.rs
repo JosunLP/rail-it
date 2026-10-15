@@ -24,8 +24,8 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use railit_rasta::MAX_PDU;
 use railit_rules::GenericRules;
-use railit_runtime::keys::{read_verifying_key, to_hex};
-use railit_runtime::load_plan;
+use railit_runtime::keys::PlanTrust;
+use railit_runtime::keys::to_hex;
 use railit_runtime::railit_safety::Redundancy;
 use railit_runtime::remote::{NodeSetup, ServerNode, with_node};
 
@@ -49,6 +49,12 @@ struct Args {
     /// Unsignierte Pläne zulassen (nur Simulation und Test).
     #[arg(long)]
     allow_unsigned: bool,
+    /// Öffentlicher Schlüssel eines Prüfers (mehrfach angebbar, REQ-PLN-022).
+    #[arg(long = "approver-key", value_name = "DATEI")]
+    approver_keys: Vec<PathBuf>,
+    /// Vier-Augen-Prinzip: Der Plan braucht so viele Freigaben verschiedener Prüfer.
+    #[arg(long, default_value_t = 0, requires = "trusted_key")]
+    approvals: usize,
     /// UDP-Adresse des Knotens.
     #[arg(long, default_value = "127.0.0.1:7979")]
     listen: SocketAddr,
@@ -162,24 +168,19 @@ fn transmit(
 
 fn main() -> ExitCode {
     let args = Args::parse();
-    let key = match args
-        .trusted_key
-        .as_deref()
-        .map(read_verifying_key)
-        .transpose()
-    {
-        Ok(k) => k,
+    let trust = match PlanTrust::from_files(
+        args.trusted_key.as_deref(),
+        &args.approver_keys,
+        args.approvals,
+    ) {
+        Ok(t) => t,
         Err(e) => return fail(&e),
     };
-    let bytes = match std::fs::read(&args.plan) {
-        Ok(b) => b,
-        Err(e) => return fail(&format!("{}: {e}", args.plan.display())),
+    let plan = match trust.load(&args.plan) {
+        Ok((p, _)) => p,
+        Err(e) => return fail(&e),
     };
-    let plan = match load_plan(bytes, key.as_ref()) {
-        Ok(p) => p,
-        Err(e) => return fail(&format!("Plan {} abgewiesen: {e}", args.plan.display())),
-    };
-    if key.is_none() {
+    if trust.creator.is_none() {
         eprintln!("railit-node: unsignierter Plan zugelassen – nur für Simulation und Test");
     }
     let socket = match UdpSocket::bind(args.listen) {

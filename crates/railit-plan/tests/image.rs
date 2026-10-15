@@ -443,3 +443,60 @@ fn many_routes_span_multiple_conflict_words() {
     assert_eq!(view.route_set_words(), 3);
     assert_eq!(Plan::from_view(&view), p);
 }
+
+#[test]
+fn plans_need_approvals_from_distinct_trusted_reviewers() {
+    let creator = key(1);
+    let image = sample().to_signed_image(&creator).unwrap();
+    let view = PlanView::parse_signed(&image, &creator.verifying_key()).unwrap();
+    let digest = view.digest();
+    let (p1, p2, stranger) = (key(2), key(3), key(4));
+    let trusted = [p1.verifying_key(), p2.verifying_key()];
+    let c = Some(creator.verifying_key());
+    let a1 = approve(&digest, &p1);
+    let a2 = approve(&digest, &p2);
+
+    assert_eq!(
+        check_approvals(&view, c.as_ref(), &[a1.clone(), a2.clone()], &trusted, 2),
+        Ok(2)
+    );
+    // Derselbe Prüfer zweimal zählt einmal.
+    assert_eq!(
+        check_approvals(&view, c.as_ref(), &[a1.clone(), a1.clone()], &trusted, 2),
+        Err(ApprovalError::TooFew {
+            valid: 1,
+            required: 2
+        })
+    );
+    // Der Ersteller kann nicht freigeben, auch wenn er (falsch) als Prüfer eingetragen ist.
+    let own = approve(&digest, &creator);
+    let with_creator = [trusted[0], creator.verifying_key()];
+    assert_eq!(
+        check_approvals(&view, c.as_ref(), &[a1.clone(), own], &with_creator, 2),
+        Err(ApprovalError::SelfApproval(1))
+    );
+    // Fremde Prüfer und Freigaben eines anderen Plans weisen den Plan ab.
+    assert_eq!(
+        check_approvals(
+            &view,
+            c.as_ref(),
+            &[approve(&digest, &stranger)],
+            &trusted,
+            1
+        ),
+        Err(ApprovalError::Untrusted(0))
+    );
+    let mut other = digest;
+    other[0] ^= 1;
+    assert_eq!(
+        check_approvals(&view, c.as_ref(), &[approve(&other, &p2)], &trusted, 1),
+        Err(ApprovalError::Invalid(0))
+    );
+    // Eine Freigabe ist keine Plansignatur: Signatur über die bloße Prüfsumme gilt nicht.
+    let raw = Approval {
+        approver: p1.verifying_key(),
+        signature: ed25519_dalek::Signer::sign(&p1, &digest),
+    };
+    assert!(!raw.is_valid_for(&digest));
+    assert!(a2.is_valid_for(&digest));
+}

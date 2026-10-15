@@ -142,7 +142,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-PLN-001 | H-004 | `crates/railit-plan/src/lib.rs`<br>`crates/railit-plan/src/view.rs` | Analyse (Typsystem) |
 | REQ-PLN-002 | H-004 | `crates/railit-plan/src/error.rs`<br>`crates/railit-plan/src/view.rs`<br>`crates/railit-planning/src/error.rs` | `inconsistent_plans_are_rejected`<br>`crates/railit-plan/tests/image.rs` |
 | REQ-PLN-003 | H-004, H-008 | – | `every_single_bit_flip_is_detected`<br>`crates/railit-plan/tests/image.rs` |
-| REQ-PLN-004 | H-008 | `crates/railit-plan/src/lib.rs`<br>`crates/railit-plan/src/model.rs`<br>`crates/railit-plan/src/view.rs`<br>`crates/railit-planning/src/lib.rs`<br>`crates/railit-runtime/src/lib.rs` | `signatures_are_checked`<br>`unsigned_or_foreign_plans_are_refused`<br>`keygen_compile_verify_info`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-plan/tests/image.rs` |
+| REQ-PLN-004 | H-008 | `crates/railit-plan/src/approval.rs`<br>`crates/railit-plan/src/lib.rs`<br>`crates/railit-plan/src/model.rs`<br>`crates/railit-plan/src/view.rs`<br>`crates/railit-planning/src/lib.rs`<br>`crates/railit-runtime/src/keys.rs`<br>`crates/railit-runtime/src/lib.rs` | `signatures_are_checked`<br>`unsigned_or_foreign_plans_are_refused`<br>`keygen_compile_verify_info`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-plan/tests/image.rs` |
 | REQ-PLN-010 | H-001, H-005 | `crates/railit-planning/src/error.rs`<br>`crates/railit-planning/src/generate.rs`<br>`crates/railit-planning/src/lib.rs`<br>`crates/railit-planning/src/verify.rs` | `signals_must_stand_at_tvd_boundaries`<br>`signals_may_stand_shortly_before_the_tvd_boundary`<br>`crates/railit-planning/tests/planning.rs` |
 | REQ-PLN-011 | H-001, H-002 | `crates/railit-planning/src/error.rs`<br>`crates/railit-planning/src/lib.rs` | `example_routes_are_generated`<br>`ladder_stations_plan_and_verify` |
 | REQ-PLN-012 | H-001 | `crates/railit-plan/src/view.rs`<br>`crates/railit-planning/src/generate.rs`<br>`crates/railit-planning/src/lib.rs` | `example_routes_are_generated`<br>`example_phase2_data`<br>`ladder_stations_plan_and_verify`<br>`crates/railit-planning/tests/planning.rs` |
@@ -155,6 +155,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-PLN-019 | H-001, H-012 | `crates/railit-planning/src/error.rs`<br>`crates/railit-planning/src/generate.rs`<br>`crates/railit-planning/src/lib.rs` | `nordbahn_compiles_per_area`<br>`borders_need_an_entry_signal`<br>`inconsistent_border_data_is_rejected`<br>`crates/railit-planning/tests/planning.rs` |
 | REQ-PLN-020 | H-007 | `crates/railit-plan/src/view.rs` | `inconsistent_phase2_data_is_rejected` |
 | REQ-PLN-021 | H-001, H-002, H-004 | `crates/railit-plan/src/format.rs`<br>`crates/railit-plan/src/model.rs`<br>`crates/railit-plan/src/view.rs`<br>`crates/railit-planning/src/error.rs`<br>`crates/railit-planning/src/generate.rs` | `routes_over_a_double_slip_require_all_four_points`<br>`single_slip_has_one_curve`<br>`crossover_points_move_together`<br>`tampered_couplings_are_rejected`<br>`coupled_points_must_not_lie_in_an_approach`<br>`crates/railit-kernel/tests/coupling.rs`<br>`crates/railit-planning/tests/slip.rs`<br>Szenario 25 |
+| REQ-PLN-022 | H-008, H-004 | `apps/railit-node/src/main.rs`<br>`apps/railit/src/plan.rs`<br>`apps/railitd/src/main.rs`<br>`crates/railit-plan/src/approval.rs`<br>`crates/railit-runtime/src/keys.rs` | `plans_need_approvals_from_distinct_trusted_reviewers`<br>`plans_need_four_eyes_approval`<br>`keygen_compile_verify_info`<br>`apps/railit/tests/cli.rs` |
 
 ## [sicherheit.md](../requirements/sicherheit.md)
 
@@ -202,4 +203,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-129 Anforderungen, davon 129 mit Nachweis.
+130 Anforderungen, davon 130 mit Nachweis.

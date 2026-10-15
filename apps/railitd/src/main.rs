@@ -42,14 +42,14 @@ use std::sync::Arc;
 use auth::{AuthMode, Users};
 use clap::Parser;
 use field::{FieldControl, ServiceField};
-use railit_plan::{PlanView, VerifyingKey};
+use railit_plan::PlanView;
 use railit_rules::GenericRules;
 use railit_runtime::DynField;
-use railit_runtime::keys::{read_verifying_key, to_hex};
+use railit_runtime::keys::{PlanTrust, to_hex};
 use railit_runtime::railit_adapters::EulynxField;
 use railit_runtime::railit_ops::{OpsConfig, Timetable};
 use railit_runtime::railit_safety::Redundancy;
-use railit_runtime::{Runtime, SafetyConfig, check_correspondence, load_plan};
+use railit_runtime::{Runtime, SafetyConfig, check_correspondence};
 use railit_sim::{SimConfig, Simulator};
 use railit_topology::Topology;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -78,6 +78,13 @@ struct Args {
     /// Unsignierte Pläne zulassen (nur Simulation und Test).
     #[arg(long)]
     allow_unsigned: bool,
+    /// Öffentlicher Schlüssel eines Prüfers (mehrfach angebbar, REQ-PLN-022).
+    #[arg(long = "approver-key", value_name = "DATEI")]
+    approver_keys: Vec<PathBuf>,
+    /// Vier-Augen-Prinzip: Jeder Plan braucht so viele Freigaben verschiedener Prüfer
+    /// (`<plan>.approvals`, `railit plan approve`).
+    #[arg(long, default_value_t = 0, requires = "trusted_key")]
+    approvals: usize,
     /// Adresse der API.
     #[arg(long, default_value = "127.0.0.1:7878")]
     listen: SocketAddr,
@@ -223,12 +230,11 @@ fn fail(msg: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
-/// Lädt ein Plan-Image und prüft die Signatur.
-fn read_plan(path: &Path, key: Option<&VerifyingKey>) -> Result<PlanView<'static>, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let plan =
-        load_plan(bytes, key).map_err(|e| format!("Plan {} abgewiesen: {e}", path.display()))?;
+/// Lädt ein Plan-Image und prüft Signatur und Freigaben.
+fn read_plan(path: &Path, trust: &PlanTrust) -> Result<PlanView<'static>, String> {
+    let (plan, approved_by) = trust.load(path)?;
     tracing::info!(
+        approved_by = approved_by.join(", "),
         plan = plan.network_name(),
         routes = plan.route_count(),
         borders = plan.border_count(),
@@ -244,7 +250,7 @@ fn read_plan(path: &Path, key: Option<&VerifyingKey>) -> Result<PlanView<'static
 fn runtime_for(
     args: &Args,
     net: &Topology,
-    key: Option<&VerifyingKey>,
+    trust: &PlanTrust,
     sim: ServiceField,
     cycle: railit_types::Duration,
 ) -> Result<Runtime<ServiceField>, String> {
@@ -255,7 +261,7 @@ fn runtime_for(
                 net.name()
             ));
         }
-        let plan = read_plan(&args.plan, key)?;
+        let plan = read_plan(&args.plan, trust)?;
         check_correspondence(&plan, net).map_err(|e| format!("Plan passt nicht zum Netz: {e}"))?;
         Runtime::new(plan, GenericRules::default(), sim, cycle)
     } else {
@@ -275,7 +281,7 @@ fn runtime_for(
             if !args.areas.is_empty() && !args.areas.contains(&area.name) {
                 continue;
             }
-            let plan = read_plan(&args.plan.join(format!("{}.rplan", area.name)), key)?;
+            let plan = read_plan(&args.plan.join(format!("{}.rplan", area.name)), trust)?;
             let cut = net
                 .area_cut(id)
                 .map_err(|e| format!("Stellbereich „{}“:\n{e}", area.name))?;
@@ -297,12 +303,12 @@ fn load(args: &Args) -> Result<(Topology, Runtime<ServiceField>), String> {
         .map_err(|e| format!("Netz ungültig:\n{e}"))?
         .topology;
 
-    let key = args
-        .trusted_key
-        .as_deref()
-        .map(read_verifying_key)
-        .transpose()?;
-    if key.is_none() {
+    let trust = PlanTrust::from_files(
+        args.trusted_key.as_deref(),
+        &args.approver_keys,
+        args.approvals,
+    )?;
+    if trust.creator.is_none() {
         tracing::warn!(
             "unsignierte Pläne zugelassen (--allow-unsigned) – nur für Simulation und Test"
         );
@@ -335,7 +341,7 @@ fn load(args: &Args) -> Result<(Topology, Runtime<ServiceField>), String> {
         }
         (FieldArg::Remote, None) => return Err("--field remote verlangt --field-addr".into()),
     };
-    let mut rt = runtime_for(args, &net, key.as_ref(), sim, cycle)?;
+    let mut rt = runtime_for(args, &net, &trust, sim, cycle)?;
     let period_us = args
         .cycle_ms
         .max(1)

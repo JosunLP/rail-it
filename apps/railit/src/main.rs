@@ -446,6 +446,31 @@ enum PlanCommand {
         /// Netz für die unabhängige Gegenprüfung.
         #[arg(long)]
         network: Option<PathBuf>,
+        /// Öffentlicher Schlüssel eines Prüfers (mehrfach angebbar).
+        #[arg(long = "approver-key")]
+        approver_keys: Vec<PathBuf>,
+        /// So viele Freigaben verschiedener Prüfer verlangen (`<plan>.approvals`).
+        #[arg(long, default_value_t = 0)]
+        approvals: usize,
+    },
+    /// Gibt ein Plan-Image im Vier-Augen-Prinzip frei: prüft Signatur des Erstellers und
+    /// den Plan unabhängig gegen das Netz, dann wird die Freigabe an `<plan>.approvals`
+    /// angehängt.
+    Approve {
+        /// Plan-Image.
+        plan: PathBuf,
+        /// Geheimer Schlüssel des Prüfers.
+        #[arg(long)]
+        key: PathBuf,
+        /// Öffentlicher Schlüssel des Erstellers (Signatur im Plan).
+        #[arg(long)]
+        creator_key: PathBuf,
+        /// Netz für die unabhängige Gegenprüfung.
+        #[arg(long)]
+        network: PathBuf,
+        /// Name des Prüfers (Auskunft in der Freigabedatei).
+        #[arg(long, default_value = "")]
+        name: String,
     },
     /// Listet die Fahrstraßen eines Plan-Images.
     Info {
@@ -743,6 +768,40 @@ enum FaultCommand {
 pub(crate) const EXIT_INVALID: u8 = 1;
 pub(crate) const EXIT_USAGE: u8 = 2;
 
+/// Befehle der Projektierung.
+fn run_plan(cmd: PlanCommand, output: Output) -> ExitCode {
+    match cmd {
+        PlanCommand::Keygen { prefix } => plan::keygen(&prefix, output),
+        PlanCommand::Compile { network, out, key } => {
+            plan::compile(&network, &out, key.as_deref(), output)
+        }
+        PlanCommand::Verify {
+            plan,
+            key,
+            network,
+            approver_keys,
+            approvals,
+        } => plan::verify(
+            &plan,
+            &plan::VerifyOptions {
+                key: key.as_deref(),
+                network: network.as_deref(),
+                approvers: &approver_keys,
+                approvals,
+            },
+            output,
+        ),
+        PlanCommand::Approve {
+            plan,
+            key,
+            creator_key,
+            network,
+            name,
+        } => plan::approve(&plan, &key, &creator_key, &network, &name, output),
+        PlanCommand::Info { plan } => plan::info(&plan, output),
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let output = cli.output;
@@ -765,14 +824,7 @@ fn main() -> ExitCode {
         Command::Net(NetCommand::Layout { file, out }) => {
             net::layout(&file, out.as_deref(), output)
         }
-        Command::Plan(PlanCommand::Keygen { prefix }) => plan::keygen(&prefix, output),
-        Command::Plan(PlanCommand::Compile { network, out, key }) => {
-            plan::compile(&network, &out, key.as_deref(), output)
-        }
-        Command::Plan(PlanCommand::Verify { plan, key, network }) => {
-            plan::verify(&plan, key.as_deref(), network.as_deref(), output)
-        }
-        Command::Plan(PlanCommand::Info { plan }) => plan::info(&plan, output),
+        Command::Plan(cmd) => run_plan(cmd, output),
         Command::Scenario(ScenarioCommand::Run {
             files,
             node,

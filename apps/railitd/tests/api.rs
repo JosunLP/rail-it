@@ -428,6 +428,87 @@ fn unsigned_or_foreign_plans_are_refused() {
     assert_eq!(out.status.code(), Some(2));
 }
 
+#[test]
+fn plans_need_four_eyes_approval() {
+    let (plan, public) = prepare("approval", true);
+    let _ = std::fs::remove_file(railit_runtime::keys::approvals_path(&plan));
+    let reviewers: Vec<SigningKey> = (20..22).map(|s| SigningKey::from_bytes(&[s; 32])).collect();
+    let mut keys = Vec::new();
+    for (i, r) in reviewers.iter().enumerate() {
+        let path = tmp(&format!("approval-reviewer{i}.pub"));
+        std::fs::write(
+            &path,
+            railit_runtime::keys::to_hex(r.verifying_key().as_bytes()),
+        )
+        .unwrap();
+        keys.push(path.to_str().unwrap().to_string());
+    }
+    let args = |extra: &[&str]| -> Vec<String> {
+        let mut v: Vec<String> = [
+            "--plan",
+            plan.to_str().unwrap(),
+            "--trusted-key",
+            public.to_str().unwrap(),
+            "--approvals",
+            "2",
+            "--approver-key",
+            &keys[0],
+            "--approver-key",
+            &keys[1],
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+        v.extend(extra.iter().map(ToString::to_string));
+        v
+    };
+    let refused = |what: &str| {
+        let a = args(&[]);
+        let a: Vec<&str> = a.iter().map(String::as_str).collect();
+        let out = daemon(&a).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{what}");
+        String::from_utf8_lossy(&out.stderr).to_string()
+    };
+
+    // Ohne Freigaben, mit nur einer Freigabe: abgewiesen.
+    assert!(refused("ohne Freigabe").contains("nicht freigegeben"));
+    let digest = railit_plan::PlanView::parse(&std::fs::read(&plan).unwrap())
+        .unwrap()
+        .digest();
+    let line = |r: &SigningKey, name: &str| {
+        railit_runtime::keys::approval_line(&railit_plan::approve(&digest, r), name)
+    };
+    let file = railit_runtime::keys::approvals_path(&plan);
+    std::fs::write(&file, line(&reviewers[0], "Prüferin A")).unwrap();
+    assert!(refused("eine Freigabe").contains("1 von 2"));
+
+    // Zu wenige Prüferschlüssel für die verlangte Zahl: Aufruf ungültig.
+    let out = daemon(&[
+        "--plan",
+        plan.to_str().unwrap(),
+        "--trusted-key",
+        public.to_str().unwrap(),
+        "--approvals",
+        "2",
+        "--approver-key",
+        &keys[0],
+    ])
+    .output()
+    .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+
+    // Zwei verschiedene Prüfer: Der Dienst startet.
+    std::fs::write(
+        &file,
+        line(&reviewers[0], "Prüferin A") + &line(&reviewers[1], "Prüfer B"),
+    )
+    .unwrap();
+    let a = args(&[]);
+    let a: Vec<&str> = a.iter().map(String::as_str).collect();
+    let d = start(&a);
+    assert_eq!(get(&d, "/v1/health", false).0, 200);
+}
+
 /// Kompiliert die Nordbahn je Stellbereich in ein Verzeichnis.
 fn prepare_areas(tag: &str) -> (PathBuf, PathBuf) {
     let net = railit_import::toml_format::parse(&std::fs::read_to_string(NORDBAHN).unwrap())

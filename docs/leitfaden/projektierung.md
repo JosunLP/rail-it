@@ -54,3 +54,31 @@ railitd --network netz.toml --plan plan.rplan --trusted-key railit.pub
 
 Für Tests und Ausbildung lässt `--allow-unsigned` unsignierte Pläne zu. Beim Start prüft der
 Dienst, dass Plan und Netz zusammengehören (gleiche Elemente in gleicher Reihenfolge).
+
+## Freigabe im Vier-Augen-Prinzip
+
+Die Signatur sagt, wer einen Plan erzeugt hat. Bevor ein Plan in Betrieb geht, prüfen ihn
+unabhängige Prüfer mit eigenen Schlüsseln und geben ihn frei (REQ-PLN-022):
+
+```sh
+railit plan keygen pruefer-a          # einmal je Prüfer
+railit plan approve plan.rplan --key pruefer-a.key --creator-key railit.pub \
+    --network netz.toml --name "Prüferin A"
+```
+
+`approve` prüft die Signatur des Erstellers und den Plan unabhängig gegen das Netz und hängt
+die Freigabe an `plan.rplan.approvals` an. Die Freigabe ist eine Ed25519-Signatur über die
+Prüfsumme des Plans; jeder neu erzeugte Plan braucht neue Freigaben. Der Ersteller kann
+seinen eigenen Plan nicht freigeben.
+
+Der Dienst verlangt die Freigaben beim Start:
+
+```sh
+railitd --network netz.toml --plan plan.rplan --trusted-key railit.pub \
+    --approver-key pruefer-a.pub --approver-key pruefer-b.pub --approvals 2
+```
+
+Gezählt werden nur verschiedene Prüfer aus `--approver-key`. Eine fremde, verfälschte oder
+zu einem anderen Plan gehörende Freigabe in der Datei weist den Plan ab. Bei Stellbereichen
+braucht jedes `<Bereich>.rplan` seine eigene Freigabedatei. `railit plan verify` prüft
+dieselben Bedingungen mit `--approver-key` und `--approvals`.

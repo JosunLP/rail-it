@@ -1,4 +1,4 @@
-//! Offline-Befehle der Projektierung: `railit plan keygen|compile|verify|info`.
+//! Offline-Befehle der Projektierung: `railit plan keygen|compile|verify|approve|info`.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -194,22 +194,62 @@ fn compile_areas(
     ExitCode::SUCCESS
 }
 
-/// Prüft ein Plan-Image: Struktur, Prüfsumme, optional Signatur und Übereinstimmung mit
-/// einem Netz (unabhängige Gegenprüfung).
-pub(crate) fn verify(
-    plan_path: &Path,
-    key: Option<&Path>,
-    network: Option<&Path>,
-    output: Output,
-) -> ExitCode {
+/// Optionen von `railit plan verify`.
+pub(crate) struct VerifyOptions<'a> {
+    /// Öffentlicher Schlüssel des Erstellers.
+    pub key: Option<&'a Path>,
+    /// Netz für die Gegenprüfung.
+    pub network: Option<&'a Path>,
+    /// Öffentliche Schlüssel der Prüfer.
+    pub approvers: &'a [std::path::PathBuf],
+    /// Verlangte Freigaben.
+    pub approvals: usize,
+}
+
+/// Gegenprüfung eines Plans gegen ein Netz (bei Stellbereichsplänen gegen das Teilnetz).
+fn cross_check(view: &PlanView<'_>, network: &Path) -> Result<(), (u8, String)> {
+    let net = load_network(network)?;
+    // Plan eines Stellbereichs („Netz/Bereich“): gegen das Teilnetz prüfen.
+    let cut = match view.network_name().split_once('/') {
+        Some((_, area)) => match net.find_area(area).map(|id| net.area_cut(id)) {
+            Some(Ok(cut)) => Some(cut),
+            Some(Err(report)) => return Err((EXIT_INVALID, report.to_string())),
+            None => {
+                return Err((EXIT_INVALID, format!("Stellbereich „{area}“ nicht im Netz")));
+            }
+        },
+        None => None,
+    };
+    let target = cut.as_ref().map_or(&net, |c| &c.topology);
+    railit_planning::verify(target, &Plan::from_view(view)).map_err(|report| {
+        (
+            EXIT_INVALID,
+            format!("Plan passt nicht zum Netz:\n{report}"),
+        )
+    })
+}
+
+fn read_keys(paths: &[std::path::PathBuf]) -> Result<Vec<railit_plan::VerifyingKey>, String> {
+    paths.iter().map(|p| read_verifying_key(p)).collect()
+}
+
+/// Prüft ein Plan-Image: Struktur, Prüfsumme, optional Signatur, Freigaben (REQ-PLN-022) und
+/// Übereinstimmung mit einem Netz (unabhängige Gegenprüfung).
+pub(crate) fn verify(plan_path: &Path, opts: &VerifyOptions<'_>, output: Output) -> ExitCode {
     let bytes = match std::fs::read(plan_path) {
         Ok(b) => b,
         Err(e) => return fail_usage(&format!("{}: {e}", plan_path.display())),
     };
-    let key = match key.map(read_verifying_key).transpose() {
-        Ok(k) => k,
-        Err(e) => return fail_usage(&e),
+    let (key, approvers) = match (
+        opts.key.map(read_verifying_key).transpose(),
+        read_keys(opts.approvers),
+    ) {
+        (Ok(k), Ok(a)) => (k, a),
+        (Err(e), _) | (_, Err(e)) => return fail_usage(&e),
     };
+    if approvers.len() < opts.approvals {
+        return fail_usage("--approvals verlangt mindestens so viele --approver-key");
+    }
     let view = match key.as_ref().map_or_else(
         || PlanView::parse(&bytes),
         |k| PlanView::parse_signed(&bytes, k),
@@ -217,42 +257,37 @@ pub(crate) fn verify(
         Ok(v) => v,
         Err(e) => return fail(EXIT_INVALID, &format!("Plan ungültig: {e}")),
     };
-    let mut checks = vec!["Struktur und Verweise", "Prüfsumme (SHA-256)"];
+    let mut checks = vec![
+        "Struktur und Verweise".to_string(),
+        "Prüfsumme (SHA-256)".into(),
+    ];
     if key.is_some() {
-        checks.push("Signatur (Ed25519)");
+        checks.push("Signatur (Ed25519)".into());
     }
-    if let Some(network) = network {
-        let net = match load_network(network) {
-            Ok(n) => n,
-            Err((code, msg)) => return fail(code, &msg),
-        };
-        // Plan eines Stellbereichs („Netz/Bereich“): gegen das Teilnetz prüfen.
-        let cut = match view.network_name().split_once('/') {
-            Some((_, area)) => match net.find_area(area).map(|id| net.area_cut(id)) {
-                Some(Ok(cut)) => Some(cut),
-                Some(Err(report)) => return fail(EXIT_INVALID, &report.to_string()),
-                None => {
-                    return fail(
-                        EXIT_INVALID,
-                        &format!("Stellbereich „{area}“ nicht im Netz"),
-                    );
-                }
-            },
-            None => None,
-        };
-        let target = cut.as_ref().map_or(&net, |c| &c.topology);
-        if let Err(report) = railit_planning::verify(target, &Plan::from_view(&view)) {
-            return fail(
-                EXIT_INVALID,
-                &format!("Plan passt nicht zum Netz:\n{report}"),
-            );
+    let mut approved_by = Vec::new();
+    if opts.approvals > 0 {
+        match railit_runtime::keys::check_plan_approvals(
+            plan_path,
+            &view,
+            key.as_ref(),
+            &approvers,
+            opts.approvals,
+        ) {
+            Ok(names) => approved_by = names,
+            Err(e) => return fail(EXIT_INVALID, &e),
         }
-        checks.push("Gegenprüfung gegen das Netz");
+        checks.push(format!("Freigabe ({})", approved_by.join(", ")));
+    }
+    if let Some(network) = opts.network {
+        if let Err((code, msg)) = cross_check(&view, network) {
+            return fail(code, &msg);
+        }
+        checks.push("Gegenprüfung gegen das Netz".into());
     }
     match output {
         Output::Json => print_json(&json!({
             "valid": true, "network": view.network_name(), "signed": view.is_signed(),
-            "digest": to_hex(&view.digest()), "checks": checks,
+            "digest": to_hex(&view.digest()), "checks": checks, "approved_by": approved_by,
         })),
         Output::Text => {
             println!(
@@ -264,6 +299,64 @@ pub(crate) fn verify(
                 println!("Hinweis: Der Plan ist nicht signiert.");
             }
         }
+    }
+    ExitCode::SUCCESS
+}
+
+/// Gibt ein Plan-Image frei (REQ-PLN-022): erst Signatur des Erstellers und unabhängige
+/// Gegenprüfung gegen das Netz, dann wird die Freigabe an `<plan>.approvals` angehängt.
+pub(crate) fn approve(
+    plan_path: &Path,
+    secret: &Path,
+    creator: &Path,
+    network: &Path,
+    name: &str,
+    output: Output,
+) -> ExitCode {
+    let bytes = match std::fs::read(plan_path) {
+        Ok(b) => b,
+        Err(e) => return fail_usage(&format!("{}: {e}", plan_path.display())),
+    };
+    let (secret, creator) = match (read_signing_key(secret), read_verifying_key(creator)) {
+        (Ok(s), Ok(c)) => (s, c),
+        (Err(e), _) | (_, Err(e)) => return fail_usage(&e),
+    };
+    let view = match PlanView::parse_signed(&bytes, &creator) {
+        Ok(v) => v,
+        Err(e) => return fail(EXIT_INVALID, &format!("Plan ungültig: {e}")),
+    };
+    if secret.verifying_key() == creator {
+        return fail(
+            EXIT_INVALID,
+            "Vier-Augen-Prinzip: Der Ersteller kann seinen Plan nicht selbst freigeben",
+        );
+    }
+    if let Err((code, msg)) = cross_check(&view, network) {
+        return fail(code, &msg);
+    }
+    let approval = railit_plan::approve(&view.digest(), &secret);
+    let file = railit_runtime::keys::approvals_path(plan_path);
+    let line = railit_runtime::keys::approval_line(&approval, name);
+    let written = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&file)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+    if let Err(e) = written {
+        return fail_usage(&format!("{}: {e}", file.display()));
+    }
+    let approver = to_hex(approval.approver.as_bytes());
+    match output {
+        Output::Json => print_json(&json!({
+            "approved": true, "network": view.network_name(), "digest": to_hex(&view.digest()),
+            "approver": approver, "file": file,
+        })),
+        Output::Text => println!(
+            "Plan „{}“ freigegeben ({}), Freigabe in {}.",
+            view.network_name(),
+            if name.is_empty() { &approver } else { name },
+            file.display()
+        ),
     }
     ExitCode::SUCCESS
 }

@@ -31,13 +31,15 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+mod approval;
 mod error;
 pub mod format;
 #[cfg(feature = "alloc")]
 mod model;
 mod view;
 
-pub use ed25519_dalek::{SigningKey, VerifyingKey};
+pub use approval::{APPROVAL_CONTEXT, Approval, ApprovalError, approve, check_approvals};
+pub use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 pub use error::PlanError;
 #[cfg(feature = "alloc")]
 pub use model::{BorderDef, LxDef, Plan, PointDef, RouteDef, SignalDef, TvdDef};
