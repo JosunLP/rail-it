@@ -1,6 +1,6 @@
 {
   "name": "railit-docs",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Dokumentation von rail-it (VitePress), veröffentlicht auf GitHub Pages.",
   "license": "SEE LICENSE IN ../LICENSE",
