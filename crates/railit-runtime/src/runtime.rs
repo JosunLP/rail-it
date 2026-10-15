@@ -1749,6 +1749,7 @@ impl<F: FieldAdapter> Runtime<F> {
             }
         }
         snap.ops = self.ops.as_ref().map(Ops::snapshot);
+        snap.ops_state = self.ops.as_ref().map(Ops::export);
         snap.etcs = self.etcs_snapshot();
         snap
     }

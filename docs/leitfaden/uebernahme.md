@@ -83,6 +83,16 @@ und kürzt sie um zehn Prozent und 200 ms. Danach führt er mit eigenem Journal 
 der Übernahme), `role` wird `primary`, und der Bedienplatz meldet die Übernahme und nimmt
 Bedienungen an.
 
+### Betriebsführung
+
+Der Bereitschaftsrechner holt alle 0,5 s den Zustand der Betriebsführung des Hauptrechners
+(`GET /v1/ops/state`): Zugnummern an den Signalen, Fahrplanlage, Verspätung, Rückhaltungen,
+verfügte Gleise und Wartezeiten, Vormeldungen benachbarter Stellwerke und den Schalter der
+Zuglenkung. Bei der Übernahme setzt er den zuletzt geholten Stand ein, wenn er zum selben
+Fahrplan gehört (REQ-OPS-007). Was sich in der letzten halben Sekunde vor dem Ausfall
+geändert hat, fehlt; der Fahrdienstleiter prüft die Zugnummern nach der Übernahme. Die
+Zugnummern sind Betriebsführung, nicht Sicherung: Fahrstraßen stellt nur der Kern.
+
 ::: warning Anwendungsbedingung 9
 Bereitschaftsrechner nur mit Feldrechner und Umschalter (`--field remote`) und genau ein
 Bereitschaftsrechner mit eigenem Zugang der Rolle `bereitschaft`. Die Frist

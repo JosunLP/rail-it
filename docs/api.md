@@ -63,6 +63,7 @@ Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`; mit
 | POST | `/v1/aux` | Hilfshandlung anfordern, Body `{"kind","element","position"?}`; ohne Benutzerverwaltung Kopf `X-Railit-Operator` | 200 / 409 / 400 |
 | POST | `/v1/aux/{id}/confirm` | Hilfshandlung bestätigen (anderer Bediener), Body `{"kind","element","position"?,"check"}` (wiederholte Hilfshandlung und Prüfcode der Anzeige), `?area=` bei mehreren Bereichen | 200 / 409 / 400 |
 | GET | `/v1/ops` | Betriebsführung: Fahrplan, Zuglenkung, Züge mit Zugnummer, Halt, Verspätung; `elsewhere`: an ein Stellwerk eines anderen Prozesses übergeben | JSON |
+| GET | `/v1/ops/state` | Übertragbarer Zustand der Betriebsführung für den Bereitschaftsrechner (REQ-OPS-007) | JSON |
 | POST | `/v1/ops/ars` | Zuglenkung ein/aus, Body `{"on":true}` | 200 |
 | POST | `/v1/ops/trains/{zug}/describe` | Zugnummer eintragen, Body `{"signal"}` | 200 / 400 |
 | DELETE | `/v1/ops/trains/{zug}` | Zugnummer löschen | 200 / 400 |

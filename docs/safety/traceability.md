@@ -26,6 +26,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-OPS-004 | H-013 | `crates/railit-ops/src/ops.rs` | `auto_signals_clear_for_any_described_train`<br>`crates/railit-ops/tests/ops.rs` |
 | REQ-OPS-005 | H-013 | `crates/railit-ops/src/ops.rs` | `ars_waits_for_permission_and_follows_platform_changes`<br>`timetable_and_dispatching_over_api`<br>Szenario 15 |
 | REQ-OPS-006 | H-013 | `crates/railit-adapters/src/ils.rs`<br>`crates/railit-ops/src/net.rs`<br>`crates/railit-ops/src/ops.rs`<br>`crates/railit-runtime/src/runtime.rs` | `trains_are_handed_over_eastwards`<br>`trains_are_handed_over_westwards`<br>`handover_telegram_roundtrip`<br>`handover_waits_for_the_link`<br>`only_local_trains_are_spawned_and_described`<br>`takeover_does_not_spawn_running_trains_again`<br>`sci_ils`<br>`crates/railit-ops/tests/ops.rs`<br>`crates/railit-runtime/tests/ils.rs` |
+| REQ-OPS-007 | H-013, H-017 | `apps/railitd/src/api.rs`<br>`apps/railitd/src/standby.rs`<br>`apps/railitd/src/takeover.rs`<br>`crates/railit-ops/src/ops.rs`<br>`crates/railit-runtime/src/names.rs` | `ops_state_moves_to_another_computer`<br>`standby_takes_over_with_the_followed_state`<br>`apps/railitd/tests/field.rs`<br>`crates/railit-ops/tests/ops.rs` |
 
 ## [dienst.md](../requirements/dienst.md)
 
@@ -204,4 +205,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-131 Anforderungen, davon 131 mit Nachweis.
+132 Anforderungen, davon 132 mit Nachweis.

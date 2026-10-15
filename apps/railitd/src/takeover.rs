@@ -99,8 +99,15 @@ fn watch(
         .map_or(Duration::ZERO, |t| t.elapsed());
     let now =
         Tick::from_millis(last_ms.saturating_add(u64::try_from(silence.as_millis()).unwrap_or(0)));
-    // Die Züge des Fahrplans, die schon fahren, hat der Hauptrechner eingesetzt.
+    // Betriebsführung: Zustand des Hauptrechners übernehmen (REQ-OPS-007); die Züge des
+    // Fahrplans, die schon fahren, hat der Hauptrechner eingesetzt.
+    let ops_state = standby.ops_state();
     if let Some(ops) = rt.ops_mut() {
+        match ops_state.map(|s| ops.restore(&s)) {
+            Some(Ok(trains)) => tracing::info!(trains, "Betriebsführung übernommen"),
+            Some(Err(e)) => tracing::warn!(e, "Betriebsführung nicht übernommen"),
+            None => tracing::warn!("kein Zustand der Betriebsführung vom Hauptrechner"),
+        }
         ops.assume_started(now);
     }
     let warm = match &states {

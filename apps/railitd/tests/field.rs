@@ -299,6 +299,16 @@ fn takeover(tag: &str, gate: bool) -> (Process, Process, String) {
     wait("Bereitschaftsrechner kennt die Fahrt", || {
         route_phase(&s, "A-N1") == "proceed"
     });
+    // Betriebsführung: Zugnummer und Disposition am Hauptrechner (REQ-OPS-007).
+    let (code, body) = post(
+        &format!("{p}/v1/ops/trains/RB7/describe"),
+        Some(json!({"signal": "F"})),
+    );
+    assert_eq!(code, 200, "{body}");
+    assert_eq!(post(&format!("{p}/v1/ops/trains/RB7/hold"), None).0, 200);
+    wait("Bereitschaftsrechner kennt die Zugnummer", || {
+        health(&s)["standby"]["ops_trains"].as_u64() == Some(1)
+    });
     if gate {
         let h = health(&p);
         assert_eq!(h["replication"]["gated"], true, "{h}");
@@ -324,6 +334,14 @@ fn standby_takes_over_with_the_followed_state() {
     assert_eq!(h["standby"]["phase"]["phase"], "leading", "{h}");
     assert_eq!(h["standby"]["phase"]["warm"], true, "{h}");
     assert_eq!(route_phase(&s, "A-N1"), "halted");
+    // Zugnummer und Disposition sind mit übernommen (REQ-OPS-007).
+    let (_, ops) = get(&format!("{s}/v1/ops"));
+    let rb7 = &ops["trains"][0];
+    assert_eq!(
+        (&rb7["number"], &rb7["berth"], &rb7["hold"]),
+        (&json!("RB7"), &json!("F"), &json!(true)),
+        "{ops}"
+    );
     let (_, state) = get(&format!("{s}/v1/state"));
     let a = state["signals"]
         .as_array()

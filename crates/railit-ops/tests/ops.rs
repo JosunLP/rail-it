@@ -4,7 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use railit_kernel::{Event, Request, RoutePhase};
 use railit_ops::{
-    Ops, OpsConfig, OpsEvent, OpsNet, OpsView, RouteNext, Timetable, format_time, parse_time,
+    Ops, OpsConfig, OpsEvent, OpsNet, OpsState, OpsView, RouteNext, Timetable, format_time,
+    parse_time,
 };
 use railit_plan::PlanView;
 use railit_planning::{PlanningConfig, compile_areas};
@@ -416,4 +417,44 @@ fn only_local_trains_are_spawned_and_described() {
             .unwrap_err()
             .contains("anderen Prozess")
     );
+}
+
+/// REQ-OPS-007: Der Zustand der Betriebsführung lässt sich auf einen anderen Rechner mit
+/// demselben Fahrplan übertragen; Nummern, Disposition und eingesetzte Züge bleiben.
+#[test]
+fn ops_state_moves_to_another_computer() {
+    let f = Fixture::new();
+    let tt = || Timetable::parse(FAHRPLAN).unwrap();
+    let mut primary = Ops::new(f.net(), OpsConfig::default(), tt()).unwrap();
+    let view = View::default();
+    assert!(!primary.plan(secs(10), &view).spawns.is_empty());
+    primary.describe("X1", "AA").unwrap();
+    primary.describe("X2", "AA").unwrap();
+    primary.hold("X1", true).unwrap();
+    primary.delay("RE1", 90).unwrap();
+    let state = primary.export();
+    // Über JSON wie zwischen den Rechnern.
+    let text = serde_json::to_string(&state).unwrap();
+    let state: OpsState = serde_json::from_str(&text).unwrap();
+
+    let mut standby = Ops::new(f.net(), OpsConfig::default(), tt()).unwrap();
+    assert_eq!(standby.restore(&state), Ok(primary.snapshot().trains.len()));
+    assert_eq!(standby.snapshot(), primary.snapshot());
+    assert_eq!(standby.train_at("AA"), primary.train_at("AA"));
+    assert!(
+        standby.plan(secs(11), &view).spawns.is_empty(),
+        "RE1 fährt schon"
+    );
+    assert_eq!(standby.export(), state);
+
+    // Unbekannte Signale fallen weg; ein anderer Fahrplan wird nicht übernommen.
+    let mut odd = state.clone();
+    odd.trains[0].berth = Some("NIRGENDS".into());
+    odd.berths
+        .insert("NIRGENDS".into(), vec![odd.trains[0].number.clone()]);
+    let mut other = Ops::new(f.net(), OpsConfig::default(), tt()).unwrap();
+    other.restore(&odd).unwrap();
+    assert!(other.snapshot().trains[0].berth.is_none());
+    odd.timetable = "anderer".into();
+    assert!(other.restore(&odd).is_err());
 }

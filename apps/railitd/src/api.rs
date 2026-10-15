@@ -22,6 +22,7 @@
 //! | POST | `/v1/aux` | Hilfshandlung anfordern (`{"kind":…,"element":…}`) |
 //! | POST | `/v1/aux/{id}/confirm` | Hilfshandlung bestätigen (`?area=` bei mehreren Bereichen) |
 //! | GET | `/v1/ops` | Betriebsführung: Züge, Zugnummern, nächster Halt, Verspätung |
+//! | GET | `/v1/ops/state` | Übertragbarer Zustand der Betriebsführung (Bereitschaftsrechner) |
 //! | POST | `/v1/ops/ars` | Zuglenkung ein/aus (`{"on":true}`) |
 //! | POST | `/v1/ops/trains/{train}/describe` | Zugnummer eintragen (`{"signal":"AA"}`) |
 //! | DELETE | `/v1/ops/trains/{train}` | Zugnummer löschen |
@@ -137,6 +138,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/v1/aux", get(aux_list).post(aux_request))
         .route("/v1/aux/{id}/confirm", post(aux_confirm))
         .route("/v1/ops", get(ops))
+        .route("/v1/ops/state", get(ops_state))
         .route("/v1/ops/ars", post(ops_ars))
         .route("/v1/ops/trains/{train}", delete(ops_erase))
         .route("/v1/ops/trains/{train}/describe", post(ops_describe))
@@ -546,6 +548,17 @@ async fn aux_confirm(
 
 async fn ops(State(state): State<AppState>) -> ApiResult {
     match &state.service.snapshot().ops {
+        Some(ops) => Ok(Json(ops).into_response()),
+        None => Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "Betriebsführung nicht eingeschaltet".into(),
+        )),
+    }
+}
+
+/// Übertragbarer Zustand der Betriebsführung für den Bereitschaftsrechner (REQ-OPS-007).
+async fn ops_state(State(state): State<AppState>) -> ApiResult {
+    match &state.service.snapshot().ops_state {
         Some(ops) => Ok(Json(ops).into_response()),
         None => Err(ApiError(
             StatusCode::NOT_FOUND,

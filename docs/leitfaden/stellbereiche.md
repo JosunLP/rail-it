@@ -120,9 +120,9 @@ railitd … --field-id 0A000003 --areas Bstadt --ils-listen 127.0.0.1:7511 \
         --ils-peer Strecke=127.0.0.1:7510 --ils-peer Strecke=127.0.0.1:7512 &
 ```
 
-Die Betriebsführung des Bereitschaftsrechners setzt die Züge nicht noch einmal ein, die der
-Hauptrechner schon eingesetzt hat; deren Nummern trägt der Fahrdienstleiter nach der Übernahme
-neu ein.
+Die Betriebsführung des Bereitschaftsrechners übernimmt Zugnummern, Fahrplanlage und
+Disposition des Hauptrechners (REQ-OPS-007, siehe [Übernahme](uebernahme.md)) und setzt die
+Züge nicht noch einmal ein, die der Hauptrechner schon eingesetzt hat.
 
 ### Fahrplan und Zuglenkung über Prozessgrenzen
 

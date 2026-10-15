@@ -1642,6 +1642,7 @@ dependencies = [
  "railit-topology",
  "railit-types",
  "serde",
+ "serde_json",
  "toml",
 ]
 

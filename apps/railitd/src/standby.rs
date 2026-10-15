@@ -20,6 +20,7 @@ use railit_journal::Follower;
 use railit_kernel::OwnedState;
 use railit_plan::PlanView;
 use railit_runtime::Snapshot;
+use railit_runtime::railit_ops::OpsState;
 use railit_types::Tick;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -92,6 +93,8 @@ pub(crate) struct Standby {
     activity: Mutex<Vec<Option<Instant>>>,
     promise: Mutex<Option<Promise>>,
     phase: Mutex<Phase>,
+    /// Zuletzt geholter Zustand der Betriebsführung des Hauptrechners (REQ-OPS-007).
+    ops: Mutex<Option<OpsState>>,
     stop: AtomicBool,
     started: Instant,
     shared: Arc<Shared>,
@@ -186,6 +189,11 @@ impl Standby {
             .collect()
     }
 
+    /// Zuletzt geholter Zustand der Betriebsführung des Hauptrechners.
+    pub(crate) fn ops_state(&self) -> Option<OpsState> {
+        self.ops.lock().ok().and_then(|o| o.clone())
+    }
+
     /// Zustand für `/v1/health`.
     pub(crate) fn health(&self) -> Value {
         let now = Instant::now();
@@ -193,6 +201,7 @@ impl Standby {
             "primary": self.primary,
             "areas": self.areas(),
             "phase": self.phase(),
+            "ops_trains": self.ops_state().map(|o| o.trains.len()),
             "covered_ms": self
                 .covered_until()
                 .map(|u| u64::try_from(u.saturating_duration_since(now).as_millis()).unwrap_or(0)),
@@ -273,10 +282,24 @@ pub(crate) fn start(
         activity: Mutex::new(vec![None; count]),
         promise: Mutex::new(None),
         phase: Mutex::new(Phase::Following),
+        ops: Mutex::new(None),
         stop: AtomicBool::new(false),
         started: Instant::now(),
         shared,
     });
+    {
+        let (standby, primary, token) = (
+            Arc::clone(&standby),
+            primary.clone(),
+            token.map(str::to_string),
+        );
+        let spawned = std::thread::Builder::new()
+            .name("bereitschaft-ops".into())
+            .spawn(move || follow_ops(&primary, token.as_deref(), &standby));
+        if let Err(e) = spawned {
+            tracing::error!(%e, "Bereitschaftsrechner: Faden startet nicht");
+        }
+    }
     for index in 0..count {
         let (standby, primary, token) = (
             Arc::clone(&standby),
@@ -322,6 +345,35 @@ impl Primary<'_> {
         // Zehn Prozent und ein fester Abstand für Gangunterschied und Laufzeit.
         let hold = hold.saturating_sub(hold / 10).checked_sub(PROMISE_MARGIN)?;
         Some(sent + hold)
+    }
+}
+
+/// Abstand, in dem der Bereitschaftsrechner den Zustand der Betriebsführung holt.
+const OPS_POLL: Duration = Duration::from_millis(500);
+
+/// Holt laufend den Zustand der Betriebsführung des Hauptrechners (REQ-OPS-007). Ohne
+/// Betriebsführung dort (404) bleibt er leer.
+fn follow_ops(url: &str, token: Option<&str>, standby: &Standby) {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_connect(Some(Duration::from_secs(2)))
+        .timeout_global(Some(Duration::from_secs(2)))
+        .build()
+        .into();
+    while !standby.stopped() {
+        let mut request = agent.get(format!("{url}/v1/ops/state"));
+        if let Some(t) = token {
+            request = request.header("Authorization", format!("Bearer {t}"));
+        }
+        if let Ok(mut response) = request.call()
+            && response.status() == 200
+            && let Ok(state) = response.body_mut().read_json::<OpsState>()
+            && !standby.stopped()
+            && let Ok(mut slot) = standby.ops.lock()
+        {
+            *slot = Some(state);
+        }
+        std::thread::sleep(OPS_POLL);
     }
 }
 

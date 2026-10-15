@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use railit_kernel::{Event, Request, RoutePhase};
 use railit_types::{BorderId, RouteId, Tick};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::net::{OpsNet, RouteNext};
 use crate::timetable::{Stop, Timetable};
@@ -277,6 +277,52 @@ pub struct OpsSnapshot {
     pub trains: Vec<TrainSnapshot>,
 }
 
+/// Zug im übertragbaren Zustand der Betriebsführung.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct TrainRecord {
+    /// Zugnummer.
+    pub number: String,
+    /// Signal, an dem die Nummer steht.
+    pub berth: Option<String>,
+    /// Über eine Fahrstraße an das Signal gekommen.
+    pub by_route: bool,
+    /// Index des nächsten Halts im Fahrplan.
+    pub next_stop: usize,
+    /// Ankunft am nächsten Halt (ms).
+    pub arrived_ms: Option<u64>,
+    /// Zurückgehalten.
+    pub hold: bool,
+    /// Verfügte zusätzliche Wartezeit (ms).
+    pub extra_delay_ms: u64,
+    /// Verfügte Gleise je Halt.
+    pub platforms: BTreeMap<usize, String>,
+    /// Zuletzt gemessene Verspätung (s).
+    pub delay_s: Option<i64>,
+    /// Hat das Netz verlassen.
+    pub left: bool,
+    /// Eingesetzt.
+    pub spawned: bool,
+    /// An ein Stellwerk eines anderen Prozesses übergeben.
+    pub elsewhere: Option<String>,
+}
+
+/// Übertragbarer Zustand der Betriebsführung: Der Bereitschaftsrechner holt ihn laufend vom
+/// Hauptrechner und setzt ihn bei der Übernahme ein (REQ-OPS-007).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpsState {
+    /// Name des Fahrplans; nur bei gleichem Fahrplan wird der Zustand übernommen.
+    pub timetable: String,
+    /// Zuglenkung eingeschaltet.
+    pub ars: bool,
+    /// Züge.
+    pub trains: Vec<TrainRecord>,
+    /// Nummern je Signal in Reihenfolge.
+    pub berths: BTreeMap<String, Vec<String>>,
+    /// Empfangene Vormeldungen: Zug, Einfahrsignal, nächster Halt.
+    pub announced: Vec<(String, String, usize)>,
+}
+
 /// Betriebsführung: Zugnummernmeldung, Zuglenkung und Disposition (REQ-OPS-001 … 005).
 ///
 /// Sie stellt nur **Anforderungen**; ob eine Fahrstraße eingestellt oder eine Erlaubnis
@@ -382,6 +428,106 @@ impl Ops {
         for train in started {
             self.trains.entry(train).or_default().spawned = true;
         }
+    }
+
+    /// Übertragbarer Zustand (REQ-OPS-007).
+    pub fn export(&self) -> OpsState {
+        OpsState {
+            timetable: self.timetable.name.clone(),
+            ars: self.cfg.ars,
+            trains: self
+                .trains
+                .iter()
+                .map(|(number, t)| TrainRecord {
+                    number: number.clone(),
+                    berth: t.berth.clone(),
+                    by_route: t.by_route,
+                    next_stop: t.next_stop,
+                    arrived_ms: t.arrived.map(Tick::as_millis),
+                    hold: t.hold,
+                    extra_delay_ms: t.extra_delay_ms,
+                    platforms: t.platforms.clone(),
+                    delay_s: t.delay_s,
+                    left: t.left,
+                    spawned: t.spawned,
+                    elsewhere: t.elsewhere.clone(),
+                })
+                .collect(),
+            berths: self
+                .berths
+                .iter()
+                .filter(|(_, q)| !q.is_empty())
+                .map(|(s, q)| (s.clone(), q.iter().cloned().collect()))
+                .collect(),
+            announced: self
+                .announced
+                .iter()
+                .map(|(t, (s, n))| (t.clone(), s.clone(), *n))
+                .collect(),
+        }
+    }
+
+    /// Übernimmt den Zustand eines anderen Rechners mit demselben Fahrplan (REQ-OPS-007).
+    /// Nummern an unbekannten Signalen und widersprüchliche Einträge werden verworfen;
+    /// offene Anforderungen beginnen neu.
+    ///
+    /// # Errors
+    /// Beschreibung, wenn der Zustand zu einem anderen Fahrplan gehört.
+    pub fn restore(&mut self, state: &OpsState) -> Result<usize, String> {
+        if state.timetable != self.timetable.name {
+            return Err(format!(
+                "Zustand gehört zum Fahrplan „{}“, nicht zu „{}“",
+                state.timetable, self.timetable.name
+            ));
+        }
+        self.cfg.ars = state.ars;
+        self.trains.clear();
+        self.berths.clear();
+        self.route_requests.clear();
+        self.permission_requests.clear();
+        self.announced.clear();
+        for r in &state.trains {
+            let berth = r
+                .berth
+                .clone()
+                .filter(|b| self.net.has_signal(b))
+                .filter(|b| state.berths.get(b).is_some_and(|q| q.contains(&r.number)));
+            self.trains.insert(
+                r.number.clone(),
+                TrainState {
+                    berth,
+                    by_route: r.by_route,
+                    next_stop: r.next_stop,
+                    arrived: r.arrived_ms.map(Tick::from_millis),
+                    hold: r.hold,
+                    extra_delay_ms: r.extra_delay_ms,
+                    platforms: r.platforms.clone(),
+                    delay_s: r.delay_s,
+                    left: r.left,
+                    spawned: r.spawned,
+                    elsewhere: r.elsewhere.clone(),
+                },
+            );
+        }
+        for (signal, queue) in &state.berths {
+            let queue: VecDeque<String> = queue
+                .iter()
+                .filter(|t| {
+                    self.trains
+                        .get(*t)
+                        .is_some_and(|s| s.berth.as_deref() == Some(signal.as_str()))
+                })
+                .cloned()
+                .collect();
+            if !queue.is_empty() {
+                self.berths.insert(signal.clone(), queue);
+            }
+        }
+        for (train, signal, next) in &state.announced {
+            self.announced
+                .insert(train.clone(), (signal.clone(), *next));
+        }
+        Ok(self.trains.len())
     }
 
     /// Übergabe ließ sich nicht senden.

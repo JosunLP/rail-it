@@ -666,6 +666,10 @@ pub struct Snapshot {
     /// Betriebsführung (Zugnummern, Fahrplanlage), falls eingeschaltet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ops: Option<railit_ops::OpsSnapshot>,
+    /// Übertragbarer Zustand der Betriebsführung für den Bereitschaftsrechner (REQ-OPS-007);
+    /// nicht im Zustandsbild der Bedienplätze.
+    #[serde(skip)]
+    pub ops_state: Option<railit_ops::OpsState>,
     /// Angemeldete ETCS-Züge mit Fahrerlaubnis.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub etcs: Vec<railit_etcs::TrainSnapshot>,
@@ -697,6 +701,7 @@ impl Snapshot {
             pending_aux: Vec::new(),
             aux_counter: 0,
             ops: None,
+            ops_state: None,
             etcs: Vec::new(),
         };
         let prefixed = areas.len() > 1;
