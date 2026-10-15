@@ -7,8 +7,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 
 use rcgen::{
-    BasicConstraints, CertificateParams, CertifiedIssuer, DnType, ExtendedKeyUsagePurpose, IsCa,
-    KeyPair,
+    BasicConstraints, CertificateParams, CertificateRevocationListParams, CertifiedIssuer, DnType,
+    ExtendedKeyUsagePurpose, IsCa, KeyIdMethod, KeyPair, RevokedCertParams, SerialNumber,
+    date_time_ymd,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -377,6 +378,15 @@ struct Pki {
 }
 
 fn client(pki: &Pki, issuer: &CertifiedIssuer<'_, KeyPair>, cn: Option<&str>) -> ureq::Agent {
+    client_with_serial(pki, issuer, cn, None)
+}
+
+fn client_with_serial(
+    pki: &Pki,
+    issuer: &CertifiedIssuer<'_, KeyPair>,
+    cn: Option<&str>,
+    serial: Option<u64>,
+) -> ureq::Agent {
     let ca = Certificate::from_pem(pki.ca.as_bytes()).unwrap();
     let mut tls = TlsConfig::builder()
         .provider(TlsProvider::Rustls)
@@ -387,6 +397,7 @@ fn client(pki: &Pki, issuer: &CertifiedIssuer<'_, KeyPair>, cn: Option<&str>) ->
         let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
         params.distinguished_name.push(DnType::CommonName, cn);
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+        params.serial_number = serial.map(SerialNumber::from);
         let cert = params.signed_by(&key, issuer).unwrap();
         let chain = [Certificate::from_pem(cert.pem().as_bytes()).unwrap()];
         let key = PrivateKey::from_pem(key.serialize_pem().as_bytes()).unwrap();
@@ -572,4 +583,134 @@ fn mutual_tls_identifies_users_by_certificate() {
     let summary = railit_journal::audit::verify_audit(text.as_bytes()).unwrap();
     assert_eq!(summary.records, 5, "{text}");
     assert!(text.contains("\"user\":\"fdl2\",\"action\":\"aux_confirm\""));
+}
+
+/// Sperrliste der Test-CA; `expired`: Gültigkeit längst abgelaufen.
+fn crl(
+    issuer: &CertifiedIssuer<'_, KeyPair>,
+    number: u64,
+    revoked: &[u64],
+    expired: bool,
+) -> String {
+    CertificateRevocationListParams {
+        this_update: date_time_ymd(2020, 1, 1),
+        next_update: if expired {
+            date_time_ymd(2021, 1, 1)
+        } else {
+            date_time_ymd(2100, 1, 1)
+        },
+        crl_number: SerialNumber::from(number),
+        issuing_distribution_point: None,
+        revoked_certs: revoked
+            .iter()
+            .map(|&s| RevokedCertParams {
+                serial_number: SerialNumber::from(s),
+                revocation_time: date_time_ymd(2020, 1, 1),
+                reason_code: None,
+                invalidity_date: None,
+            })
+            .collect(),
+        key_identifier_method: KeyIdMethod::Sha256,
+    }
+    .signed_by(issuer)
+    .unwrap()
+    .pem()
+    .unwrap()
+}
+
+/// REQ-SEC-006: Gesperrte Client-Zertifikate werden abgewiesen; eine neue Sperrliste gilt
+/// ohne Neustart, eine abgelaufene sperrt alle aus.
+#[test]
+fn revoked_client_certificates_are_refused() {
+    let ca_key = KeyPair::generate().unwrap();
+    let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params
+        .distinguished_name
+        .push(DnType::CommonName, "rail-it Sperr-CA");
+    let issuer = CertifiedIssuer::self_signed(ca_params, ca_key).unwrap();
+    let server_key = KeyPair::generate().unwrap();
+    let mut server_params =
+        CertificateParams::new(vec!["localhost".to_string(), "127.0.0.1".to_string()]).unwrap();
+    server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    let server = server_params.signed_by(&server_key, &issuer).unwrap();
+    let pki = Pki {
+        ca: issuer.pem(),
+        server_cert: tmp("crl-server.pem"),
+        server_key: tmp("crl-server.key"),
+        ca_file: tmp("crl-ca.pem"),
+    };
+    std::fs::write(&pki.server_cert, server.pem()).unwrap();
+    std::fs::write(&pki.server_key, server_key.serialize_pem()).unwrap();
+    std::fs::write(&pki.ca_file, &pki.ca).unwrap();
+    let crl_file = tmp("crl.pem");
+    std::fs::write(&crl_file, crl(&issuer, 1, &[66], false)).unwrap();
+    let users = tmp("crl-users.toml");
+    std::fs::write(
+        &users,
+        "[[user]]\nname = \"fdl1\"\nroles = [\"fahrdienstleiter\"]\ncert_cn = \"fdl1\"\n",
+    )
+    .unwrap();
+    let plan = plan(BEISPIELSTADT, "sec-crl");
+    let audit = tmp("crl-audit.log");
+    let _ = std::fs::remove_file(&audit);
+    let d = start(&[
+        "--network",
+        BEISPIELSTADT,
+        "--plan",
+        plan.to_str().unwrap(),
+        "--users",
+        users.to_str().unwrap(),
+        "--audit",
+        audit.to_str().unwrap(),
+        "--tls-cert",
+        pki.server_cert.to_str().unwrap(),
+        "--tls-key",
+        pki.server_key.to_str().unwrap(),
+        "--tls-client-ca",
+        pki.ca_file.to_str().unwrap(),
+        "--tls-crl",
+        crl_file.to_str().unwrap(),
+        "--listen",
+        "127.0.0.1:0",
+    ]);
+    let whoami = format!("{}/v1/whoami", d.url);
+    let ok = |agent: &ureq::Agent| call(agent, "GET", &whoami, None, None).is_ok();
+    let valid = client_with_serial(&pki, &issuer, Some("fdl1"), Some(7));
+    let revoked = client_with_serial(&pki, &issuer, Some("fdl1"), Some(66));
+    assert!(ok(&valid));
+    assert!(!ok(&revoked), "gesperrtes Zertifikat");
+
+    // Zur Laufzeit sperren: Die neue Sperrliste gilt nach kurzer Zeit ohne Neustart.
+    let wait_until = |what: &str, cond: &dyn Fn() -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !cond() {
+            assert!(std::time::Instant::now() < deadline, "{what}");
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    };
+    std::fs::write(&crl_file, crl(&issuer, 2, &[66, 7], false)).unwrap();
+    let fresh = || client_with_serial(&pki, &issuer, Some("fdl1"), Some(7));
+    wait_until("Sperrung wirkt", &|| !ok(&fresh()));
+    let other = client_with_serial(&pki, &issuer, Some("fdl1"), Some(8));
+    assert!(ok(&other));
+
+    // Abgelaufene Sperrliste: niemand kommt mehr an.
+    std::fs::write(&crl_file, crl(&issuer, 3, &[], true)).unwrap();
+    wait_until("abgelaufene Sperrliste sperrt", &|| {
+        !ok(&client_with_serial(&pki, &issuer, Some("fdl1"), Some(9)))
+    });
+    // Unlesbare Sperrliste ebenso; eine gültige gibt wieder frei.
+    std::fs::write(&crl_file, "kaputt").unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(!ok(&client_with_serial(
+        &pki,
+        &issuer,
+        Some("fdl1"),
+        Some(10)
+    )));
+    std::fs::write(&crl_file, crl(&issuer, 4, &[], false)).unwrap();
+    wait_until("gültige Sperrliste gibt frei", &|| {
+        ok(&client_with_serial(&pki, &issuer, Some("fdl1"), Some(11)))
+    });
 }

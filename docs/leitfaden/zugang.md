@@ -60,6 +60,21 @@ railit --server https://stw:7878 --ca ca.pem --cert fdl.pem --key fdl.key state
 Mit `--tls-client-ca` verlangt der Dienst ein Client-Zertifikat; dessen CN identifiziert den
 Benutzer (`cert_cn`).
 
+### Sperrlisten
+
+Ein verlorenes oder kompromittiertes Zertifikat sperrt die CA in ihrer Sperrliste (CRL, PEM).
+Der Dienst prüft jede Anmeldung dagegen:
+
+```sh
+railitd … --tls-client-ca ca.pem --tls-crl ca.crl.pem
+```
+
+Der Dienst prüft die Datei alle zwei Sekunden auf Änderungen und lädt sie ohne Neustart neu;
+bestehende Verbindungen bleiben bis zu ihrem Ende bestehen. Eine Sperrliste, deren
+`nextUpdate` überschritten ist, gilt nicht: Dann – wie bei einer unlesbaren Datei – weist der
+Dienst jede Anmeldung mit Zertifikat ab, bis eine gültige Sperrliste vorliegt. Die CA muss
+die Sperrliste also rechtzeitig neu ausstellen.
+
 ## Siegel
 
 Mit `--seal-key` siegelt der Dienst Journal und Auditprotokoll mit dem Schlüssel des Stellwerks

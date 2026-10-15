@@ -3,19 +3,25 @@
 //! Der Dienst spricht HTTP/1.1 und HTTP/2 (für gRPC) auf demselben Port; mit TLS handelt er
 //! das Protokoll per ALPN aus. Ist eine Client-CA angegeben, verlangt er von jedem Client ein
 //! von ihr ausgestelltes Zertifikat; dessen Common Name (CN) identifiziert den Benutzer.
+//!
+//! Gesperrte Zertifikate stehen in Sperrlisten (CRL, `--tls-crl`, REQ-SEC-006). Der Dienst
+//! liest sie bei Änderung neu ein, ohne Neustart; eine abgelaufene oder unlesbare Sperrliste
+//! weist jede Anmeldung ab, bis eine gültige vorliegt.
 
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant, SystemTime};
 
 use axum::{Extension, Router};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder;
 use hyper_util::service::TowerToHyperService;
-use rustls::RootCertStore;
+use rustls::client::danger::HandshakeSignatureValid;
 use rustls::server::WebPkiClientVerifier;
+use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
+use rustls::{DigitallySignedStruct, DistinguishedName, RootCertStore, SignatureScheme};
 use rustls_pki_types::pem::PemObject;
-use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+use rustls_pki_types::{CertificateDer, CertificateRevocationListDer, PrivateKeyDer, UnixTime};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
@@ -34,11 +40,183 @@ fn certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, String> {
     Ok(certs)
 }
 
-/// Serverkonfiguration aus Zertifikatskette, Schlüssel und optionaler Client-CA.
+/// Abstand, in dem der Dienst die Sperrlisten auf Änderungen prüft.
+const CRL_CHECK: Duration = Duration::from_secs(2);
+
+fn crls(paths: &[PathBuf]) -> Result<Vec<CertificateRevocationListDer<'static>>, String> {
+    let mut out = Vec::new();
+    for path in paths {
+        let before = out.len();
+        for crl in CertificateRevocationListDer::pem_file_iter(path)
+            .map_err(|e| format!("{}: {e}", path.display()))?
+        {
+            out.push(crl.map_err(|e| format!("{}: {e}", path.display()))?);
+        }
+        if out.len() == before {
+            return Err(format!("{}: keine Sperrliste", path.display()));
+        }
+    }
+    Ok(out)
+}
+
+/// Änderungsmerkmal je Sperrliste: Zeitstempel und Länge.
+type Stamp = Option<(SystemTime, u64)>;
+
+fn stamps(paths: &[PathBuf]) -> Vec<Stamp> {
+    paths
+        .iter()
+        .map(|p| {
+            std::fs::metadata(p)
+                .and_then(|m| Ok((m.modified()?, m.len())))
+                .ok()
+        })
+        .collect()
+}
+
+/// Prüfer der Client-Zertifikate gegen CA und (optional) Sperrlisten.
+fn webpki_verifier(
+    roots: &Arc<RootCertStore>,
+    provider: &Arc<rustls::crypto::CryptoProvider>,
+    crl_paths: &[PathBuf],
+) -> Result<Arc<dyn ClientCertVerifier>, String> {
+    let mut builder = WebPkiClientVerifier::builder_with_provider(roots.clone(), provider.clone());
+    if !crl_paths.is_empty() {
+        // Abgelaufene Sperrlisten gelten nicht: Wer nicht nachliefert, sperrt alle aus.
+        builder = builder
+            .with_crls(crls(crl_paths)?)
+            .enforce_revocation_expiration();
+    }
+    builder.build().map_err(|e| e.to_string())
+}
+
+/// Lädt die Sperrlisten bei Änderung neu (REQ-SEC-006).
+#[derive(Debug)]
+struct ReloadingVerifier {
+    roots: Arc<RootCertStore>,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+    crl_paths: Vec<PathBuf>,
+    hints: Vec<DistinguishedName>,
+    schemes: Vec<SignatureScheme>,
+    state: RwLock<CrlState>,
+}
+
+#[derive(Debug)]
+struct CrlState {
+    /// `None`: Die Sperrlisten sind unlesbar; jede Anmeldung wird abgewiesen.
+    verifier: Option<Arc<dyn ClientCertVerifier>>,
+    stamps: Vec<Stamp>,
+    checked: Instant,
+}
+
+impl ReloadingVerifier {
+    fn current(&self) -> Result<Arc<dyn ClientCertVerifier>, rustls::Error> {
+        let due = self
+            .state
+            .read()
+            .map_or(true, |s| s.checked.elapsed() >= CRL_CHECK);
+        if due && let Ok(mut state) = self.state.write() {
+            state.checked = Instant::now();
+            let now = stamps(&self.crl_paths);
+            if now != state.stamps {
+                state.stamps = now;
+                match webpki_verifier(&self.roots, &self.provider, &self.crl_paths) {
+                    Ok(v) => {
+                        tracing::info!("Sperrlisten neu geladen");
+                        state.verifier = Some(v);
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Sperrliste ungültig: Anmeldungen abgewiesen");
+                        state.verifier = None;
+                    }
+                }
+            }
+        }
+        self.state
+            .read()
+            .ok()
+            .and_then(|s| s.verifier.clone())
+            .ok_or_else(|| rustls::Error::General("Sperrliste ungültig".into()))
+    }
+}
+
+impl ClientCertVerifier for ReloadingVerifier {
+    fn root_hint_subjects(&self) -> &[DistinguishedName] {
+        &self.hints
+    }
+
+    fn verify_client_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        now: UnixTime,
+    ) -> Result<ClientCertVerified, rustls::Error> {
+        let result = self
+            .current()?
+            .verify_client_cert(end_entity, intermediates, now);
+        if let Err(e) = &result {
+            tracing::info!(error = %e, cn = ?common_name(end_entity), "Client-Zertifikat abgewiesen");
+        }
+        result
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.current()?.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.current()?.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.schemes.clone()
+    }
+}
+
+/// Prüfer der Client-Zertifikate; mit Sperrlisten neu ladend.
+fn client_verifier(
+    ca: &Path,
+    crl_paths: &[PathBuf],
+    provider: &Arc<rustls::crypto::CryptoProvider>,
+) -> Result<Arc<dyn ClientCertVerifier>, String> {
+    let mut roots = RootCertStore::empty();
+    for c in certs(ca)? {
+        roots.add(c).map_err(|e| format!("{}: {e}", ca.display()))?;
+    }
+    let roots = Arc::new(roots);
+    let verifier = webpki_verifier(&roots, provider, crl_paths)?;
+    if crl_paths.is_empty() {
+        return Ok(verifier);
+    }
+    Ok(Arc::new(ReloadingVerifier {
+        hints: verifier.root_hint_subjects().to_vec(),
+        schemes: verifier.supported_verify_schemes(),
+        roots,
+        provider: provider.clone(),
+        state: RwLock::new(CrlState {
+            verifier: Some(verifier),
+            stamps: stamps(crl_paths),
+            checked: Instant::now(),
+        }),
+        crl_paths: crl_paths.to_vec(),
+    }))
+}
+
+/// Serverkonfiguration aus Zertifikatskette, Schlüssel, optionaler Client-CA und Sperrlisten.
 pub(crate) fn server_config(
     cert: &Path,
     key: &Path,
     client_ca: Option<&Path>,
+    crl_paths: &[PathBuf],
 ) -> Result<Arc<rustls::ServerConfig>, String> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let chain = certs(cert)?;
@@ -47,16 +225,7 @@ pub(crate) fn server_config(
         .with_safe_default_protocol_versions()
         .map_err(|e| e.to_string())?;
     let builder = match client_ca {
-        Some(ca) => {
-            let mut roots = RootCertStore::empty();
-            for c in certs(ca)? {
-                roots.add(c).map_err(|e| format!("{}: {e}", ca.display()))?;
-            }
-            let verifier = WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider)
-                .build()
-                .map_err(|e| e.to_string())?;
-            builder.with_client_cert_verifier(verifier)
-        }
+        Some(ca) => builder.with_client_cert_verifier(client_verifier(ca, crl_paths, &provider)?),
         None => builder.with_no_client_auth(),
     };
     let mut config = builder

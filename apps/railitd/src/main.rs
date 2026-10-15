@@ -194,6 +194,10 @@ struct Args {
     /// CA für Client-Zertifikate: verlangt mTLS; der CN identifiziert den Benutzer.
     #[arg(long, requires_all = ["tls_cert", "users"])]
     tls_client_ca: Option<PathBuf>,
+    /// Sperrliste (CRL, PEM) der Client-CA (mehrfach angebbar). Wird bei Änderung neu
+    /// gelesen; abgelaufene oder unlesbare Sperrlisten weisen jede Anmeldung ab.
+    #[arg(long = "tls-crl", value_name = "DATEI", requires = "tls_client_ca")]
+    tls_crls: Vec<PathBuf>,
     /// Stellbereich auf einem Knoten des sicheren Rechners (`railit-node`): `ADRESSE` bei
     /// einem Stellbereich, sonst `BEREICH=ADRESSE` je Bereich; `lockstep` lässt alle Bereiche
     /// auf Knoten im Dienst rechnen (Gleichschritt, für Prüfung und Ausbildung).
@@ -711,6 +715,7 @@ fn security(args: &Args, net: &Topology) -> Result<Security, String> {
             cert,
             key,
             args.tls_client_ca.as_deref(),
+            &args.tls_crls,
         )?)
     } else {
         if !args.listen.ip().is_loopback() {

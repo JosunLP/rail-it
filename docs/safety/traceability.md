@@ -166,6 +166,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-SEC-003 | H-006 | `apps/railitd/src/auth.rs` | `roles_grant_their_permissions`<br>`roles_areas_and_audit_with_tokens`<br>`interlocking_over_grpc`<br>`apps/railitd/tests/security.rs` |
 | REQ-SEC-004 | H-006, H-011 | `apps/railit/src/admin.rs`<br>`apps/railitd/src/service.rs`<br>`crates/railit-journal/src/audit.rs` | `chain_detects_tampering`<br>`reopened_log_continues_the_chain`<br>`roles_areas_and_audit_with_tokens`<br>`token_and_audit_verification`<br>`apps/railit/tests/cli.rs`<br>`apps/railitd/tests/security.rs` |
 | REQ-SEC-005 | H-006 | – | `open_mode_only_on_loopback` |
+| REQ-SEC-006 | H-006 | `apps/railitd/src/tls.rs` | `revoked_client_certificates_are_refused`<br>`apps/railitd/tests/security.rs` |
 
 ## [sicherheitsschicht.md](../requirements/sicherheitsschicht.md)
 
@@ -203,4 +204,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-130 Anforderungen, davon 130 mit Nachweis.
+131 Anforderungen, davon 131 mit Nachweis.
