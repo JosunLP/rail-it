@@ -171,6 +171,7 @@ function sicherheit() {
       items: [
         { text: 'Safety Case', link: '/safety/safety-case' },
         { text: 'Gefährdungsliste', link: '/safety/hazard-log' },
+        { text: 'FMEA', link: '/safety/fmea' },
         { text: 'Rückverfolgbarkeit', link: '/safety/traceability' },
       ],
     },

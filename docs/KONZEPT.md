@@ -1,6 +1,6 @@
 # rail-it – Konzept einer Engine für Netz- und Stellwerkmanagement
 
-> Status: **v0.15** (Phasen 0 bis 13 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
+> Status: **v1.0.0** (Phasen 0 bis 15 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
 >
 > v0.2 arbeitet die Grundsatzentscheidungen aus Abschnitt 2 ein: vollständiger Netz- und
 > Bahnbetrieb, deutsches ESTW **und** europäisches System (ETCS/EULYNX), Server **und**
@@ -952,11 +952,13 @@ Daraus folgen diese Regeln:
 | **8 – Verfügbarkeit & Diagnose** | Journal auch im Knotenbetrieb, Diagnose aus dem Journal (Zustand zu einem Zeitpunkt, Ereignisse eines Zeitraums), Metriken für den Betrieb | Jeder Betrieb ist lückenlos aufgezeichnet und nachträglich in Sekunden befragbar; Metriken für den Betrieb | ✔ |
 | **9 – Mitlesen & Rückschau** | Mitleser für wachsende Journale, Rückschau im Dienst und im Bedienplatz, Bereitschaftsrechner über den Journalstrom | Ein zweiter Rechner zeigt den Zustand des Hauptrechners laufend geprüft an; jeder Zeitpunkt lässt sich am Bedienplatz zurückschauen | ✔ |
 | **10 – Übernahme** | Feldrechner mit Umschalter (`railit-field`), Ausgabe erst nach Quittung, Übernahme des mitgelesenen Zustands im Kern und im Dienst | Fällt der Hauptrechner aus, übernimmt der Bereitschaftsrechner den Betrieb – mit dem mitgelesenen Zustand, solange die Zusage des Hauptrechners das deckt | ✔ (Zeitbedingungen auf Zielhardware, Umschalter in realer Feldtechnik offen) |
-| **11 – Nachbarstellwerke** | Grenzmeldungen als EULYNX-SCI-ILS-Telegramme über RaSTA, je Paar benachbarter Stellbereiche eine Verbindung mit störbarer Strecke; Stellbereiche in getrennten Prozessen über UDP mit Umschalter je Bereich am Feldrechner; Dienst, CLI, Szenarien, Fuzzing | Die Stellbereiche sprechen wie getrennte Stellwerke miteinander; gestörte Verbindungen halten den Erlaubniswechsel sicher an (Szenario 22, REQ-COM-009) | ✔ (auch in getrennten Prozessen; Betriebsführung, ETCS und Bereitschaftsrechner verteilt offen) |
-| **12 – Deutsche Planungsdaten** | Import und Export von PlanPro (1.9, 1.10): Knoten-Kanten-Modell, Weichen mit Stammgleis und Geschwindigkeit, Signale nach Art und System, Bahnübergänge, Achszählpunkte mit Freimeldeabschnitten; dieselbe Validierung wie railML; Kreuzungen ohne bewegliche Teile in Netzmodell, TOML, railML, PlanPro, Simulator und Spurplan (REQ-TOP-016) | Eine PlanPro-Planung lässt sich prüfen, projektieren und betreiben (Szenario 23); Rundreise mit bitgleichem Plan (REQ-TOP-015) | ✔ (Prüfung gegen Planungen realer Anlagen, Kreuzungsweichen in PlanPro offen) |
+| **11 – Nachbarstellwerke** | Grenzmeldungen als EULYNX-SCI-ILS-Telegramme über RaSTA, je Paar benachbarter Stellbereiche eine Verbindung mit störbarer Strecke; Stellbereiche in getrennten Prozessen über UDP mit Umschalter je Bereich am Feldrechner; Dienst, CLI, Szenarien, Fuzzing | Die Stellbereiche sprechen wie getrennte Stellwerke miteinander; gestörte Verbindungen halten den Erlaubniswechsel sicher an (Szenario 22, REQ-COM-009) | ✔ (auch in getrennten Prozessen; Betriebsführung, ETCS und Bereitschaftsrechner verteilt in Phasen 13 und 15) |
+| **12 – Deutsche Planungsdaten** | Import und Export von PlanPro (1.9, 1.10): Knoten-Kanten-Modell, Weichen mit Stammgleis und Geschwindigkeit, Signale nach Art und System, Bahnübergänge, Achszählpunkte mit Freimeldeabschnitten; dieselbe Validierung wie railML; Kreuzungen ohne bewegliche Teile in Netzmodell, TOML, railML, PlanPro, Simulator und Spurplan (REQ-TOP-016) | Eine PlanPro-Planung lässt sich prüfen, projektieren und betreiben (Szenario 23); Rundreise mit bitgleichem Plan (REQ-TOP-015) | ✔ (Kreuzungsweichen in PlanPro in Phase 14; Prüfung gegen Planungen realer Anlagen offen) |
 | **13 – Weichenkopplung & verteilter Betrieb** | Gekoppelte Weichen an einem Antrieb (REQ-TOP-017), Kreuzungsweichen (EKW, DKW) aus Zungenpaaren, inneren Gleisen und Kreuzung; Projektierung mit Partnerweichen und Flankenschutz über die Kreuzungsweiche hinaus (REQ-PLN-021), Plan-Image v5 mit Kopplungstabelle, Einzelstellen beider Weichen im Kern (REQ-IXL-026); TOML, railML, Spurplan, Bedienplatz. Fahrplan und Zuglenkung bei Stellbereichen in getrennten Prozessen mit Zugvormeldung und Zugübergabe über SCI-ILS (REQ-OPS-006); PZB im Simulator mit Zwangsbremsung an 1000- und 2000-Hz-Magneten (REQ-MOV-007) | Bahnhofsköpfe mit DKW und Weichenverbindungen an einem Antrieb lassen sich projektieren und betreiben (Szenario 25, `examples/dkw.toml`); der Nordbahn-Fahrplan läuft mit drei Prozessen (Feldrechner, Stellwerk West, Stellwerk Ost); Haltüberfahrungen mit PZB enden vor dem Gefahrpunkt (Szenario 26); über EULYNX ist jede Kopplung ein Antrieb (Szenario 27); jedes Teilnetz kann einen eigenen Bereitschaftsrechner haben | ✔ |
+| **14 – Planungsdetails** | Kreuzungsweichen in PlanPro (`W_Kr_Anlage`, Import und Export, bitgleiche Rundreise); Hauptsignale bis 30 m vor der Freimeldegrenze mit Längen ab dem Signal (REQ-PLN-010); PZB 90 im Simulator mit 500-Hz-Magnet, Überwachungskurven der Zugarten und Wachsamkeit (REQ-MOV-007) | Reale Planungsdaten mit DKW und abgesetzten Signalen lassen sich übernehmen; Haltüberfahrungen werden wie bei PZB 90 überwacht (Szenario 26) | ✔ |
+| **15 – Version 1.0** | Freigabe der Pläne im Vier-Augen-Prinzip (REQ-PLN-022); Sperrlisten für mTLS (REQ-SEC-006); Betriebsführung bei der Übernahme (REQ-OPS-007); RaSTA-Redundanzschicht über mehrere Kanäle (REQ-COM-011); zyklische Speicherprüfung (REQ-SAF-008); ETCS über Prozessgrenzen mit Fahrerlaubnis-Vorschau zwischen RBC (REQ-ETCS-004); Siegel mit Zeitstempel und unabhängige Zeugen (REQ-JRN-010); [FMEA](safety/fmea.md) | Funktionsumfang für Labor, Ausbildung und Prüfstand vollständig; offen bleibt, was nur Organisation, Hardware und reale Technik schließen können ([Teil 7](safety/safety-case.md#teil-7--offene-punkte-bis-zu-einer-zulassung)) | ✔ |
 
-**Umgesetzte Crates (Stand Phase 7):** `railit-types`, `railit-topology`, `railit-plan`,
+**Umgesetzte Crates (Stand Version 1.0):** `railit-types`, `railit-topology`, `railit-plan`,
 `railit-planning`, `railit-rules`, `railit-kernel`, `railit-safety` (Kanäle, Voter, Watchdog),
 `railit-embedded` (sicherer Rechner), `railit-movement` (Ks, H/V, ETCS-Fahrerlaubnis),
 `railit-etcs` (RBC-Funktion), `railit-rasta`, `railit-adapters` (EULYNX SCI), `railit-journal`
@@ -974,8 +976,8 @@ jeweiligen Phasen.
 ## 19. Noch offene Punkte
 
 1. **Konkrete Embedded-Hardware** für den sicheren Rechner. Die Runtime (`railit-embedded`)
-   ist fertig und als Knoten (`railit-node`) in `railitd` eingebunden; Startcode, Uhr,
-   Netzwerk und Speicherprüfungen hängen von der Hardware ab.
+   ist fertig und als Knoten (`railit-node`) in `railitd` eingebunden, mit zyklischer
+   Speicherprüfung; Startcode, Uhr, Netzwerk, ECC und Anlauftest hängen von der Hardware ab.
 2. **Offene Punkte bis zu einer Zulassung:** siehe
    [Sicherheitsnachweis, Teil 7](safety/safety-case.md#teil-7--offene-punkte-bis-zu-einer-zulassung).
 3. **Besetzung der unabhängigen Rollen** (Verifikation, Validierung, ISA) mit Blick auf eine

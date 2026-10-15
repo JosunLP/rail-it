@@ -12,6 +12,7 @@ und – für den Sicherheitskern – auf Embedded-Hardware.
 - **API:** [docs/api.md](docs/api.md)
 - **Anforderungen:** [docs/requirements/](docs/requirements/)
 - **Gefährdungsliste:** [docs/safety/hazard-log.md](docs/safety/hazard-log.md)
+- **FMEA:** [docs/safety/fmea.md](docs/safety/fmea.md)
 
 > rail-it ist **nicht zugelassen** für den realen Bahnbetrieb. Der Einsatz ist bis zu einer
 > Zulassung auf Simulation, Ausbildung, Prüfstände und Labor beschränkt (Konzept,
@@ -43,7 +44,17 @@ Bereitschaftsrechner, siehe [Übernahme](#übernahme)) und Phase 11 (Nachbarstel
 zwischen den Stellbereichen über EULYNX SCI-ILS und RaSTA mit störbarer Strecke, auch zwischen
 getrennten Prozessen mit Umschalter je Stellbereich am Feldrechner, siehe
 [ETCS, EULYNX und railML](#etcs-eulynx-und-railml)) und Phase 12 (PlanPro: Import und Export
-deutscher Planungsdaten) sind umgesetzt.
+deutscher Planungsdaten) und Phase 13 (gekoppelte Weichen und Kreuzungsweichen, Fahrplan und
+Zuglenkung über Prozessgrenzen, PZB im Simulator) und Phase 14 (Kreuzungsweichen in PlanPro,
+Signale vor der Freimeldegrenze, PZB 90) und Phase 15 (Version 1.0: Vier-Augen-Freigabe der
+Pläne, Sperrlisten für mTLS, Betriebsführung bei der Übernahme, RaSTA-Redundanzschicht,
+zyklische Speicherprüfung, ETCS über Prozessgrenzen, Siegel mit Zeitstempel und Zeugen,
+[FMEA](docs/safety/fmea.md)) sind umgesetzt.
+
+**Version 1.0** schließt den Funktionsumfang für Labor, Ausbildung und Prüfstände ab. Was bis
+zu einer Zulassung fehlt – unabhängige Begutachtung, qualifizierte Toolchain, Hardware, Regeln
+eines Betreibers, Prüfung mit realer Feldtechnik –, steht in
+[Teil 7 des Sicherheitsnachweises](docs/safety/safety-case.md#teil-7--offene-punkte-bis-zu-einer-zulassung).
 
 | Crate | Inhalt | |
 |-------|--------|---|
@@ -54,10 +65,10 @@ deutscher Planungsdaten) sind umgesetzt.
 | `railit-rules` | Regelwerk-Schnittstelle, Lehrregelwerk | `no_std` |
 | `railit-kernel` | Sicherheitskern: Fahrwegsicherung, Hilfshandlungen, Invarianten, sicherer Zustand | `no_std`, ohne Allokator |
 | `railit-movement` | Signalbegriffe Ks und H/V und ETCS-Fahrerlaubnis aus dem Kernzustand | `no_std`, ohne Allokator |
-| `railit-safety` | Redundante Kanäle, Voter (2-von-2, 2-von-3), Watchdog, sicherer Zustand | `no_std`, ohne Allokator |
+| `railit-safety` | Redundante Kanäle, Voter (2-von-2, 2-von-3), Watchdog, zyklische Speicherprüfung, sicherer Zustand | `no_std`, ohne Allokator |
 | `railit-embedded` | Runtime für den sicheren Rechner (Cortex-R): Knoten mit Kanälen, Binärprotokoll über RaSTA | `no_std`, ohne Allokator |
 | `railit-etcs` | RBC-Funktion für ETCS Level 2: Anmeldung, Fahrerlaubnis über Bereichsgrenzen, Notbremsung | |
-| `railit-rasta` | RaSTA-Sicherheits- und Wiederholschicht nach EN 50159 | `no_std`, ohne Allokator |
+| `railit-rasta` | RaSTA-Sicherheits-, Wiederhol- und Redundanzschicht nach EN 50159 | `no_std`, ohne Allokator |
 | `railit-adapters` | Feldanbindung über EULYNX SCI-P/-LS/-TDS/-LX und RaSTA zu simulierten Objektsteuerungen, im Dienst oder über UDP zu einem Feldrechner mit Umschalter; SCI-ILS zwischen Nachbarstellwerken | |
 | `railit-journal` | Betriebsjournal mit Hashkette, Prüfpunkten, Siegeln, Zustandsabzügen und parallelem Replay; Auditprotokoll | |
 | `railit-sim` | Simulator: Weichen, Signale, Gleisfreimeldung, Bahnübergänge, Züge (auch mit ETCS), Störungen | |

@@ -1,6 +1,6 @@
 # Sicherheitsnachweis (Safety Case)
 
-> Stand: Phase 10 · Gliederung nach EN 50129, Abschnitt 5 · lebendes Dokument
+> Stand: Version 1.0 (Phase 15) · Gliederung nach EN 50129, Abschnitt 5 · lebendes Dokument
 >
 > **Geltungsbereich:** rail-it als **Kandidat für den Laborbetrieb** – Simulation, Ausbildung,
 > Prüfstände. rail-it ist **nicht zugelassen** für den realen Bahnbetrieb. Dieser Nachweis
@@ -20,7 +20,8 @@
 | Sicherheitsrelevant außerhalb des Kerns | Umschalter des Feldrechners (`railit_adapters::net`): Er entscheidet, welches Stellwerk stellt. Heute Teil des simulierten Feldrechners; für einen realen Einsatz in sicherer Feldtechnik umzusetzen (Teil 7) |
 | Schnittstellen | Plan-Image (signiert), Feld über EULYNX SCI-P/-LS/-TDS/-LX auf RaSTA, Nachbarstellwerke über Grenzmeldungen, ETCS-Fahrzeuge über die RBC-Funktion, Bedienung über REST/gRPC und den Bedienplatz (`/ui/`) |
 | Gefährdungen | [Gefährdungsliste](hazard-log.md), H-001 bis H-017 |
-| Anforderungen | [Anforderungen](../requirements/README.md), 120 Anforderungen mit stabilen IDs |
+| Anforderungen | [Anforderungen](../requirements/README.md), 136 Anforderungen mit stabilen IDs |
+| Fehleranalyse | [FMEA](fmea.md): Fehlerarten je Funktionsblock mit Erkennung, Maßnahme und Restrisiko (qualitativ) |
 
 ## Teil 2 – Qualitätsmanagementbericht
 
@@ -38,10 +39,11 @@
 | Tätigkeit (EN 50126) | Umsetzung | Beleg |
 |----------------------|-----------|-------|
 | Gefährdungsidentifikation | Gefährdungsliste, mit jeder Phase fortgeschrieben | [hazard-log.md](hazard-log.md) |
+| Fehleranalyse | Qualitative FMEA je Funktionsblock; hervorgehobene Restrisiken gehen in Teil 7 | [fmea.md](fmea.md) |
 | Sicherheitsanforderungen | Je Gefährdung Anforderungen mit ID, Gefährdungsbezug und Nachweis | [requirements/](../requirements/README.md) |
 | Rückverfolgbarkeit | Anforderung → Code → Nachweis, automatisch erzeugt und in der CI geprüft (`cargo xtask trace --check`): jede ID im Code ist dokumentiert, jede Anforderung hat einen Nachweis, jeder genannte Nachweis existiert | [traceability.md](traceability.md) |
 | Verifikation | Modul- und Integrationstests, Eigenschaftstests (Invarianten, Streckenblock, RaSTA, Voter), unabhängige Gegenprüfung der Projektierung, formale Nachweise (Kani), Fuzzing | CI-Jobs, Teil 4 |
-| Validierung | Deklarative Betriebsszenarien (21) gegen den Simulator, alle zusätzlich mit 2-von-3-Kanälen; Ende-zu-Ende-Tests von Dienst und CLI | `tests/scenarios/`, `apps/*/tests/` |
+| Validierung | Deklarative Betriebsszenarien (27) gegen den Simulator, alle zusätzlich mit 2-von-3-Kanälen; Ende-zu-Ende-Tests von Dienst und CLI | `tests/scenarios/`, `apps/*/tests/` |
 | Betrieb und Nachvollziehbarkeit | Betriebsjournal mit Hashkette und Replay, Auditprotokoll aller Bedienungen | REQ-JRN, REQ-SEC |
 | Rollen | Implementierung, Verifikation, Validierung und Begutachtung müssen vor einer Zulassung unabhängig besetzt werden | Teil 7 |
 
@@ -185,26 +187,52 @@ rail-it ist als **generisches Produkt** angelegt. Für einen Einsatz sind zusät
 
 ## Teil 7 – Offene Punkte bis zu einer Zulassung
 
+Mit Version 1.0 ist der Funktionsumfang für den Geltungsbereich (Teil 1) vollständig umgesetzt
+und nachgewiesen. Was folgt, kann die Software allein nicht schließen: Es braucht unabhängige
+Personen, qualifizierte Werkzeuge, Hardware, Betreiberregeln und Prüfungen an realer Technik.
+Die hervorgehobenen Restrisiken der [FMEA](fmea.md) sind hier eingeordnet.
+
+### Organisation und Begutachtung
+
 | Punkt | Bezug |
 |-------|-------|
-| Unabhängige Rollen (Verifikation, Validierung, ISA) besetzen | EN 50126/50129 |
-| Systematische Gefährdungsanalyse mit Bewertung (FMEA, FTA, quantitative Ziele) | Gefährdungsliste |
-| Qualifizierte Toolchain (z. B. Ferrocene) für die SIL-4-Crates | Konzept 16.2 |
-| Hardware des sicheren Rechners festlegen; Kanäle auf getrennter Hardware bzw. im Lockstep, Speicherprüfungen | H-015, Konzept 19 |
-| Knoten auf der Zielhardware | REQ-EMB |
-| Zeitbedingungen der Übernahme auf Zielhardware nachweisen (Gangunterschied der Uhren, Laufzeiten); Umschalter in realer Feldtechnik; Übernahme der Betriebsführung | REQ-SVC-012 … 014, H-017 |
-| Kani-Nachweise für den gesamten Kernzyklus (heute Eigenschaftstests und Fuzzing) | H-007 |
-| Sicherheitscode von RaSTA nach Zulassungsanforderung prüfen | H-014 |
-| Regelwerke `de-estw` und `etcs` mit den Regeln eines Betreibers | Teil 5 |
-| PlanPro-Import gegen Planungen realer Anlagen prüfen (Signalstandort und Freimeldegrenze, Kreuzungen, Gleissperren); SCI-ILS zwischen Stellwerken auf getrennter Hardware prüfen (heute getrennte Prozesse über UDP, REQ-COM-010); Betriebsführung, ETCS und Bereitschaftsrechner bei verteilten Stellbereichen | Konzept 18, H-012 |
-| Prüfung gegen reale EULYNX-Objektsteuerungen und ETCS-Fahrzeuggeräte | H-010, H-014 |
+| Unabhängige Rollen (Verifikation, Validierung, ISA) besetzen; QM-System, Review-Pflicht mit unabhängigem Prüfer | EN 50126/50129, Teil 2 |
+| Quantitative Bewertung (Ausfallraten, THR, FTA mit Zahlen) auf Basis der Zielhardware; Begutachtung der qualitativen FMEA | [FMEA](fmea.md), Gefährdungsliste |
+| Konfigurationsmanagement für Pläne und Schlüssel im Betrieb; Bestellung der Prüfer für die Freigabe (REQ-PLN-022); Betrieb eines Zeugen außerhalb des Stellwerks (REQ-JRN-010) | H-008, H-011 |
+
+### Werkzeuge und formale Nachweise
+
+| Punkt | Bezug |
+|-------|-------|
+| Qualifizierte Toolchain (z. B. Ferrocene) für die SIL-4-Crates; Diversität gegen gemeinsame Fehler der Kanäle | Konzept 16.2, FMEA |
+| Kani-Nachweise für den gesamten Kernzyklus (heute Eigenschaftstests, Fuzzing und Kani für Voter, RaSTA und Teile des Kerns) | H-007 |
+| Sicherheitscode von RaSTA nach Zulassungsanforderung prüfen | H-014, FMEA |
+
+### Hardware
+
+| Punkt | Bezug |
+|-------|-------|
+| Hardware des sicheren Rechners festlegen; Kanäle auf getrennter Hardware bzw. im Lockstep; ECC-Speicher und vollständiger RAM-Test beim Anlauf (die zyklische Prüfung von Plan und Prüfbereich, REQ-SAF-008, ist umgesetzt) | H-015, Konzept 19 |
+| Knoten auf der Zielhardware; RBC-Funktion auf dem sicheren Rechner statt im Dienst | REQ-EMB, REQ-ETCS |
+| Zeitbedingungen der Übernahme auf Zielhardware nachweisen (Gangunterschied der Uhren, Laufzeiten); Umschalter in realer Feldtechnik | REQ-SVC-012 … 014, H-017 |
+| Getrennte Übertragungsnetze für die Redundanzschicht (REQ-COM-011) | H-014 |
+
+### Betreiber und reale Technik
+
+| Punkt | Bezug |
+|-------|-------|
+| Regelwerke `de-estw` und `etcs` mit den Regeln und Zeiten eines Betreibers | Teil 5 |
+| PlanPro-Import gegen Planungen realer Anlagen prüfen (Signalstandort und Freimeldegrenze, Kreuzungen, Kreuzungsweichen, Gleissperren) | Konzept 18, H-004 |
+| SCI-ILS, verteilte Betriebsführung und ETCS über Prozessgrenzen auf getrennter Hardware prüfen (heute getrennte Prozesse über UDP) | H-012, REQ-COM-010, REQ-OPS-006/007, REQ-ETCS-004 |
+| Prüfung gegen reale EULYNX-Objektsteuerungen und ETCS-Fahrzeuggeräte (heute Simulator und Prüfstandsschnittstelle des Feldrechners) | H-010, H-014 |
 | Ergonomische Prüfung des Bedienplatzes mit Bedienern; ggf. zweikanalige sichere Anzeige | H-016 |
 
 ## Teil 8 – Schlussfolgerung
 
 Für den Geltungsbereich – Simulation, Ausbildung und Prüfstände – sind die identifizierten
-Gefährdungen H-001 bis H-016 durch Anforderungen beherrscht, deren Umsetzung durch Tests,
+Gefährdungen H-001 bis H-017 durch Anforderungen beherrscht, deren Umsetzung durch Tests,
 Szenarien, Eigenschaftstests, formale Nachweise und Fuzzing belegt und lückenlos
-rückverfolgbar ist. Für den realen Bahnbetrieb reicht das nicht: Die Punkte aus Teil 7,
+rückverfolgbar ist; die FMEA findet kein Fehlerbild mit Unfallfolge, das allein
+organisatorisch beherrscht wäre. Für den realen Bahnbetrieb reicht das nicht: Die Punkte aus Teil 7,
 insbesondere unabhängige Begutachtung, qualifizierte Toolchain und Hardware, sind
 Voraussetzung jeder Zulassung.
