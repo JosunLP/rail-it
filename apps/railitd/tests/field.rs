@@ -480,6 +480,16 @@ fn ils_up(url: &str) -> bool {
         .is_some_and(|l| !l.is_empty() && l.iter().all(|x| x["up"] == true))
 }
 
+/// Die Nordbahn-Tests starten je fünf Prozesse mit Echtzeitfristen; gleichzeitig ausgeführt
+/// verdrängen sie sich gegenseitig. Sie laufen deshalb nacheinander.
+static NORDBAHN_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn nordbahn_serial() -> std::sync::MutexGuard<'static, ()> {
+    NORDBAHN_SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Feldrechner der Nordbahn für drei Stellwerke: (Prozess, UDP-Adresse, URL der Steuerung).
 fn nordbahn_field() -> (Process, String, String) {
     let mut cmd = Command::new(field_binary());
@@ -548,6 +558,7 @@ fn split_railitd(plans: &std::path::Path, udp: &str, control: &str, args: &[&str
 /// Feldrechner, SCI-ILS baut sich zu ihm neu auf, und der Erlaubniswechsel mit Ost geht weiter.
 #[test]
 fn standby_takes_over_a_part_of_the_network() {
+    let _serial = nordbahn_serial();
     let (field, udp, control) = nordbahn_field();
     let udp = udp.as_str();
     let dir = nordbahn_plans();
@@ -646,6 +657,7 @@ fn standby_takes_over_a_part_of_the_network() {
 /// führt das RBC im Osten den Zug weiter.
 #[test]
 fn etcs_train_crosses_into_another_process() {
+    let _serial = nordbahn_serial();
     let (_field, udp, control) = nordbahn_field();
     let udp = udp.as_str();
     let dir = nordbahn_plans();

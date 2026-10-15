@@ -187,3 +187,43 @@ fn foreign_seals_block_reopening() {
     assert_eq!(w.append(record("z")).unwrap(), 2);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// REQ-JRN-010: Siegel tragen die Uhrzeit des Stellwerks; sie ist signiert, und die Zeiten
+/// laufen nicht zurück. Ein Zeuge bestätigt den Stand mit eigenem Schlüssel.
+#[test]
+fn seals_carry_signed_times_and_witnesses_attest_them() {
+    let station = SigningKey::from_bytes(&[7; 32]);
+    let bytes = journal(Some(&station), 3);
+    let s = verify_sealed(bytes.as_slice(), &station.verifying_key()).unwrap();
+    let (first, last) = s.sealed_ms.expect("Siegel mit Zeit");
+    assert!(first <= last && first > 1_700_000_000_000, "{first} {last}");
+
+    // Verfälschte Zeit: Die Signatur passt nicht mehr (Kette neu berechnet).
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    let seal_line = text.lines().find(|l| l.contains("\"seal\"")).unwrap();
+    let mut entry: serde_json::Value = serde_json::from_str(seal_line).unwrap();
+    let t = entry["entry"]["time_ms"].as_u64().unwrap();
+    entry["entry"]["time_ms"] = serde_json::json!(t + 1);
+    let seal: Entry = serde_json::from_value(entry["entry"].clone()).unwrap();
+    let mut w = JournalWriter::new(Vec::new(), header()).unwrap();
+    w.append(&seal).unwrap();
+    let forged = w.into_inner();
+    assert!(matches!(
+        verify(forged.as_slice()),
+        Err(JournalError::Seal { .. })
+    ));
+
+    // Zeuge: bestätigt den letzten Stand mit eigener Zeit.
+    let notary = SigningKey::from_bytes(&[9; 32]);
+    let head = railit_journal::witness::last_hash(bytes.as_slice()).unwrap();
+    let w = railit_journal::witness::witness(&notary, &head, last + 5);
+    let line = serde_json::to_string(&w).unwrap();
+    let ok = railit_journal::witness::verify_witnesses(
+        bytes.as_slice(),
+        line.as_bytes(),
+        &notary.verifying_key(),
+    )
+    .unwrap();
+    assert_eq!(ok.len(), 1);
+    assert_eq!(ok[0].line, u64::try_from(text.lines().count()).unwrap());
+}

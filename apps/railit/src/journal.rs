@@ -49,6 +49,7 @@ fn report(result: Result<Summary, JournalError>, what: &str, output: Output) -> 
                 "seals": s.seals,
                 "seal_key": s.seal_key,
                 "unsealed": s.unsealed,
+                "sealed_ms": s.sealed_ms,
             }));
             ExitCode::SUCCESS
         }
@@ -75,6 +76,13 @@ fn report(result: Result<Summary, JournalError>, what: &str, output: Output) -> 
                 ),
                 None => println!("  nicht gesiegelt"),
             }
+            if let Some((first, last)) = s.sealed_ms {
+                println!(
+                    "  Siegel von {} bis {} (Uhr des Stellwerks)",
+                    railit_journal::witness::format_utc(first),
+                    railit_journal::witness::format_utc(last)
+                );
+            }
             if s.truncated {
                 println!(
                     "  Hinweis: letzte Zeile unvollständig (Abbruch beim Schreiben), ignoriert"
@@ -93,11 +101,79 @@ fn report(result: Result<Summary, JournalError>, what: &str, output: Output) -> 
     }
 }
 
+/// Zeugnisse in `<Datei>.witness` prüfen (REQ-JRN-010).
+pub(crate) fn check_witnesses(
+    path: &Path,
+    key: &Path,
+) -> Result<Vec<railit_journal::witness::Witnessed>, String> {
+    let key = railit_runtime::keys::read_verifying_key(key)?;
+    let mut wpath = path.as_os_str().to_owned();
+    wpath.push(".witness");
+    let wpath = std::path::PathBuf::from(wpath);
+    let witnesses = std::fs::File::open(&wpath)
+        .map(BufReader::new)
+        .map_err(|e| format!("{}: {e}", wpath.display()))?;
+    let file = std::fs::File::open(path)
+        .map(BufReader::new)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    railit_journal::witness::verify_witnesses(file, witnesses, &key)
+}
+
+/// Zeigt geprüfte Zeugnisse an.
+pub(crate) fn print_witnesses(list: &[railit_journal::witness::Witnessed]) {
+    for w in list {
+        println!(
+            "  bezeugt: Zeile {} bestand am {}",
+            w.line,
+            railit_journal::witness::format_utc(w.time_ms)
+        );
+    }
+}
+
+/// `railit journal witness`: bezeugt den letzten Stand einer Datei (REQ-JRN-010).
+pub(crate) fn witness(path: &Path, key: &Path, output: Output) -> ExitCode {
+    use std::io::Write as _;
+    let key = match railit_runtime::keys::read_signing_key(key) {
+        Ok(k) => k,
+        Err(e) => return fail_usage(&e),
+    };
+    let head = match open(path).map(railit_journal::witness::last_hash) {
+        Ok(Ok(h)) => h,
+        Ok(Err(e)) => return fail_usage(&format!("{}: {e}", path.display())),
+        Err(code) => return code,
+    };
+    let now = railit_journal::witness::now_ms();
+    let w = railit_journal::witness::witness(&key, &head, now);
+    let mut wpath = path.as_os_str().to_owned();
+    wpath.push(".witness");
+    let wpath = std::path::PathBuf::from(wpath);
+    let line = serde_json::to_string(&w).unwrap_or_default();
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&wpath)
+        .and_then(|mut f| writeln!(f, "{line}"));
+    if let Err(e) = written {
+        return fail_usage(&format!("{}: {e}", wpath.display()));
+    }
+    match output {
+        Output::Json => print_json(&json!({"head": w.head, "time_ms": w.time_ms, "file": wpath})),
+        Output::Text => println!(
+            "Stand {}… bezeugt am {} ({})",
+            w.head.get(..16).unwrap_or(&w.head),
+            railit_journal::witness::format_utc(w.time_ms),
+            wpath.display()
+        ),
+    }
+    ExitCode::SUCCESS
+}
+
 /// `railit journal verify`
 pub(crate) fn verify(
     path: &Path,
     key: Option<&Path>,
     require_seal: bool,
+    witness_key: Option<&Path>,
     output: Output,
 ) -> ExitCode {
     let key = match key
@@ -118,7 +194,23 @@ pub(crate) fn verify(
             } else {
                 "Hashkette intakt"
             };
-            report(require(result, require_seal), what, output)
+            let ok = result.is_ok();
+            let code = report(require(result, require_seal), what, output);
+            match (witness_key, ok) {
+                (Some(wk), true) => match check_witnesses(path, wk) {
+                    Ok(list) => {
+                        if output == Output::Text {
+                            print_witnesses(&list);
+                        }
+                        code
+                    }
+                    Err(e) => {
+                        eprintln!("✘ Zeugnisse: {e}");
+                        ExitCode::from(EXIT_INVALID)
+                    }
+                },
+                _ => code,
+            }
         }
         Err(code) => code,
     }

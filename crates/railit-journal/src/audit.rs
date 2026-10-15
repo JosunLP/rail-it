@@ -78,6 +78,8 @@ pub struct AuditSummary {
     pub seal_key: Option<String>,
     /// Einträge nach dem letzten Siegel.
     pub unsealed: u64,
+    /// Uhrzeit des ersten und des letzten Siegels mit Zeitstempel (UTC, ms seit 1970).
+    pub sealed_ms: Option<(u64, u64)>,
 }
 
 /// Prüft die Hashkette und die fortlaufende Nummerierung eines Auditprotokolls.
@@ -110,6 +112,7 @@ fn read_audit<R: BufRead>(
     let mut truncated = false;
     let mut seals = 0u64;
     let mut seal_key = None;
+    let mut seal_times = seal::SealTimes::default();
     let mut unsealed = 0u64;
     let mut lines = reader.lines().enumerate().peekable();
     while let Some((index, line)) = lines.next() {
@@ -146,12 +149,12 @@ fn read_audit<R: BufRead>(
             return Err(JournalError::Chain { line: number });
         }
         if let Some(s) = &parsed.seal {
-            seal::check(SealKind::Audit, s, &prev, trusted, &mut seal_key).map_err(|message| {
-                JournalError::Seal {
+            seal::check(SealKind::Audit, s, &prev, trusted, &mut seal_key)
+                .and_then(|()| seal_times.add(s))
+                .map_err(|message| JournalError::Seal {
                     line: number,
                     message,
-                }
-            })?;
+                })?;
             seals = seals.saturating_add(1);
             unsealed = 0;
             prev = hash;
@@ -180,6 +183,7 @@ fn read_audit<R: BufRead>(
         seals,
         seal_key,
         unsealed,
+        sealed_ms: seal_times.first.zip(seal_times.last),
     })
 }
 
@@ -282,7 +286,7 @@ impl<W: Write> AuditWriter<W> {
         self.write_line(&line, hash)?;
         self.seq = seq;
         if let Some(key) = &self.sealer {
-            let s = seal::make(SealKind::Audit, key, &self.prev);
+            let s = seal::make(SealKind::Audit, key, &self.prev, seal::now_ms());
             let hash = chain(&self.prev, &s)?;
             let line = AuditLine {
                 record: None,

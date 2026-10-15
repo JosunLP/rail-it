@@ -85,3 +85,19 @@ dass niemand die Datei als Ganzes neu geschrieben hat:
 railit journal verify betrieb.journal --key railit.pub --require-seal
 railit audit verify audit.log --key railit.pub
 ```
+
+Jedes Siegel trägt die Uhrzeit des Stellwerks (UTC) unter der Signatur; die Prüfung zeigt die
+Zeitspanne der Siegel und lehnt Siegel ab, deren Zeit zurückläuft (REQ-JRN-010). Weil sich das
+Stellwerk damit nur selbst bezeugt, kann ein **Zeuge** mit eigenem Schlüssel – ein Zeitserver,
+die Revision, ein Rechner außerhalb des Stellwerks – den Stand zusätzlich bestätigen:
+
+```sh
+railit plan keygen notar                                   # einmal
+railit journal witness betrieb.journal --key notar.key     # z. B. stündlich per cron
+railit journal verify betrieb.journal --key railit.pub --witness-key notar.pub
+railit audit verify audit.log --witness-key notar.pub      # gleiches für das Auditprotokoll
+```
+
+Ein Zeugnis bindet den Hash der letzten Zeile an die Uhrzeit des Zeugen und steht in
+`<Datei>.witness`. Wer das Journal später neu schreibt, erzeugt eine andere Kette – alte
+Zeugnisse passen dann nicht mehr.

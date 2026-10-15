@@ -90,6 +90,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-JRN-007 | H-011 | `crates/railit-journal/src/lib.rs`<br>`crates/railit-runtime/src/remote.rs`<br>`crates/railit-runtime/src/scenario.rs` | `node_journal_replays_across_resyncs`<br>`safe_computer_nodes_over_api`<br>`all_scenarios_pass_on_safe_computer_nodes`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-runtime/tests/journal.rs`<br>`crates/railit-runtime/tests/scenarios.rs` |
 | REQ-JRN-008 | H-011 | `apps/railitd/src/review.rs`<br>`crates/railit-journal/src/lib.rs` | `window_replays_from_the_nearest_snapshot`<br>`journal_follow_state_and_events`<br>`apps/railit/tests/cli.rs`<br>`crates/railit-runtime/tests/journal.rs` |
 | REQ-JRN-009 | H-011, H-015 | `crates/railit-journal/src/lib.rs` | `follower_tracks_the_running_interlocking`<br>`follower_reads_node_journal`<br>`journal_follow_state_and_events`<br>`mutated_journals`<br>`rechained_snapshot_mutations`<br>`apps/railit/tests/cli.rs`<br>`crates/railit-fuzz/tests/smoke.rs`<br>`crates/railit-runtime/tests/journal.rs` |
+| REQ-JRN-010 | H-011 | `apps/railit/src/journal.rs`<br>`crates/railit-journal/src/seal.rs`<br>`crates/railit-journal/src/witness.rs` | `seals_carry_signed_times_and_witnesses_attest_them`<br>`witnesses_attest_lines_in_order`<br>`journal_witness`<br>`apps/railit/tests/cli.rs`<br>`crates/railit-journal/tests/seal.rs` |
 
 ## [kern.md](../requirements/kern.md)
 
@@ -208,4 +209,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-135 Anforderungen, davon 135 mit Nachweis.
+136 Anforderungen, davon 136 mit Nachweis.

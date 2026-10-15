@@ -7,7 +7,11 @@
 //! Kette.
 //!
 //! Signiert wird `railit-seal-v1\n<Art>\n<Hash>` (Art: `journal` oder `audit`), damit ein
-//! Siegel des Journals nicht als Siegel des Auditprotokolls gilt.
+//! Siegel des Journals nicht als Siegel des Auditprotokolls gilt. Siegel mit Zeitstempel
+//! (REQ-JRN-010) tragen die Uhrzeit des Stellwerks (UTC, ms seit 1970) und signieren
+//! `railit-seal-v2\n<Art>\n<Zeit>\n<Hash>`; die Zeiten der Siegel einer Datei dürfen nicht
+//! zurücklaufen. Dass ein Stand zu einer Zeit bestand, bestätigt unabhängig davon ein Zeuge
+//! ([`crate::witness`]).
 
 use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -42,23 +46,62 @@ pub struct Seal {
     pub key: String,
     /// Ed25519-Signatur (Hex, 64 Byte).
     pub signature: String,
+    /// Uhrzeit des Stellwerks beim Siegeln (UTC, ms seit 1970), Teil der Signatur.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_ms: Option<u64>,
 }
 
-fn message(kind: SealKind, head: &Hash32) -> Vec<u8> {
-    let mut m = b"railit-seal-v1\n".to_vec();
+fn message(kind: SealKind, head: &Hash32, time_ms: Option<u64>) -> Vec<u8> {
+    let mut m = match time_ms {
+        None => b"railit-seal-v1\n".to_vec(),
+        Some(_) => b"railit-seal-v2\n".to_vec(),
+    };
     m.extend_from_slice(kind.label().as_bytes());
     m.push(b'\n');
+    if let Some(t) = time_ms {
+        m.extend_from_slice(t.to_string().as_bytes());
+        m.push(b'\n');
+    }
     m.extend_from_slice(head);
     m
 }
 
-/// Siegelt den Stand `head`.
-pub(crate) fn make(kind: SealKind, key: &SigningKey, head: &Hash32) -> Seal {
-    let signature = key.sign(&message(kind, head));
+/// Uhrzeit (UTC, ms seit 1970).
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// Siegelt den Stand `head` mit der Uhrzeit `time_ms`.
+pub(crate) fn make(kind: SealKind, key: &SigningKey, head: &Hash32, time_ms: u64) -> Seal {
+    let signature = key.sign(&message(kind, head, Some(time_ms)));
     Seal {
         head: to_hex(head),
         key: to_hex(key.verifying_key().as_bytes()),
         signature: to_hex(&signature.to_bytes()),
+        time_ms: Some(time_ms),
+    }
+}
+
+/// Zeitspanne der Siegel einer Datei; die Zeiten dürfen nicht zurücklaufen.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SealTimes {
+    pub(crate) first: Option<u64>,
+    pub(crate) last: Option<u64>,
+}
+
+impl SealTimes {
+    pub(crate) fn add(&mut self, seal: &Seal) -> Result<(), String> {
+        let Some(t) = seal.time_ms else {
+            return Ok(());
+        };
+        if self.last.is_some_and(|l| t < l) {
+            return Err("Zeit des Siegels liegt vor der des vorherigen".into());
+        }
+        self.first.get_or_insert(t);
+        self.last = Some(t);
+        Ok(())
     }
 }
 
@@ -86,13 +129,16 @@ pub(crate) fn check(
         return Err("Siegel mit wechselndem Schlüssel".into());
     }
     let sig = from_hex64(&seal.signature).ok_or("Signatur ungültig")?;
-    key.verify(&message(kind, head), &Signature::from_bytes(&sig))
-        .map_err(|_| "Signatur falsch".to_string())?;
+    key.verify(
+        &message(kind, head, seal.time_ms),
+        &Signature::from_bytes(&sig),
+    )
+    .map_err(|_| "Signatur falsch".to_string())?;
     *seen = Some(seal.key.clone());
     Ok(())
 }
 
-fn from_hex64(text: &str) -> Option<[u8; 64]> {
+pub(crate) fn from_hex64(text: &str) -> Option<[u8; 64]> {
     let (a, b) = (text.get(..64)?, text.get(64..)?);
     let (a, b) = (from_hex32(a)?, from_hex32(b)?);
     let mut out = [0u8; 64];

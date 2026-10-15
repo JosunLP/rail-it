@@ -36,6 +36,7 @@
 
 pub mod audit;
 mod seal;
+pub mod witness;
 
 pub use seal::Seal;
 
@@ -454,7 +455,12 @@ impl<W: Write> JournalWriter<W> {
             return Ok(());
         };
         sealer.since = 0;
-        let seal = seal::make(seal::SealKind::Journal, &sealer.key, &self.prev);
+        let seal = seal::make(
+            seal::SealKind::Journal,
+            &sealer.key,
+            &self.prev,
+            seal::now_ms(),
+        );
         self.write(&Entry::Seal(seal))?;
         self.sealed = true;
         Ok(())
@@ -683,6 +689,8 @@ pub struct Summary {
     pub seal_key: Option<String>,
     /// Einträge nach dem letzten Siegel (noch nicht bestätigt).
     pub unsealed: u64,
+    /// Uhrzeit des ersten und des letzten Siegels mit Zeitstempel (UTC, ms seit 1970).
+    pub sealed_ms: Option<(u64, u64)>,
 }
 
 /// Empfänger der gelesenen Einträge.
@@ -736,6 +744,7 @@ struct LineReader {
     last_ms: u64,
     seals: u64,
     seal_key: Option<String>,
+    seal_times: seal::SealTimes,
     unsealed: u64,
     /// Eingaben des vorigen Zyklus, Grundlage für die nächste Änderung.
     last_inputs: Vec<Input>,
@@ -759,6 +768,7 @@ impl LineReader {
             last_ms: 0,
             seals: 0,
             seal_key: None,
+            seal_times: seal::SealTimes::default(),
             unsealed: 0,
             last_inputs: Vec::new(),
             snapshot_after: None,
@@ -799,6 +809,7 @@ impl LineReader {
                     self.trusted.as_ref(),
                     &mut self.seal_key,
                 )
+                .and_then(|()| self.seal_times.add(&s))
                 .map_err(|message| JournalError::Seal {
                     line: number,
                     message,
@@ -904,6 +915,7 @@ impl LineReader {
             safety: self.safety.clone(),
             seals: self.seals,
             seal_key: self.seal_key.clone(),
+            sealed_ms: self.seal_times.first.zip(self.seal_times.last),
             unsealed: self.unsealed,
         })
     }

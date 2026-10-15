@@ -354,6 +354,9 @@ enum AuditCommand {
         /// Ungültig, wenn kein Siegel vorhanden ist.
         #[arg(long)]
         require_seal: bool,
+        /// Öffentlicher Schlüssel eines Zeugen: prüft die Zeugnisse in `<Datei>.witness`.
+        #[arg(long)]
+        witness_key: Option<PathBuf>,
     },
     /// Letzte Einträge vom Dienst (online; Rolle mit Auditrecht).
     Show {
@@ -516,6 +519,18 @@ enum JournalCommand {
         /// Ungültig, wenn kein Siegel vorhanden ist.
         #[arg(long)]
         require_seal: bool,
+        /// Öffentlicher Schlüssel eines Zeugen: prüft die Zeugnisse in `<Datei>.witness`.
+        #[arg(long)]
+        witness_key: Option<PathBuf>,
+    },
+    /// Bezeugt den aktuellen Stand eines Journals oder Auditprotokolls mit dem Schlüssel
+    /// eines Zeugen und der eigenen Uhrzeit (Zeugnis in `<Datei>.witness`).
+    Witness {
+        /// Journal oder Auditprotokoll.
+        file: PathBuf,
+        /// Geheimer Schlüssel des Zeugen.
+        #[arg(long)]
+        key: PathBuf,
     },
     /// Spielt ein Journal gegen das Plan-Image ab und vergleicht Ausgaben und Prüfpunkte.
     Replay {
@@ -836,7 +851,17 @@ fn main() -> ExitCode {
             file,
             key,
             require_seal,
-        }) => journal::verify(&file, key.as_deref(), require_seal, output),
+            witness_key,
+        }) => journal::verify(
+            &file,
+            key.as_deref(),
+            require_seal,
+            witness_key.as_deref(),
+            output,
+        ),
+        Command::Journal(JournalCommand::Witness { file, key }) => {
+            journal::witness(&file, &key, output)
+        }
         Command::Journal(JournalCommand::Follow {
             file,
             plan,
@@ -860,7 +885,14 @@ fn main() -> ExitCode {
             file,
             key,
             require_seal,
-        }) => admin::audit_verify(&file, key.as_deref(), require_seal, output),
+            witness_key,
+        }) => admin::audit_verify(
+            &file,
+            key.as_deref(),
+            require_seal,
+            witness_key.as_deref(),
+            output,
+        ),
         Command::Auth(AuthCommand::Token { name }) => admin::token(&name, output),
         Command::SelfCmd(SelfCommand::Info) => selfcmd::info(output),
         Command::SelfCmd(SelfCommand::Check) => selfcmd::check(output),

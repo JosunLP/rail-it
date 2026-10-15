@@ -17,6 +17,7 @@ pub(crate) fn audit_verify(
     path: &Path,
     key: Option<&Path>,
     require_seal: bool,
+    witness_key: Option<&Path>,
     output: Output,
 ) -> ExitCode {
     let key = match key
@@ -41,6 +42,16 @@ pub(crate) fn audit_verify(
         }),
         other => other,
     };
+    let witnesses = match (&result, witness_key) {
+        (Ok(_), Some(wk)) => match crate::journal::check_witnesses(path, wk) {
+            Ok(list) => Some(list),
+            Err(e) => {
+                eprintln!("Zeugnisse UNGÜLTIG: {e}");
+                return ExitCode::from(EXIT_INVALID);
+            }
+        },
+        _ => None,
+    };
     match result {
         Ok(s) => {
             match output {
@@ -48,6 +59,7 @@ pub(crate) fn audit_verify(
                     "valid": true, "records": s.records, "last_seq": s.last_seq,
                     "head": s.head, "truncated": s.truncated,
                     "seals": s.seals, "seal_key": s.seal_key, "unsealed": s.unsealed,
+                    "sealed_ms": s.sealed_ms, "witnessed": witnesses,
                 })),
                 Output::Text => {
                     println!(
@@ -62,6 +74,16 @@ pub(crate) fn audit_verify(
                             s.unsealed
                         ),
                         None => println!("nicht gesiegelt"),
+                    }
+                    if let Some((first, last)) = s.sealed_ms {
+                        println!(
+                            "Siegel von {} bis {} (Uhr des Stellwerks)",
+                            railit_journal::witness::format_utc(first),
+                            railit_journal::witness::format_utc(last)
+                        );
+                    }
+                    if let Some(list) = &witnesses {
+                        crate::journal::print_witnesses(list);
                     }
                     if s.truncated {
                         println!("Hinweis: letzte Zeile unvollständig (Abbruch beim Schreiben).");

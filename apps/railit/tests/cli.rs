@@ -382,6 +382,59 @@ fn journal_verify_and_replay() {
     );
 }
 
+/// REQ-JRN-010: Ein Zeuge bestätigt den Stand eines Journals; `verify --witness-key` prüft
+/// die Zeugnisse, eine fremde Zeugin oder ein umgeschriebenes Journal fallen auf.
+#[test]
+fn journal_witness() {
+    let (_, journal) = short_journal("witness");
+    let dir = journal.parent().unwrap().to_path_buf();
+    let j = journal.to_str().unwrap();
+    let _ = std::fs::remove_file(dir.join("bs.journal.witness"));
+    let notary = dir.join("notar");
+    let other = dir.join("andere");
+    railit(&["plan", "keygen", notary.to_str().unwrap()]);
+    railit(&["plan", "keygen", other.to_str().unwrap()]);
+    let key = |p: &PathBuf, ext: &str| p.with_extension(ext).to_str().unwrap().to_string();
+    let out = railit(&["journal", "witness", j, "--key", &key(&notary, "key")]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .contains("bezeugt am")
+    );
+    let out = railit(&[
+        "journal",
+        "verify",
+        j,
+        "--witness-key",
+        &key(&notary, "pub"),
+    ]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("bezeugt: Zeile"), "{stdout}");
+    let out = railit(&["journal", "verify", j, "--witness-key", &key(&other, "pub")]);
+    assert_eq!(out.status.code(), Some(1));
+    // Neu geschriebenes Journal (andere Kette): Das Zeugnis passt nicht mehr.
+    let (_, rewritten) = short_journal("witness-rewritten");
+    std::fs::copy(
+        dir.join("bs.journal.witness"),
+        rewritten.with_extension("journal.witness"),
+    )
+    .unwrap();
+    let text = std::fs::read_to_string(&rewritten).unwrap();
+    let mut lines: Vec<&str> = text.lines().collect();
+    lines.pop();
+    std::fs::write(&rewritten, lines.join("\n") + "\n").unwrap();
+    let out = railit(&[
+        "journal",
+        "verify",
+        rewritten.to_str().unwrap(),
+        "--witness-key",
+        &key(&notary, "pub"),
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+}
+
 /// REQ-JRN-008/009: Mitlesen und Diagnose über die Kommandozeile.
 #[test]
 fn journal_follow_state_and_events() {
