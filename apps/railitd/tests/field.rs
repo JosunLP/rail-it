@@ -480,7 +480,7 @@ fn standby_takes_over_a_part_of_the_network() {
         "--journal",
         journal.to_str().unwrap(),
         "--standby-gate-ms",
-        "8000",
+        "30000",
     ]);
     let east = spawn(&[
         "--field-id",

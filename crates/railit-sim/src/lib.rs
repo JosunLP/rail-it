@@ -16,9 +16,12 @@
 //!   von einem Strang auf eine falsch liegende Weiche, schneidet er sie auf.
 //! - An einer Netzgrenze verlässt er das Netz, am Prellbock bleibt er stehen.
 //! - Leuchtet an einem Halt zeigenden Signal das Ersatzsignal (Zs1), fährt er vorbei.
-//! - Mit PZB-Fahrzeuggerät bremst ihn ein wirksamer Gleismagnet (1000 Hz bei „Halt
-//!   erwarten“, 2000 Hz am Halt zeigenden Hauptsignal) zwangsweise; er steht nach dem
-//!   Bremsweg v²/2a (REQ-MOV-007).
+//! - Mit PZB-Fahrzeuggerät überwacht ihn die PZB 90 (REQ-MOV-007): Am 1000-Hz-Magneten
+//!   („Halt erwarten“) muss der Triebfahrzeugführer binnen 4 s die Wachsamkeitstaste drücken,
+//!   danach überwacht eine Kurve der Zugart die Geschwindigkeit; 250 m vor dem Halt zeigenden
+//!   Hauptsignal prüft der 500-Hz-Magnet die Geschwindigkeit und eine zweite Kurve; der
+//!   2000-Hz-Magnet am Halt zeigenden Hauptsignal bremst immer. Eine Verletzung löst die
+//!   Zwangsbremsung aus; der Zug steht nach dem Bremsweg v²/2a.
 //! - Bahnübergänge schließen mit einer Schließzeit; befährt ein Zug einen nicht
 //!   geschlossenen Bahnübergang, meldet der Simulator das.
 
@@ -45,7 +48,71 @@ pub struct SimConfig {
     pub lx_close_time: Duration,
     /// Verzögerung bei einer Zwangsbremsung durch die PZB in mm/s².
     pub pzb_deceleration_mm_s2: u32,
+    /// Zugart der PZB 90 (bestimmt die Überwachungskurven).
+    pub pzb_class: PzbClass,
+    /// Der Triebfahrzeugführer, der Halt missachtet, betätigt am 1000-Hz-Magneten die
+    /// Wachsamkeitstaste (sonst Zwangsbremsung nach 4 s).
+    pub pzb_acknowledge: bool,
 }
+
+/// Zugart der PZB 90 (REQ-MOV-007).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PzbClass {
+    /// Obere Zugart (Vmax 165 km/h).
+    O,
+    /// Mittlere Zugart (Vmax 125 km/h).
+    #[default]
+    M,
+    /// Untere Zugart (Vmax 105 km/h).
+    U,
+}
+
+/// Überwachungswerte einer Zugart: Höchstgeschwindigkeit, Ziel und Dauer der
+/// 1000-Hz-Kurve, Prüfgeschwindigkeit am 500-Hz-Magneten und Ziel der 500-Hz-Kurve.
+struct PzbCurves {
+    v_max: u64,
+    v_1000: u64,
+    t_1000_ms: u64,
+    v_500_check: u64,
+    v_500: u64,
+}
+
+impl PzbClass {
+    const fn curves(self) -> PzbCurves {
+        match self {
+            Self::O => PzbCurves {
+                v_max: 165,
+                v_1000: 85,
+                t_1000_ms: 23_000,
+                v_500_check: 65,
+                v_500: 45,
+            },
+            Self::M => PzbCurves {
+                v_max: 125,
+                v_1000: 70,
+                t_1000_ms: 29_000,
+                v_500_check: 50,
+                v_500: 35,
+            },
+            Self::U => PzbCurves {
+                v_max: 105,
+                v_1000: 55,
+                t_1000_ms: 38_000,
+                v_500_check: 40,
+                v_500: 25,
+            },
+        }
+    }
+}
+
+/// Wirkweg der 1000-Hz-Überwachung (mm).
+const PZB_1000_RANGE: u64 = 1_250_000;
+/// Abstand des 500-Hz-Magneten vor dem Hauptsignal und Wirkweg seiner Überwachung (mm).
+const PZB_500_AHEAD: u64 = 250_000;
+/// Weg, auf dem die 500-Hz-Kurve auf ihr Ziel fällt (mm).
+const PZB_500_CURVE: u64 = 153_000;
+/// Frist für die Wachsamkeitstaste (ms).
+const PZB_ACK_MS: u64 = 4_000;
 
 impl Default for SimConfig {
     fn default() -> Self {
@@ -54,6 +121,8 @@ impl Default for SimConfig {
             point_length: Length::from_mm(30_000),
             lx_close_time: Duration::from_millis(8_000),
             pzb_deceleration_mm_s2: 1_000,
+            pzb_class: PzbClass::M,
+            pzb_acknowledge: true,
         }
     }
 }
@@ -186,8 +255,12 @@ pub enum SimEvent {
         train: String,
         /// Signal mit dem Gleismagneten.
         signal: String,
-        /// Frequenz des Gleismagneten (1000 Hz am Vorsignal, 2000 Hz am Hauptsignal).
+        /// Frequenz des Gleismagneten (1000 Hz am Vorsignal, 500 Hz 250 m vor dem
+        /// Hauptsignal, 2000 Hz am Hauptsignal).
         frequency_hz: u16,
+        /// Auslöser: `magnet` (2000 Hz), `wachsamkeit` (Taste nicht betätigt) oder `kurve`
+        /// (Überwachungskurve überschritten).
+        cause: String,
         /// Geschwindigkeit bei Beginn der Bremsung.
         speed_kmh: u16,
     },
@@ -306,6 +379,12 @@ struct Train {
     pzb: bool,
     /// Zwangsbremsung: aktuelle Geschwindigkeit in mm/s und bisheriger Bremsweg in mm.
     braking: Option<(u64, u64)>,
+    /// Zurückgelegter Weg der Spitze (mm).
+    odometer: u64,
+    /// Wirksamer 1000-Hz-Magnet: Zeitpunkt (ms), Wegstand und Signal.
+    pzb_1000: Option<(u64, u64, SignalId)>,
+    /// Wirksamer 500-Hz-Magnet: Wegstand und Hauptsignal.
+    pzb_500: Option<(u64, SignalId)>,
 }
 
 /// Simulierte Feldebene.
@@ -667,6 +746,9 @@ impl Simulator {
             cab: spec.etcs.then(HashSet::new),
             pzb: spec.pzb,
             braking: None,
+            odometer: 0,
+            pzb_1000: None,
+            pzb_500: None,
         });
         Ok(())
     }
@@ -882,17 +964,8 @@ impl Simulator {
         ) {
             return;
         }
-        let mut remaining = match t.braking {
-            // Zwangsbremsung: gleichmäßig verzögert bis zum Stillstand.
-            Some((v, distance)) => {
-                let a = u64::from(self.cfg.pzb_deceleration_mm_s2);
-                let v1 = v.saturating_sub(a * dt / 1000);
-                let step = (v + v1) * dt / 2000;
-                t.braking = Some((v1, distance + step));
-                step
-            }
-            None => u64::from(t.speed.as_kmh()) * dt * 10 / 36,
-        };
+        self.pzb_supervise(t);
+        let mut remaining = self.step_distance(t, dt);
 
         loop {
             let Some(seg) = t.path.back().cloned() else {
@@ -953,6 +1026,7 @@ impl Simulator {
                 t.reference = (s, true);
             }
             t.head += advance_by;
+            t.odometer += advance_by;
             remaining -= advance_by;
 
             // Signal erreicht (auch am Gleisende) oder Strecke dieses Zyklus verbraucht.
@@ -982,33 +1056,100 @@ impl Simulator {
         self.trim_tail(t);
     }
 
-    /// PZB: Ein wirksamer Gleismagnet vor der Zugspitze löst die Zwangsbremsung aus, sobald
-    /// die Spitze ihn erreicht (REQ-MOV-007).
-    fn pzb_check(&mut self, t: &mut Train, seg: &Seg, remaining: &mut u64) {
-        if t.pzb
-            && t.ignore_signals
-            && t.braking.is_none()
-            && let Some((offset, signal, hz)) = self.pzb_magnet(seg, t.head, *remaining)
-        {
-            let delta = offset.saturating_sub(t.head);
-            if let Some(s) = self.passing(t, seg, t.head, t.head.saturating_add(delta)) {
-                t.reference = (s, true);
+    /// Weg der Zugspitze in `dt` ms; bei Zwangsbremsung gleichmäßig verzögert bis zum
+    /// Stillstand.
+    fn step_distance(&self, t: &mut Train, dt: u64) -> u64 {
+        match t.braking {
+            Some((v, distance)) => {
+                let a = u64::from(self.cfg.pzb_deceleration_mm_s2);
+                let v1 = v.saturating_sub(a * dt / 1000);
+                let step = (v + v1) * dt / 2000;
+                t.braking = Some((v1, distance + step));
+                step
             }
-            t.head = t.head.saturating_add(delta);
-            *remaining = remaining.saturating_sub(delta);
-            let v = u64::from(t.speed.as_kmh()) * 10_000 / 36;
-            t.braking = Some((v, 0));
-            self.events.push(SimEvent::PzbBrake {
-                train: t.name.clone(),
-                signal: self
-                    .net
-                    .signal(signal)
-                    .map(|s| s.name.clone())
-                    .unwrap_or_default(),
-                frequency_hz: hz,
-                speed_kmh: t.speed.as_kmh(),
-            });
+            None => u64::from(t.speed.as_kmh()) * dt * 10 / 36,
         }
+    }
+
+    /// PZB: Erreicht die Zugspitze einen wirksamen Gleismagneten, gilt er ab dort
+    /// (REQ-MOV-007): 2000 Hz bremst sofort, 1000 Hz und 500 Hz beginnen ihre Überwachung.
+    fn pzb_check(&mut self, t: &mut Train, seg: &Seg, remaining: &mut u64) {
+        if !(t.pzb && t.ignore_signals && t.braking.is_none()) {
+            return;
+        }
+        // 500 Hz: 250 m vor dem nächsten Hauptsignal, wenn es Halt zeigt.
+        if let NodeRef::Track(track) = seg.node
+            && let Some((signal, d)) = self.main_signal_ahead(track, travel(seg.entry), t.head)
+            && d <= PZB_500_AHEAD
+            && self.signal_report(signal) != Some(SignalReport::Proceed)
+            && !self.substitute(signal)
+            && t.pzb_500.is_none_or(|(_, s)| s != signal)
+        {
+            t.pzb_500 = Some((t.odometer, signal));
+        }
+        let Some((offset, signal, hz)) = self.pzb_magnet(seg, t.head, *remaining) else {
+            return;
+        };
+        let delta = offset.saturating_sub(t.head);
+        if let Some(s) = self.passing(t, seg, t.head, t.head.saturating_add(delta)) {
+            t.reference = (s, true);
+        }
+        t.head = t.head.saturating_add(delta);
+        t.odometer = t.odometer.saturating_add(delta);
+        *remaining = remaining.saturating_sub(delta);
+        if hz == 2000 {
+            self.pzb_brake(t, signal, 2000, "magnet");
+        } else if t.pzb_1000.is_none_or(|(_, _, s)| s != signal) {
+            t.pzb_1000 = Some((self.now.as_millis(), t.odometer, signal));
+        }
+    }
+
+    /// Überwachung der PZB 90: Wachsamkeitstaste und Kurven der Zugart.
+    fn pzb_supervise(&mut self, t: &mut Train) {
+        if !(t.pzb && t.ignore_signals && t.braking.is_none()) {
+            return;
+        }
+        let c = self.cfg.pzb_class.curves();
+        let v = u64::from(t.speed.as_kmh());
+        if let Some((since, odo, signal)) = t.pzb_1000 {
+            let elapsed = self.now.as_millis().saturating_sub(since);
+            let limit = c.v_max - (c.v_max - c.v_1000) * elapsed.min(c.t_1000_ms) / c.t_1000_ms;
+            if t.odometer.saturating_sub(odo) > PZB_1000_RANGE {
+                t.pzb_1000 = None;
+            } else if !self.cfg.pzb_acknowledge && elapsed >= PZB_ACK_MS {
+                self.pzb_brake(t, signal, 1000, "wachsamkeit");
+                return;
+            } else if v > limit {
+                self.pzb_brake(t, signal, 1000, "kurve");
+                return;
+            }
+        }
+        if let Some((odo, signal)) = t.pzb_500 {
+            let s = t.odometer.saturating_sub(odo);
+            let limit =
+                c.v_500_check - (c.v_500_check - c.v_500) * s.min(PZB_500_CURVE) / PZB_500_CURVE;
+            if s > PZB_500_AHEAD {
+                t.pzb_500 = None;
+            } else if v > limit {
+                self.pzb_brake(t, signal, 500, "kurve");
+            }
+        }
+    }
+
+    fn pzb_brake(&mut self, t: &mut Train, signal: SignalId, hz: u16, cause: &str) {
+        let v = u64::from(t.speed.as_kmh()) * 10_000 / 36;
+        t.braking = Some((v, 0));
+        self.events.push(SimEvent::PzbBrake {
+            train: t.name.clone(),
+            signal: self
+                .net
+                .signal(signal)
+                .map(|s| s.name.clone())
+                .unwrap_or_default(),
+            frequency_hz: hz,
+            cause: cause.into(),
+            speed_kmh: t.speed.as_kmh(),
+        });
     }
 
     /// REQ-MOV-007: Nächster wirksamer PZB-Gleismagnet im Element `seg` zwischen `head` und
@@ -1019,9 +1160,9 @@ impl Simulator {
     ///   Hauptsignal Halt zeigt („Halt erwarten“).
     ///
     /// Wirksam wird ein Magnet nur für Züge, deren Triebfahrzeugführer Halt zeigende Signale
-    /// überfährt (`ignore_signals`); wer die Signale beachtet, bremst rechtzeitig selbst.
-    /// Vereinfachung: Wer Halt zeigende Signale überfährt, bremst auch nach dem
-    /// 1000-Hz-Magneten nicht; die Überwachung bremst ihn deshalb dort sofort.
+    /// überfährt (`ignore_signals`); wer die Signale beachtet, bremst rechtzeitig selbst. Der
+    /// 500-Hz-Magnet 250 m vor dem Hauptsignal steht nicht im Netz; er gilt dort als
+    /// vorhanden, wenn das Hauptsignal Halt zeigt.
     fn pzb_magnet(&self, seg: &Seg, head: u64, ahead: u64) -> Option<(u64, SignalId, u16)> {
         let NodeRef::Track(track) = seg.node else {
             return None;

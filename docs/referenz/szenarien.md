@@ -17,6 +17,8 @@ railit scenario run tests/scenarios/*.toml [--channels 2|3] [--node] [--journal]
 | `network` | Pfad | | Netz (TOML oder railML), relativ zur Szenariodatei |
 | `cycle_ms` | Zahl | 100 | Zykluszeit |
 | `point_move_time_ms` | Zahl | Simulator | Umlaufzeit der Weichen |
+| `pzb_class` | `O` · `M` · `U` | Simulator | Zugart der PZB 90 (Vorgabe `M`) |
+| `pzb_acknowledge` | bool | Simulator | Wer Halt missachtet, drückt am 1000-Hz-Magneten die Wachsamkeitstaste (Vorgabe `true`) |
 | `lx_close_time_ms` | Zahl | Simulator | Schließzeit der Bahnübergänge |
 | `points` | Tabelle | | Anfangslagen: `{ W1 = "left" }` |
 | `rules` | Tabelle | Lehrregelwerk | Zeiten des Regelwerks, siehe unten |

@@ -265,11 +265,12 @@ fn pzb_2000_hz_brakes_at_a_stop_signal() {
     assert!((s.trains()[0].head_offset_m - head).abs() < f64::EPSILON);
 }
 
-/// REQ-MOV-007: 1000 Hz am Mehrabschnittssignal, das „Halt erwarten“ zeigt: Der Zug kommt vor
-/// dem Halt zeigenden Ausfahrsignal zum Stehen, ohne es zu überfahren. Ohne PZB überfährt er
-/// es; wer die Signale beachtet, wird nie gebremst.
+/// REQ-MOV-007: Fahrt bei „Halt erwarten“ mit 72 km/h, der Triebfahrzeugführer quittiert,
+/// bremst aber nicht: Die 1000-Hz-Kurve der Zugart M (125 → 70 km/h) greift nicht, der
+/// 500-Hz-Magnet 250 m vor dem Halt zeigenden N2 (72 > 50 km/h) bremst den Zug, der vor N2
+/// steht. Ohne PZB überfährt er N2; wer die Signale beachtet, wird nie gebremst.
 #[test]
-fn pzb_1000_hz_stops_before_the_announced_signal() {
+fn pzb_500_hz_stops_before_the_announced_signal() {
     for (pzb, ignore) in [(true, true), (false, true), (true, false)] {
         let mut s = sim();
         let a = signal(&s, "A");
@@ -286,8 +287,9 @@ fn pzb_1000_hz_stops_before_the_announced_signal() {
         let (brakes, stopped, spad) = pzb_events(&mut s);
         match (pzb, ignore) {
             (true, true) => {
-                assert_eq!(brakes, [("A".to_string(), 1000)]);
-                assert!(stopped.is_some());
+                assert_eq!(brakes, [("N2".to_string(), 500)]);
+                let d = stopped.unwrap();
+                assert!((195..=205).contains(&d), "{d}");
                 assert_eq!(spad, 0, "Ausfahrsignal überfahren");
                 assert_eq!(s.trains()[0].state, TrainState::Braked);
             }
@@ -301,4 +303,83 @@ fn pzb_1000_hz_stops_before_the_announced_signal() {
             }
         }
     }
+}
+
+fn pzb_sim(cfg: SimConfig) -> Simulator {
+    let net = railit_import::toml_format::parse(EXAMPLE).unwrap().topology;
+    Simulator::new(net, cfg)
+}
+
+/// REQ-MOV-007: Ohne Wachsamkeitstaste bremst die PZB 4 s nach dem 1000-Hz-Magneten; über der
+/// Höchstgeschwindigkeit der Zugart sofort; langsam unter der 500-Hz-Prüfgeschwindigkeit
+/// greift erst die 500-Hz-Kurve.
+#[test]
+fn pzb_90_supervision() {
+    let start = |cfg: SimConfig, kmh: u16| {
+        let mut s = pzb_sim(cfg);
+        let a = signal(&s, "A");
+        s.apply(&[Command::SetSignal {
+            signal: a,
+            aspect: Aspect::Proceed,
+        }]);
+        s.add_train(TrainSpec {
+            speed: Speed::from_kmh(kmh),
+            ..pzb_train("T", a, true)
+        })
+        .unwrap();
+        s
+    };
+    let brake_of = |s: &Simulator| -> Option<(u16, String)> {
+        s.clone().take_events().iter().find_map(|e| match e {
+            SimEvent::PzbBrake {
+                frequency_hz,
+                cause,
+                ..
+            } => Some((*frequency_hz, cause.clone())),
+            _ => None,
+        })
+    };
+
+    // Keine Wachsamkeitstaste: Bremsung nach 4 s.
+    let mut s = start(
+        SimConfig {
+            pzb_acknowledge: false,
+            ..SimConfig::default()
+        },
+        30,
+    );
+    run(&mut s, 3);
+    assert_eq!(brake_of(&s), None);
+    run(&mut s, 2);
+    assert_eq!(brake_of(&s), Some((1000, "wachsamkeit".into())));
+
+    // Zugart U, 110 km/h: über der Höchstgeschwindigkeit 105 km/h.
+    let mut s = start(
+        SimConfig {
+            pzb_class: PzbClass::U,
+            ..SimConfig::default()
+        },
+        110,
+    );
+    run(&mut s, 1);
+    assert_eq!(brake_of(&s), Some((1000, "kurve".into())));
+
+    // 40 km/h, Zugart M: 500 Hz prüft 50 km/h, die Kurve fällt auf 35 km/h und erreicht
+    // 40 km/h nach rund 102 m hinter dem Magneten.
+    let mut s = start(SimConfig::default(), 40);
+    run(&mut s, 120);
+    assert_eq!(brake_of(&s), Some((500, "kurve".into())));
+    let events = s.take_events();
+    let stopped = events.iter().find_map(|e| match e {
+        SimEvent::PzbStopped {
+            braking_distance_m, ..
+        } => Some(*braking_distance_m),
+        _ => None,
+    });
+    assert_eq!(stopped, Some(62));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SimEvent::SignalPassedAtDanger { .. }))
+    );
 }

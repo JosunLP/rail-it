@@ -73,7 +73,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-MOV-002 | H-009 | – | `pictures_are_consistent`<br>`signal_drop_turns_announcement_back`<br>`crates/railit-movement/tests/aspects.rs` |
 | REQ-MOV-003 | H-009 | – | `display_of_dark_and_substitute`<br>Analyse (Architektur) |
 | REQ-MOV-004 | H-001, H-002, H-009 | `crates/railit-movement/src/etcs.rs` | `etcs_authority_follows_the_routes_with_proceed`<br>`etcs_authority_carries_speed_and_survives_passing`<br>`crates/railit-movement/tests/aspects.rs` |
-| REQ-MOV-007 | H-009 | `crates/railit-sim/src/lib.rs` | `pzb_2000_hz_brakes_at_a_stop_signal`<br>`pzb_1000_hz_stops_before_the_announced_signal`<br>`crates/railit-sim/tests/sim.rs`<br>Szenario 26 |
+| REQ-MOV-007 | H-009 | `crates/railit-sim/src/lib.rs` | `pzb_2000_hz_brakes_at_a_stop_signal`<br>`pzb_500_hz_stops_before_the_announced_signal`<br>`pzb_90_supervision`<br>`crates/railit-sim/tests/sim.rs`<br>Szenario 26 |
 
 ## [journal.md](../requirements/journal.md)
 

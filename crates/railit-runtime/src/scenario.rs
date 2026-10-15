@@ -121,6 +121,12 @@ struct Header {
     point_move_time_ms: Option<u64>,
     #[serde(default)]
     lx_close_time_ms: Option<u64>,
+    /// Zugart der PZB 90 (`O`, `M`, `U`).
+    #[serde(default)]
+    pzb_class: Option<railit_sim::PzbClass>,
+    /// Der Triebfahrzeugführer betätigt die Wachsamkeitstaste.
+    #[serde(default)]
+    pzb_acknowledge: Option<bool>,
     #[serde(default)]
     points: BTreeMap<String, PointPosition>,
     #[serde(default)]
@@ -639,6 +645,12 @@ fn run_str_with(source: &str, base: &Path, opts: RunOptions) -> Result<Outcome, 
     let mut cfg = SimConfig::default();
     if let Some(ms) = header.point_move_time_ms {
         cfg.point_move_time = Duration::from_millis(ms);
+    }
+    if let Some(class) = header.pzb_class {
+        cfg.pzb_class = class;
+    }
+    if let Some(ack) = header.pzb_acknowledge {
+        cfg.pzb_acknowledge = ack;
     }
     if let Some(ms) = header.lx_close_time_ms {
         cfg.lx_close_time = Duration::from_millis(ms);
