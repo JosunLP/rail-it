@@ -26,7 +26,9 @@
 //! Stellwerk stellt nur seine Bereiche (REQ-COM-010).
 
 use std::collections::HashMap;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::SocketAddr;
+
+use crate::redundant::{ChannelStatus, RedundantUdp};
 use std::time::Instant;
 
 use railit_kernel::{Aspect, Command, Input};
@@ -655,10 +657,11 @@ impl FieldClient {
     }
 }
 
-/// [`FieldClient`] über UDP mit der Wanduhr als RaSTA-Zeit.
+/// [`FieldClient`] über UDP mit der Wanduhr als RaSTA-Zeit; mit mehreren Kanälen über die
+/// Redundanzschicht (REQ-COM-011).
 pub struct UdpField {
     client: FieldClient,
-    socket: UdpSocket,
+    link: RedundantUdp,
     clock: Instant,
 }
 
@@ -668,34 +671,23 @@ impl UdpField {
     /// # Errors
     /// Ungültige Elementnamen oder Socketfehler.
     pub fn connect(net: &Topology, field: SocketAddr, id: u32) -> Result<Self, String> {
-        Self::connect_areas(net, field, id, None)
+        Self::connect_areas(net, &[field], id, None)
     }
 
-    /// Wie [`Self::connect`], nur an die Objektsteuerungen der Stellbereiche `areas`.
+    /// Wie [`Self::connect`], nur an die Objektsteuerungen der Stellbereiche `areas`; je
+    /// Adresse in `fields` ein Kanal.
     ///
     /// # Errors
     /// Ungültige Elementnamen, unbekannte Stellbereiche oder Socketfehler.
     pub fn connect_areas(
         net: &Topology,
-        field: SocketAddr,
+        fields: &[SocketAddr],
         id: u32,
         areas: Option<&[String]>,
     ) -> Result<Self, String> {
-        let local: SocketAddr = if field.is_ipv4() {
-            ([0, 0, 0, 0], 0).into()
-        } else {
-            ([0u16; 8], 0).into()
-        };
-        let socket = UdpSocket::bind(local).map_err(|e| format!("UDP: {e}"))?;
-        socket
-            .connect(field)
-            .map_err(|e| format!("Feldrechner {field}: {e}"))?;
-        socket
-            .set_nonblocking(true)
-            .map_err(|e| format!("UDP: {e}"))?;
         Ok(Self {
             client: FieldClient::for_areas(net, id, areas)?,
-            socket,
+            link: RedundantUdp::connect(fields).map_err(|e| format!("Feldrechner: {e}"))?,
             clock: Instant::now(),
         })
     }
@@ -704,24 +696,24 @@ impl UdpField {
         u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
-    fn send(&self, pdus: Vec<Vec<u8>>) {
+    fn send(&mut self, pdus: Vec<Vec<u8>>) {
         for pdu in pdus {
-            // Verlust ist für RaSTA ein gewöhnlicher Fall.
-            let _ = self.socket.send(&pdu);
+            self.link.send(&pdu);
         }
     }
 
     /// Holt eingegangene PDUs ab und überwacht die Verbindungen.
     pub fn advance(&mut self) {
-        let mut buf = [0u8; MAX_PDU];
         let now = self.ms();
-        while let Ok(n) = self.socket.recv(&mut buf) {
-            if let Some(pdu) = buf.get(..n) {
-                self.client.receive(now, pdu);
-            }
-        }
+        let client = &mut self.client;
+        self.link.receive(&mut |_, pdu| client.receive(now, pdu));
         let out = self.client.tick(now);
         self.send(out);
+    }
+
+    /// Zustand der Kanäle.
+    pub fn channels(&self) -> Vec<ChannelStatus> {
+        self.link.status()
     }
 
     /// Meldungen für den Kern.

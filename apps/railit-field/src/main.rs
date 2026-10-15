@@ -14,7 +14,7 @@
 //! Umschalters. Es ist eine Prüfstands- und Ausbildungsschnittstelle; ohne `--token` lauscht
 //! sie nur auf der Loopback-Adresse.
 
-use std::net::{SocketAddr, UdpSocket};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -27,7 +27,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use clap::Parser;
-use railit_adapters::net::{FieldServer, MAX_PDU, PRIMARY_ID, STANDBY_ID, SWITCH_MS};
+use railit_adapters::net::{FieldServer, PRIMARY_ID, STANDBY_ID, SWITCH_MS};
+use railit_adapters::redundant::RedundantUdp;
 use railit_sim::{Fault, SimConfig, Simulator, TrainSpec};
 use railit_topology::{ElementRef, Topology};
 use railit_types::{Length, Speed, Tick};
@@ -44,9 +45,10 @@ struct Args {
     /// Netzbeschreibung (rail-it-TOML).
     #[arg(long)]
     network: PathBuf,
-    /// UDP-Adresse für RaSTA.
+    /// UDP-Adresse für RaSTA. Mehrfach angegeben: je Adresse ein Kanal der
+    /// RaSTA-Redundanzschicht (REQ-COM-011).
     #[arg(long, default_value = "127.0.0.1:7900")]
-    listen: SocketAddr,
+    listen: Vec<SocketAddr>,
     /// HTTP-Adresse der Simulationssteuerung.
     #[arg(long, default_value = "127.0.0.1:7901")]
     control: SocketAddr,
@@ -78,6 +80,7 @@ fn fail(msg: &str) -> ExitCode {
 /// Gemeinsamer Zustand von RaSTA-Takt und Steuerung.
 struct Field {
     server: Mutex<FieldServer>,
+    link: Mutex<RedundantUdp>,
     topology: Topology,
     token: Option<String>,
 }
@@ -88,35 +91,40 @@ impl Field {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+
+    fn link(&self) -> MutexGuard<'_, RedundantUdp> {
+        self.link
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 /// RaSTA-Takt: PDUs annehmen, im festen Takt das Feld fortschreiben und senden.
-fn run_rasta(socket: &UdpSocket, field: &Field, step: Duration) {
+fn run_rasta(field: &Field, step: Duration) {
     let clock = Instant::now();
     let mut next = Duration::ZERO;
-    let mut buf = [0u8; MAX_PDU];
     loop {
-        match socket.recv_from(&mut buf) {
-            Ok((n, from)) => {
-                if let Some(pdu) = buf.get(..n) {
-                    field.lock().receive(from, pdu);
-                }
+        let mut received = Vec::new();
+        field
+            .link()
+            .receive(&mut |from, pdu| received.push((from, pdu.to_vec())));
+        if !received.is_empty() {
+            let mut server = field.lock();
+            for (from, pdu) in &received {
+                server.receive(*from, pdu);
             }
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(e) => tracing::warn!(%e, "UDP"),
         }
         let elapsed = clock.elapsed();
         if elapsed >= next {
             next = elapsed + step;
             let ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
             let out = field.lock().tick(Tick::from_millis(ms));
-            for (to, pdu) in out {
-                let _ = socket.send_to(&pdu, to);
+            let mut link = field.link();
+            for (_, pdu) in out {
+                link.send(&pdu);
             }
+        } else if received.is_empty() {
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 }
@@ -142,6 +150,30 @@ async fn status(State(field): State<Arc<Field>>) -> Json<Value> {
 
 async fn links(State(field): State<Arc<Field>>) -> Json<Value> {
     Json(json!(field.lock().links()))
+}
+
+/// Kanäle der RaSTA-Redundanzschicht.
+async fn channels(State(field): State<Arc<Field>>) -> Json<Value> {
+    Json(json!(field.link().status()))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChannelFault {
+    down: bool,
+}
+
+/// Stört einen Kanal oder hebt die Störung auf (Prüfstand).
+async fn channel_fault(
+    State(field): State<Arc<Field>>,
+    Path(channel): Path<usize>,
+    Json(body): Json<ChannelFault>,
+) -> ApiResult {
+    field
+        .link()
+        .set_down(channel, body.down)
+        .map_err(|e| error(StatusCode::NOT_FOUND, e))?;
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 async fn trains(State(field): State<Arc<Field>>) -> Json<Value> {
@@ -256,6 +288,8 @@ fn router(field: Arc<Field>) -> Router {
         .route("/v1/health", get(health))
         .route("/v1/status", get(status))
         .route("/v1/field/links", get(links))
+        .route("/v1/field/channels", get(channels))
+        .route("/v1/field/channels/{channel}", post(channel_fault))
         .route("/v1/sim/trains", get(trains).post(add_train))
         .route("/v1/sim/trains/{name}", delete(remove_train))
         .route("/v1/sim/faults", post(fault))
@@ -302,27 +336,29 @@ fn main() -> ExitCode {
         Ok(s) => s,
         Err(e) => return fail(&e),
     };
+    let link = match RedundantUdp::bind(&args.listen) {
+        Ok(l) => l,
+        Err(e) => return fail(&e),
+    };
+    let udp = link
+        .local_addrs()
+        .iter()
+        .zip(&args.listen)
+        .map(|(a, l)| a.map_or_else(|| l.to_string(), |a| a.to_string()))
+        .collect::<Vec<_>>()
+        .join(",");
     let field = Arc::new(Field {
         server: Mutex::new(server),
+        link: Mutex::new(link),
         topology,
         token: args.token.clone(),
     });
-    let socket = match UdpSocket::bind(args.listen) {
-        Ok(s) => s,
-        Err(e) => return fail(&format!("{}: {e}", args.listen)),
-    };
     let step = Duration::from_millis(args.step_ms.max(1));
-    if let Err(e) = socket.set_read_timeout(Some(step / 4 + Duration::from_millis(1))) {
-        return fail(&format!("UDP: {e}"));
-    }
-    let udp = socket
-        .local_addr()
-        .map_or_else(|_| args.listen.to_string(), |a| a.to_string());
     {
         let field = Arc::clone(&field);
         let spawned = std::thread::Builder::new()
             .name("rasta".into())
-            .spawn(move || run_rasta(&socket, &field, step));
+            .spawn(move || run_rasta(&field, step));
         if let Err(e) = spawned {
             return fail(&format!("Faden: {e}"));
         }

@@ -130,9 +130,11 @@ struct Args {
     /// Feldrechner (`railit-field`) über RaSTA/UDP.
     #[arg(long, value_enum, default_value_t = FieldArg::Direct)]
     field: FieldArg,
-    /// Adresse des Feldrechners (UDP, mit `--field remote`).
+    /// Adresse des Feldrechners (UDP, mit `--field remote`). Mehrfach angegeben: je Adresse
+    /// ein Kanal der RaSTA-Redundanzschicht (in derselben Reihenfolge wie `--listen` des
+    /// Feldrechners).
     #[arg(long, value_name = "ADRESSE", required_if_eq("field", "remote"))]
-    field_addr: Option<SocketAddr>,
+    field_addr: Vec<SocketAddr>,
     /// RaSTA-Kennung dieses Stellwerks beim Feldrechner (hexadezimal); Vorgabe: Hauptrechner
     /// 0A000001, mit `--standby` Bereitschaftsrechner 0A000002.
     #[arg(long, value_name = "ID", value_parser = parse_id)]
@@ -319,10 +321,11 @@ fn load(args: &Args) -> Result<(Topology, Runtime<ServiceField>), String> {
     }
     let cycle = railit_types::Duration::from_millis(args.cycle_ms.max(1));
     let sim = Simulator::new(net.clone(), SimConfig::default());
-    let sim = match (args.field, args.field_addr) {
+    let sim = match (args.field, args.field_addr.first()) {
         (FieldArg::Direct, _) => ServiceField::Local(Box::new(sim) as DynField),
         (FieldArg::Eulynx, _) => ServiceField::Local(Box::new(EulynxField::new(sim)?)),
-        (FieldArg::Remote, Some(addr)) => {
+        (FieldArg::Remote, Some(_)) => {
+            let addrs = &args.field_addr;
             if args.speed != 1 {
                 return Err(
                     "der Feldrechner läuft in Echtzeit: --field remote nur mit --speed 1".into(),
@@ -333,7 +336,12 @@ fn load(args: &Args) -> Result<(Topology, Runtime<ServiceField>), String> {
             } else {
                 railit_runtime::railit_adapters::net::PRIMARY_ID
             });
-            tracing::info!(%addr, id = format!("{id:08X}"), "Feld über den Feldrechner");
+            tracing::info!(
+                addr = ?addrs,
+                channels = addrs.len(),
+                id = format!("{id:08X}"),
+                "Feld über den Feldrechner"
+            );
             if !args.areas.is_empty() && args.field_id.is_none() {
                 tracing::warn!(
                     "verteilte Stellbereiche am Feldrechner: jeder Dienst braucht eine eigene \
@@ -341,7 +349,7 @@ fn load(args: &Args) -> Result<(Topology, Runtime<ServiceField>), String> {
                 );
             }
             let areas = (!args.areas.is_empty()).then_some(args.areas.as_slice());
-            ServiceField::remote(&net, addr, id, areas, field_control(args))?
+            ServiceField::remote(&net, addrs, id, areas, field_control(args))?
         }
         (FieldArg::Remote, None) => return Err("--field remote verlangt --field-addr".into()),
     };

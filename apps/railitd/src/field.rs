@@ -32,17 +32,17 @@ pub(crate) enum ServiceField {
 }
 
 impl ServiceField {
-    /// Entferntes Feld des Netzes `net` unter `addr` mit der RaSTA-Kennung `id`; mit
+    /// Entferntes Feld des Netzes `net` unter `addrs` (je Adresse ein Kanal) mit der RaSTA-Kennung `id`; mit
     /// `areas` nur die Objektsteuerungen dieser Stellbereiche.
     pub(crate) fn remote(
         net: &Topology,
-        addr: SocketAddr,
+        addrs: &[SocketAddr],
         id: u32,
         areas: Option<&[String]>,
         control: Option<FieldControl>,
     ) -> Result<Self, String> {
         Ok(Self::Remote(
-            Box::new(UdpField::connect_areas(net, addr, id, areas)?),
+            Box::new(UdpField::connect_areas(net, addrs, id, areas)?),
             control,
         ))
     }

@@ -135,6 +135,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-COM-008 | H-014, H-015 | `apps/railit-field/src/main.rs`<br>`apps/railitd/src/field.rs`<br>`crates/railit-adapters/src/ils.rs`<br>`crates/railit-adapters/src/net.rs`<br>`crates/railit-fuzz/src/lib.rs` | `leader_connects_and_controls_the_field`<br>`remote_field_over_rasta`<br>`field_network_must_match`<br>`apps/railitd/tests/field.rs`<br>`crates/railit-adapters/tests/net.rs` |
 | REQ-COM-009 | H-012, H-014 | – | `telegram_roundtrip_and_rejects`<br>`interrupted_link_delivers_nothing_and_recovers`<br>`corruption_is_never_delivered`<br>`permission_stays_exclusive_over_disturbed_ils`<br>`direction_change_waits_for_the_link`<br>`all_scenarios_pass_over_sci_ils`<br>`borders_over_sci_ils`<br>`sci_ils`<br>`apps/railitd/tests/api.rs`<br>`crates/railit-runtime/tests/ils.rs`<br>`crates/railit-runtime/tests/scenarios.rs`<br>Szenario 22 |
 | REQ-COM-010 | H-012, H-014 | `crates/railit-adapters/src/ils.rs`<br>`crates/railit-adapters/src/net.rs` | `split_processes_exchange_over_the_network`<br>`border_between_processes`<br>`areas_in_separate_processes`<br>`switch_per_area`<br>`standby_takes_over_a_part_of_the_network`<br>`ils_net`<br>`apps/railitd/tests/api.rs`<br>`apps/railitd/tests/field.rs`<br>`crates/railit-adapters/tests/net.rs`<br>`crates/railit-runtime/tests/ils.rs` |
+| REQ-COM-011 | H-014 | `apps/railit-field/src/main.rs`<br>`crates/railit-adapters/src/net.rs`<br>`crates/railit-adapters/src/redundant.rs`<br>`crates/railit-fuzz/src/lib.rs`<br>`crates/railit-rasta/src/redundancy.rs` | `duplicates_from_the_second_channel_are_filtered`<br>`a_lost_frame_comes_over_the_other_channel`<br>`a_gap_is_skipped_after_t_seq`<br>`diagnosis_counts_missing_frames_per_channel`<br>`redundant_channels_survive_a_channel_failure`<br>`rasta_redundancy`<br>`apps/railitd/tests/field.rs` |
 
 ## [plan.md](../requirements/plan.md)
 
@@ -205,4 +206,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-132 Anforderungen, davon 132 mit Nachweis.
+133 Anforderungen, davon 133 mit Nachweis.

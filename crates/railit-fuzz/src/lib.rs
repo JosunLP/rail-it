@@ -11,6 +11,7 @@
 //! | [`timetable`] | Fahrplan |
 //! | [`journal`] | Prüfung der Hashkette eines Journals |
 //! | [`rasta`] | RaSTA-Verbindung nach dem Aufbau unter beliebigen PDUs |
+//! | [`rasta_redundancy`] | Redundanzschicht: beliebige Rahmen auf beliebigen Kanälen; jede Nummer höchstens einmal |
 //! | [`sci`] | EULYNX-SCI-Telegramme (Rundreise) |
 //! | [`sci_ils`] | SCI-ILS-Telegramme zwischen Stellwerken (Rundreise, bitgleich) |
 //! | [`ils_net`] | SCI-ILS aus dem Netz: beliebige PDUs an ein Stellwerk mit Nachbarn in einem anderen Prozess |
@@ -356,6 +357,51 @@ pub fn rasta(data: &[u8]) {
         server.receive(now, pdu, &mut |_| {});
         let _ = server.tick(now);
         while server.poll_transmit(&mut buf).is_some() {}
+        rest = tail;
+    }
+}
+
+/// Redundanzschicht (REQ-COM-011): Die Bytes werden in Rahmen (Kanalbyte, Längenbyte,
+/// Inhalt) zerlegt; dazwischen echte Rahmen eines Senders. Keine Panik; jede ausgelieferte
+/// Nachricht des echten Senders höchstens einmal.
+///
+/// # Panics
+/// Wenn eine Nachricht doppelt ausgeliefert wird (Fund für den Fuzzer).
+pub fn rasta_redundancy(data: &[u8]) {
+    use railit_rasta::redundancy::{MAX_FRAME, RedConfig, Redundancy};
+    let mut tx = Redundancy::new(RedConfig::default());
+    let mut rx = Redundancy::new(RedConfig::default());
+    let mut seen = std::collections::HashSet::new();
+    let mut rest = data;
+    let mut now = 0u32;
+    let mut n = 0u32;
+    let mut deliver = |pdu: &[u8]| {
+        // Echte Nachrichten tragen „RT“ und ihre Nummer.
+        if let Some(tag) = pdu.strip_prefix(b"RT")
+            && tag.len() == 4
+        {
+            assert!(seen.insert(tag.to_vec()), "doppelt ausgeliefert");
+        }
+    };
+    while let Some((&channel, tail)) = rest.split_first() {
+        let Some((&len, tail)) = tail.split_first() else {
+            break;
+        };
+        let k = usize::from(len).min(tail.len());
+        let (frame, tail) = tail.split_at(k);
+        now = now.wrapping_add(13);
+        let _ = rx.receive(now, usize::from(channel % 3), frame, &mut deliver);
+        let mut out = [0u8; MAX_FRAME];
+        let mut msg = *b"RT\0\0\0\0";
+        msg[2..].copy_from_slice(&n.to_le_bytes());
+        n = n.wrapping_add(1);
+        if let Some(len) = tx.wrap(&msg, &mut out) {
+            let frame = out.get(..len).unwrap_or_default();
+            for ch in 0..=usize::from(channel % 2) {
+                let _ = rx.receive(now, ch, frame, &mut deliver);
+            }
+        }
+        rx.tick(now, &mut deliver);
         rest = tail;
     }
 }

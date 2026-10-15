@@ -43,3 +43,26 @@ Allokator); `railit-node` ist dieselbe Runtime als Serverprogramm.
 
 Für Prüfung und Ausbildung lassen sich alle Bereiche im Gleichschritt auf Knoten im Dienst
 rechnen: `railitd … --node lockstep` bzw. `railit scenario run --node …`.
+
+## Redundante Übertragung zum Feld
+
+Zwischen Stellwerk und Feldrechner kann RaSTA über **zwei bis vier Kanäle** laufen, in der
+Anlage über getrennte Netze. Die Redundanzschicht unter der Sicherheitsschicht sendet jede PDU
+über alle Kanäle, liefert sie beim Empfänger genau einmal und in Reihenfolge aus und wartet auf
+eine Lücke höchstens `t_seq` (50 ms) auf einen anderen Kanal (REQ-COM-011). Fällt ein Kanal
+aus, merkt die Sicherheitsschicht nichts davon.
+
+```sh
+railit-field --network netz.toml --listen 10.1.0.5:7900 --listen 10.2.0.5:7900 …
+railitd … --field remote --field-addr 10.1.0.5:7900 --field-addr 10.2.0.5:7900
+```
+
+Die Reihenfolge der Adressen bestimmt die Kanäle und muss auf beiden Seiten gleich sein; beide
+Seiten brauchen gleich viele Kanäle. Mit einer Adresse geht RaSTA ohne Redundanzschicht.
+`GET /v1/field/channels` des Feldrechners zeigt je Kanal empfangene und im letzten
+Diagnosefenster (200 Nachrichten) fehlende Rahmen; `POST /v1/field/channels/{k}` mit
+`{"down": true}` stört einen Kanal am Prüfstand.
+
+Die Redundanzschicht ist nicht sicherheitsrelevant: Sie trägt keinen eigenen Prüfwert, Doppel,
+Vertauschung und Verfälschung fängt die Sicherheitsschicht (Sicherheitscode, Sequenznummern,
+Zeitstempel).

@@ -43,6 +43,7 @@ fn seeds_pass() {
     assert!(journal.len() > 1000, "Beispieljournal");
     railit_fuzz::journal(&journal);
     railit_fuzz::rasta(&[]);
+    railit_fuzz::rasta_redundancy(&[]);
     railit_fuzz::sci(&[]);
     railit_fuzz::sci_ils(&[]);
     railit_fuzz::ils_net(&[]);
@@ -114,6 +115,7 @@ proptest! {
         railit_fuzz::timetable(&data);
         railit_fuzz::journal(&data);
         railit_fuzz::rasta(&data);
+        railit_fuzz::rasta_redundancy(&data);
         railit_fuzz::sci(&data);
         railit_fuzz::sci_ils(&data);
         railit_fuzz::ils_net(&data);

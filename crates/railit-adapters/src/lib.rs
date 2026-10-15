@@ -16,6 +16,7 @@
 
 pub mod ils;
 pub mod net;
+pub mod redundant;
 pub mod sci;
 
 use std::collections::{HashMap, VecDeque};

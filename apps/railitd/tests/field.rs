@@ -216,6 +216,77 @@ fn remote_field_over_rasta() {
     assert_eq!(code, 200, "{body}");
 }
 
+/// REQ-COM-011: Zwei Kanäle der Redundanzschicht; fällt einer aus, läuft der Betrieb über
+/// den anderen weiter, ohne dass eine RaSTA-Verbindung abbricht.
+#[test]
+fn redundant_channels_survive_a_channel_failure() {
+    let mut cmd = Command::new(field_binary());
+    cmd.args([
+        "--network",
+        EXAMPLE,
+        "--listen",
+        "127.0.0.1:0",
+        "--listen",
+        "127.0.0.1:0",
+        "--control",
+        "127.0.0.1:0",
+    ])
+    .env_remove("RAILIT_FIELD_TOKEN");
+    let field = Process::spawn(cmd, "railit-field: ");
+    let (udp, control) = field.line.split_once(' ').unwrap();
+    let (a, b) = udp.strip_prefix("udp://").unwrap().split_once(',').unwrap();
+    let control = control.to_string();
+    let plan = plan("redundant");
+    let d = railitd(&[
+        "--plan",
+        plan.to_str().unwrap(),
+        "--field",
+        "remote",
+        "--field-addr",
+        a,
+        "--field-addr",
+        b,
+        "--field-control",
+        &control,
+    ]);
+    let url = d.line.clone();
+    let all_up = || {
+        get(&format!("{url}/v1/field/links"))
+            .1
+            .as_array()
+            .is_some_and(|l| !l.is_empty() && l.iter().all(|x| x["up"] == true))
+    };
+    wait("Verbindungen über zwei Kanäle", all_up);
+    let received = |k: usize| {
+        get(&format!("{control}/v1/field/channels")).1[k]["received"]
+            .as_u64()
+            .unwrap()
+    };
+    wait("beide Kanäle tragen", || {
+        received(0) > 0 && received(1) > 0
+    });
+
+    // Kanal 0 fällt aus: Die Verbindungen bleiben, Kanal 1 trägt allein.
+    let (code, _) = post(
+        &format!("{control}/v1/field/channels/0"),
+        Some(json!({"down": true})),
+    );
+    assert_eq!(code, 200);
+    let before = received(1);
+    assert_eq!(post(&format!("{url}/v1/routes/A-N1/set"), None).0, 200);
+    wait("A-N1 auf Fahrt", || route_phase(&url, "A-N1") == "proceed");
+    assert!(received(1) > before);
+    let (_, links) = get(&format!("{url}/v1/field/links"));
+    assert!(
+        links.as_array().unwrap().iter().all(|l| l["up"] == true),
+        "{links}"
+    );
+    assert_eq!(
+        get(&format!("{control}/v1/field/channels")).1[0]["down"],
+        true
+    );
+}
+
 #[test]
 fn field_network_must_match() {
     let (_field, udp, control) = start_field();

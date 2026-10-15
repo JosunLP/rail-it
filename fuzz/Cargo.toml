@@ -62,6 +62,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "rasta_redundancy"
+path = "fuzz_targets/rasta_redundancy.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "sci"
 path = "fuzz_targets/sci.rs"
 test = false
