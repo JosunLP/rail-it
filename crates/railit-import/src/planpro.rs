@@ -15,7 +15,8 @@
 //! | `TOP_Knoten` mit zwei Kanten                     | Verbindung zweier Gleisenden              |
 //! | `Signal` (`Signal_Real`, `Signal_Art`, `Signalsystem`) | Haupt-, Mehrabschnitts-, Vor- oder Sperrsignal; `Block_Signal` als Selbstblocksignal |
 //! | `BUE_Anlage`                                     | Bahnübergang                              |
-//! | `W_Kr_Gsp_Komponente` mit `Kreuzung`, zwei Lagen | Kreuzung ohne bewegliche Teile (Kreuzungsweichen: Fehler) |
+//! | `W_Kr_Gsp_Komponente` mit `Kreuzung`, zwei Lagen | Kreuzung ohne bewegliche Teile |
+//! | `W_Kr_Anlage` mit `W_Kr_Art` `DKW`/`EKW`         | Kreuzungsweiche aus Zungenpaaren `<Name>a…d`, Kanten `<Name>.1…4`, Kreuzung `<Name>.x` |
 //! | `FMA_Komponente` (`ID_FMAgrenze`)                | Grenze der Gleisfreimeldung               |
 //! | `FMA_Anlage` → `Gleis_Abschnitt` (`Bezeichnung`)  | Name des Gleisfreimeldeabschnitts         |
 //!
@@ -134,6 +135,8 @@ struct Micro {
     lxs: Vec<Named>,
     /// Kreuzungen ohne bewegliche Teile: Name und beide Kreuzungsstellen.
     crossings: Vec<(String, [Spot; 2])>,
+    /// Kreuzungsweichen: Name und ob doppelt (DKW).
+    slips: Vec<(String, bool)>,
     detectors: Vec<Named>,
     tvds: Vec<Tvd>,
 }
@@ -501,8 +504,28 @@ fn read(r: &mut Reader, root: Node<'_, '_>) -> Micro {
         });
     }
     read_crossings(r, &containers, &edges, &mut micro);
+    read_slips(r, &containers, &mut micro);
     read_detection(r, &containers, &edges, &mut micro);
     micro
+}
+
+/// Kreuzungsweichen (REQ-TOP-017): `W_Kr_Anlage` mit `W_Kr_Art` `DKW` bzw. `EKW`. Ihre Teile
+/// – Zungenpaare `<Name>a` … `<Name>d`, Kanten `<Name>.1` … `<Name>.4`, Kreuzung `<Name>.x`
+/// und Freimeldeabschnitt `<Name>` – stehen als gewöhnliche Objekte in der Planung; beim
+/// Aufbau des Netzes wird geprüft, dass sie wie eine Kreuzungsweiche verbunden sind.
+fn read_slips(r: &mut Reader, containers: &[Node<'_, '_>], micro: &mut Micro) {
+    for n in objects(containers, "W_Kr_Anlage").collect::<Vec<_>>() {
+        let ctx = Reader::context(n);
+        let double = match wert(n, &["W_Kr_Anlage_Allg", "W_Kr_Art"]) {
+            Some("DKW") => true,
+            Some("EKW") => false,
+            _ => continue,
+        };
+        match designation(n) {
+            Some(name) => micro.slips.push((name, double)),
+            None => r.errors.push(diag(ctx, "Kreuzungsweiche ohne Bezeichnung")),
+        }
+    }
 }
 
 /// Kreuzungen ohne bewegliche Teile: `W_Kr_Gsp_Komponente` mit `Kreuzung` und je einer Lage
@@ -583,7 +606,7 @@ fn read_switches(
         if child(n, "Kreuzung").is_some() {
             if child(n, "Zungenpaar").is_some() {
                 r.errors
-                    .push(diag(ctx, "Kreuzungsweichen werden nicht unterstützt"));
+                    .push(diag(ctx, "Zungenpaar mit Kreuzung in einer Komponente: Kreuzungsweichen beschreibt rail-it als W_Kr_Anlage (W_Kr_Art DKW/EKW) aus Zungenpaaren, Kanten und Kreuzung"));
             }
             // Kreuzungen ohne bewegliche Teile liest read_crossings.
             continue;
@@ -987,8 +1010,21 @@ impl Micro {
         }
         let _ = writeln!(
             out,
-            "</tvdSections></assetsForInterlocking></assetsForInterlockings></interlocking></railML>"
+            "</tvdSections></assetsForInterlocking></assetsForInterlockings></interlocking>"
         );
+        if !self.slips.is_empty() {
+            let _ = write!(out, "<railit:operation>");
+            for (name, double) in &self.slips {
+                let _ = write!(
+                    out,
+                    "<railit:slip name=\"{}\" kind=\"{}\"/>",
+                    esc(name),
+                    if *double { "double" } else { "single" }
+                );
+            }
+            let _ = writeln!(out, "</railit:operation>");
+        }
+        let _ = writeln!(out, "</railML>");
         out
     }
 }
@@ -1229,6 +1265,15 @@ impl Micro {
             };
             m.crossings.push((name, [spot_of(a)?, spot_of(b)?]));
         }
+        for n in doc.descendants().filter(|c| {
+            c.is_element()
+                && local(c) == "slip"
+                && c.tag_name().namespace() == Some(railml::RAILIT_NAMESPACE)
+        }) {
+            let name = rattr(n, "name").ok_or("Kreuzungsweiche ohne Namen")?;
+            m.slips
+                .push((name.to_string(), rattr(n, "kind") == Some("double")));
+        }
         let mut det_ids: HashMap<&str, String> = HashMap::new();
         for n in rdesc(&doc, "trainDetectionElement") {
             let id = rattr(n, "id").ok_or("Gleisfreimeldeelement ohne id")?;
@@ -1409,6 +1454,19 @@ impl Micro {
             let _ = writeln!(o, "{:i$}<Kreuzung/>", "", i = ind + 2);
             close(&mut o, ind, "W_Kr_Gsp_Komponente");
         }
+        for (name, double) in &self.slips {
+            open(&mut o, ind, "W_Kr_Anlage", &guid("W_Kr_Anlage", name));
+            bez(&mut o, name);
+            let _ = writeln!(o, "{:i$}<W_Kr_Anlage_Allg>", "", i = ind + 2);
+            w(
+                &mut o,
+                ind + 4,
+                "W_Kr_Art",
+                if *double { "DKW" } else { "EKW" },
+            );
+            let _ = writeln!(o, "{:i$}</W_Kr_Anlage_Allg>", "", i = ind + 2);
+            close(&mut o, ind, "W_Kr_Anlage");
+        }
         for s in &self.signals {
             open(&mut o, ind, "Signal", &s.id);
             punkt(&mut o, s.spot);
@@ -1476,9 +1534,13 @@ pub fn export(net: &Topology) -> Result<(String, Vec<String>), String> {
     if net.areas().len() > 0 {
         return Err("Netze mit Stellbereichen lassen sich nicht nach PlanPro ausgeben".into());
     }
-    if net.couplings().len() > 0 {
+    if net
+        .couplings()
+        .any(|c| !net.slips().any(|x| x.points.contains(&c.points[0])))
+    {
         return Err(
-            "Kreuzungsweichen und gekoppelte Weichen gibt der PlanPro-Export noch nicht aus".into(),
+            "Gekoppelte Weichen außerhalb von Kreuzungsweichen gibt der PlanPro-Export nicht aus"
+                .into(),
         );
     }
     let mut warnings = Vec::new();

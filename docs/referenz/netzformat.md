@@ -206,7 +206,8 @@ der Zielzustand). Abbildung:
 | Knoten mit einer Kante: `Ende` / sonst | Prellbock / Netzgrenze |
 | `Signal` mit `Signal_Real_Aktiv_Schirm` | `Hauptsignal`, `Hauptsperrsignal`, `Zugdeckungssignal` → Hauptsignal; `Mehrabschnitts(sperr)signal` → Mehrabschnittssignal; `Vorsignal(wiederholer)` → Vorsignal; `Sperrsignal` → Rangiersignal; `Signalsystem` Ks oder HV; `Signal_Funktion` `Block_Signal` → Selbstblock |
 | `BUE_Anlage` | Bahnübergang |
-| `W_Kr_Gsp_Komponente` mit `Kreuzung` und zwei Lagen | Kreuzung (Kreuzungsweichen: Fehler; der Export lehnt Netze mit Kreuzungsweichen oder gekoppelten Weichen ab) |
+| `W_Kr_Gsp_Komponente` mit `Kreuzung` und zwei Lagen | Kreuzung ohne bewegliche Teile |
+| `W_Kr_Anlage` mit `W_Kr_Art` `DKW` bzw. `EKW` | Kreuzungsweiche: Zungenpaare `<Name>a…d`, Kanten `<Name>.1…4`, Kreuzung `<Name>.x` und Abschnitt `<Name>` als gewöhnliche Objekte, Aufbau beim Import geprüft (REQ-TOP-017); gekoppelte Weichen außerhalb von Kreuzungsweichen lehnt der Export ab |
 | `FMA_Komponente` (`ID_FMAgrenze`), `FMA_Anlage` → `Gleis_Abschnitt` | Freimeldegrenze, Name des Abschnitts |
 
 Hauptsignale müssen wie in jedem rail-it-Netz an einer Freimeldegrenze stehen (REQ-PLN-010);

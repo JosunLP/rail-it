@@ -9,6 +9,7 @@ use railit_topology::{NodeRef, Port, PortRef, SignalKind, SignalSystem, Topology
 const BEISPIELSTADT: &str = include_str!("../../../examples/beispielstadt.toml");
 const NORDBAHN: &str = include_str!("../../../examples/nordbahn.toml");
 const KREUZUNG: &str = include_str!("../../../examples/kreuzung.toml");
+const DKW: &str = include_str!("../../../examples/dkw.toml");
 const HANDMADE: &str = include_str!("../../../examples/abzweig.ppxml");
 
 fn node_name(net: &Topology, n: NodeRef) -> String {
@@ -104,6 +105,16 @@ fn describe(net: &Topology) -> BTreeSet<String> {
             out.insert(format!("platform {} {} {signals:?}", s.name, p.name));
         }
     }
+    for c in net.couplings() {
+        let [a, b] = c.points.map(|p| net.point(p).unwrap().name.clone());
+        out.insert(format!("coupling {a} {b} {}", c.inverted));
+    }
+    for x in net.slips() {
+        let ends = x
+            .ends
+            .map(|e| format!("{}.{:?}", node_name(net, e.node), e.port));
+        out.insert(format!("slip {} {:?} {ends:?}", x.name, x.kind));
+    }
     out
 }
 
@@ -130,6 +141,22 @@ fn generated_corridor_survives_the_roundtrip() {
     let net = railit_import::generate::corridor(6, 2);
     let net = toml_format::parse(&net).unwrap().topology;
     roundtrip(&net);
+}
+
+/// REQ-TOP-015, REQ-TOP-017: auch mit doppelter und einfacher Kreuzungsweiche
+/// (`W_Kr_Anlage` mit `W_Kr_Art`).
+#[test]
+fn slips_survive_the_planpro_roundtrip() {
+    for source in [
+        DKW.to_string(),
+        DKW.replace("kind = \"double\"", "kind = \"single\""),
+    ] {
+        let net = toml_format::parse(&source).unwrap().topology;
+        assert_eq!(net.slips().len(), 1);
+        roundtrip(&net);
+        let (xml, _) = planpro::export(&net).unwrap();
+        assert!(xml.contains("<W_Kr_Art><Wert>"), "{xml}");
+    }
 }
 
 /// REQ-TOP-015, REQ-TOP-016: auch mit einer Kreuzung.
