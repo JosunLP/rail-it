@@ -14,6 +14,7 @@
 //! Umschalters. Es ist eine Prüfstands- und Ausbildungsschnittstelle; ohne `--token` lauscht
 //! sie nur auf der Loopback-Adresse.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -31,6 +32,7 @@ use railit_adapters::net::{FieldServer, PRIMARY_ID, STANDBY_ID, SWITCH_MS};
 use railit_adapters::redundant::RedundantUdp;
 use railit_sim::{Fault, SimConfig, Simulator, TrainSpec};
 use railit_topology::{ElementRef, Topology};
+use railit_types::SignalId;
 use railit_types::{Length, Speed, Tick};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -81,6 +83,7 @@ fn fail(msg: &str) -> ExitCode {
 struct Field {
     server: Mutex<FieldServer>,
     link: Mutex<RedundantUdp>,
+    radio: Mutex<Radio>,
     topology: Topology,
     token: Option<String>,
 }
@@ -92,10 +95,52 @@ impl Field {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    fn radio(&self) -> MutexGuard<'_, Radio> {
+        self.radio
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn link(&self) -> MutexGuard<'_, RedundantUdp> {
         self.link
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// So lange gilt die Fahrerlaubnis eines RBC ohne Erneuerung.
+const RADIO_TTL: Duration = Duration::from_secs(2);
+
+/// Funkstrecke zu den ETCS-Fahrzeuggeräten (Prüfstand, REQ-ETCS-004): Fahrerlaubnisse je
+/// Zug und RBC. Das Fahrzeuggerät erhält die Vereinigung der freigegebenen Signale aller RBC,
+/// deren Fahrerlaubnis noch gilt; eine Notbremsung eines RBC gilt allein.
+#[derive(Default)]
+struct Radio {
+    /// Je Zug: je RBC die Fahrerlaubnis und ihr Eingang.
+    grants: HashMap<String, HashMap<String, Grant>>,
+}
+
+/// Fahrerlaubnis eines RBC (`None`: Notbremsung) und ihr Eingang.
+type Grant = (Option<Vec<SignalId>>, Instant);
+
+impl Radio {
+    /// Fahrerlaubnisse, die sich geändert haben (abgelaufene fallen weg).
+    fn merged(&mut self, now: Instant) -> Vec<(String, Option<Vec<SignalId>>)> {
+        let mut out = Vec::new();
+        for (train, by_rbc) in &mut self.grants {
+            by_rbc.retain(|_, (_, at)| now.saturating_duration_since(*at) < RADIO_TTL);
+            let emergency = by_rbc.values().any(|(a, _)| a.is_none());
+            let mut signals: Vec<SignalId> = by_rbc
+                .values()
+                .filter_map(|(a, _)| a.clone())
+                .flatten()
+                .collect();
+            signals.sort_unstable();
+            signals.dedup();
+            out.push((train.clone(), (!emergency).then_some(signals)));
+        }
+        self.grants.retain(|_, by_rbc| !by_rbc.is_empty());
+        out
     }
 }
 
@@ -118,7 +163,14 @@ fn run_rasta(field: &Field, step: Duration) {
         if elapsed >= next {
             next = elapsed + step;
             let ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
-            let out = field.lock().tick(Tick::from_millis(ms));
+            let grants = field.radio().merged(Instant::now());
+            let out = {
+                let mut server = field.lock();
+                for (train, authority) in grants {
+                    server.simulator_mut().set_cab_authority(&train, authority);
+                }
+                server.tick(Tick::from_millis(ms))
+            };
             let mut link = field.link();
             for (_, pdu) in out {
                 link.send(&pdu);
@@ -221,6 +273,61 @@ async fn add_train(State(field): State<Arc<Field>>, Json(t): Json<NewTrain>) -> 
     Ok(Json(json!({ "status": "ok" })).into_response())
 }
 
+/// Positionsmeldungen der ETCS-Fahrzeuggeräte (Funkstrecke, REQ-ETCS-004).
+async fn etcs_reports(State(field): State<Arc<Field>>) -> Json<Value> {
+    let reports = field.lock().simulator().etcs_reports();
+    let topo = &field.topology;
+    Json(json!(
+        reports
+            .into_iter()
+            .map(|(train, signal, passed)| json!({
+                "train": train,
+                "signal": topo.signal(signal).map(|s| s.name.clone()),
+                "passed": passed,
+            }))
+            .collect::<Vec<_>>()
+    ))
+}
+
+/// Fahrerlaubnis eines RBC für ein Fahrzeuggerät.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EtcsAuthority {
+    /// Kennung des RBC (z. B. RaSTA-Kennung des Stellwerks).
+    rbc: String,
+    /// Passierbare Signale; `null` ist die Notbremsung.
+    passable: Option<Vec<String>>,
+}
+
+async fn etcs_authority(
+    State(field): State<Arc<Field>>,
+    Path(train): Path<String>,
+    Json(body): Json<EtcsAuthority>,
+) -> ApiResult {
+    let passable = match body.passable {
+        None => None,
+        Some(names) => Some(
+            names
+                .iter()
+                .map(|n| match field.topology.lookup(n) {
+                    Some(ElementRef::Signal(s)) => Ok(s),
+                    _ => Err(error(
+                        StatusCode::NOT_FOUND,
+                        format!("Signal „{n}“ nicht gefunden"),
+                    )),
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+    };
+    field
+        .radio()
+        .grants
+        .entry(train)
+        .or_default()
+        .insert(body.rbc, (passable, Instant::now()));
+    Ok(Json(json!({ "status": "ok" })).into_response())
+}
+
 async fn remove_train(State(field): State<Arc<Field>>, Path(name): Path<String>) -> ApiResult {
     if field.lock().simulator_mut().remove_train(&name) {
         Ok(Json(json!({ "status": "ok" })).into_response())
@@ -292,6 +399,8 @@ fn router(field: Arc<Field>) -> Router {
         .route("/v1/field/channels/{channel}", post(channel_fault))
         .route("/v1/sim/trains", get(trains).post(add_train))
         .route("/v1/sim/trains/{name}", delete(remove_train))
+        .route("/v1/sim/etcs", get(etcs_reports))
+        .route("/v1/sim/etcs/{train}", post(etcs_authority))
         .route("/v1/sim/faults", post(fault))
         .layer(middleware::from_fn_with_state(
             Arc::clone(&field),
@@ -350,6 +459,7 @@ fn main() -> ExitCode {
     let field = Arc::new(Field {
         server: Mutex::new(server),
         link: Mutex::new(link),
+        radio: Mutex::new(Radio::default()),
         topology,
         token: args.token.clone(),
     });

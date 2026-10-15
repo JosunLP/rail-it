@@ -11,12 +11,13 @@
 //!
 //! Die Kerne teilen keinen Zustand; sie sprechen nur über Grenzmeldungen miteinander.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::time::Instant;
 
 use railit_adapters::LinkFaults;
-use railit_adapters::ils::{IlsArea, IlsNet, IlsPair, IlsStatus, TrainHandover, UdpIls};
-use railit_etcs::{PositionReport, Rbc, RbcEvent, RbcView};
+use railit_adapters::ils::{IlsArea, IlsNet, IlsPair, IlsStatus, MaPreview, TrainHandover, UdpIls};
+use railit_etcs::{PositionReport, REMOTE_AREA, Rbc, RbcEvent, RbcView, RemoteAuthority};
 use railit_journal::{Header, JournalWriter, SafetyKind};
 use railit_kernel::{
     AuxOperation, BorderMessage, Command, Event, Input, Interlocking, OwnedState, Request,
@@ -122,9 +123,13 @@ type CabAuthorities = Vec<(String, Option<Vec<SignalId>>)>;
 pub const OPS_REQUEST_BASE: u64 = 1 << 62;
 
 /// Sicht des RBC auf die Kerne.
-struct RbcAreas<'a>(&'a [Area]);
+struct RbcAreas<'a>(&'a [Area], &'a HashMap<(usize, BorderId), RemoteAuthority>);
 
 impl RbcView for RbcAreas<'_> {
+    fn remote(&self, area: usize, border: BorderId) -> Option<&RemoteAuthority> {
+        self.1.get(&(area, border))
+    }
+
     fn plan(&self, area: usize) -> Option<&PlanView<'_>> {
         self.0.get(area).map(Area::plan)
     }
@@ -148,6 +153,49 @@ impl RbcView for RbcAreas<'_> {
     fn area_name(&self, area: usize) -> String {
         self.0.get(area).map(|a| a.name.clone()).unwrap_or_default()
     }
+}
+
+/// Vorschau ab der Grenze `(area, border)` eines Bereichs dieses Prozesses: über den
+/// Annäherungsabschnitt bis zum Einfahrsignal und weiter entlang der Fahrstraßen mit Fahrt
+/// (REQ-ETCS-004). Signale als Kennungen des Gesamtnetzes.
+fn preview_for(view: &RbcAreas<'_>, (area, border): (usize, BorderId)) -> Option<MaPreview> {
+    let a = view.0.get(area)?;
+    let plan = a.plan();
+    let entry = plan.border_entry_signal(border)?;
+    let approach = plan.border_approach_length(border)?.as_mm();
+    let overlap = plan.border_entry_overlap(border)?.as_mm();
+    let mut preview = MaPreview {
+        eoa_mm: approach,
+        danger_mm: approach.saturating_add(overlap),
+        end: plan.signal_name(entry).unwrap_or("?").to_string(),
+        sections: vec![(approach, None)],
+        passable: Vec::new(),
+    };
+    if let Some(ma) = railit_etcs::compute(view, area, entry, false) {
+        let mm = |v: u64| u32::try_from(v).unwrap_or(u32::MAX);
+        preview
+            .sections
+            .extend(ma.sections.iter().map(|s| (mm(s.length_mm), s.speed_kmh)));
+        preview.eoa_mm = approach.saturating_add(mm(ma.eoa_mm));
+        preview.danger_mm = approach.saturating_add(mm(ma.danger_point_mm));
+        preview.end = ma.end;
+        preview.passable = ma
+            .passable
+            .iter()
+            .filter_map(|&(ar, signal)| {
+                if ar == REMOTE_AREA {
+                    return Some(signal.raw());
+                }
+                view.0
+                    .get(ar)?
+                    .map
+                    .signals
+                    .get(signal.index()?)
+                    .map(|s| s.raw())
+            })
+            .collect();
+    }
+    Some(preview)
 }
 
 /// Sicht der Betriebsführung auf die Kerne.
@@ -428,7 +476,18 @@ pub struct Runtime<F> {
     ils_udp: Option<UdpIls>,
     /// Paare benachbarter Bereiche im Gesamtnetz (mit Bereichen dieses Prozesses).
     ils_pairs: Option<Vec<IlsPair>>,
+    /// Fahrerlaubnis-Vorschauen der RBC in anderen Prozessen je Grenze, mit Empfangszeit
+    /// (REQ-ETCS-004).
+    remote_ma: HashMap<(usize, BorderId), (RemoteAuthority, Tick)>,
+    /// Zuletzt gesendete eigene Vorschauen je Grenze, mit Sendezeit.
+    previews_sent: HashMap<(usize, BorderId), (MaPreview, Tick)>,
 }
+
+/// Eine Vorschau gilt so lange nach ihrem Empfang (der Nachbar sendet mindestens alle
+/// [`PREVIEW_REFRESH_MS`]).
+const PREVIEW_MAX_AGE_MS: u64 = 1500;
+/// Unveränderte Vorschauen werden in diesem Abstand wiederholt.
+const PREVIEW_REFRESH_MS: u64 = 500;
 
 impl<F: FieldAdapter> Runtime<F> {
     /// Runtime mit einem einzigen Kern für ein nicht aufgeteiltes Netz.
@@ -596,6 +655,8 @@ impl<F: FieldAdapter> Runtime<F> {
             ils: None,
             ils_udp: None,
             ils_pairs: None,
+            remote_ma: HashMap::new(),
+            previews_sent: HashMap::new(),
         }
     }
 
@@ -873,7 +934,52 @@ impl<F: FieldAdapter> Runtime<F> {
 
     /// Zustandsbild des RBC.
     pub fn etcs_snapshot(&self) -> Vec<railit_etcs::TrainSnapshot> {
-        self.rbc.snapshot(&RbcAreas(&self.areas))
+        self.rbc
+            .snapshot(&RbcAreas(&self.areas, &self.fresh_remote()))
+    }
+
+    /// Gültige Vorschauen der RBC in anderen Prozessen: jung genug und über eine stehende
+    /// Verbindung (REQ-ETCS-004).
+    fn fresh_remote(&self) -> HashMap<(usize, BorderId), RemoteAuthority> {
+        let Some(ils) = &self.ils else {
+            return HashMap::new();
+        };
+        self.remote_ma
+            .iter()
+            .filter(|(ep, (_, at))| {
+                self.now.saturating_since(*at).as_millis() <= PREVIEW_MAX_AGE_MS && ils.is_up(**ep)
+            })
+            .map(|(ep, (ma, _))| (*ep, ma.clone()))
+            .collect()
+    }
+
+    /// Meldet den RBC in anderen Prozessen je Grenze, wie weit eine Fahrerlaubnis ab der
+    /// Grenze in diesen Prozess hineinreicht: bei Änderung sofort, sonst alle
+    /// [`PREVIEW_REFRESH_MS`] (REQ-ETCS-004).
+    fn send_previews(&mut self, remote: &HashMap<(usize, BorderId), RemoteAuthority>) {
+        let Some(ils) = &self.ils else {
+            return;
+        };
+        let borders = ils.remote_borders();
+        let view = RbcAreas(&self.areas, remote);
+        let mut due = Vec::new();
+        for ep in borders {
+            let Some(preview) = preview_for(&view, ep) else {
+                continue;
+            };
+            let fresh = self.previews_sent.get(&ep).is_some_and(|(p, at)| {
+                *p == preview && self.now.saturating_since(*at).as_millis() < PREVIEW_REFRESH_MS
+            });
+            if !fresh {
+                due.push((ep, preview));
+            }
+        }
+        if let Some(ils) = &mut self.ils {
+            for (ep, preview) in due {
+                ils.send_preview(ep, preview.clone());
+                self.previews_sent.insert(ep, (preview, self.now));
+            }
+        }
     }
 
     /// RBC nach dem Zyklus: Positionsmeldungen der Fahrzeuggeräte übernehmen,
@@ -897,6 +1003,8 @@ impl<F: FieldAdapter> Runtime<F> {
                 })
             })
             .collect();
+        let remote = self.fresh_remote();
+        self.send_previews(&remote);
         if reports.is_empty() && self.rbc.cab_authorities().is_empty() {
             return (Vec::new(), Vec::new());
         }
@@ -911,7 +1019,9 @@ impl<F: FieldAdapter> Runtime<F> {
                 _ => None,
             })
             .collect();
-        let events = self.rbc.update(&RbcAreas(&self.areas), &reports, &revoked);
+        let events = self
+            .rbc
+            .update(&RbcAreas(&self.areas, &remote), &reports, &revoked);
         let cab = self
             .rbc
             .cab_authorities()
@@ -920,6 +1030,10 @@ impl<F: FieldAdapter> Runtime<F> {
                 let global = authority.map(|list| {
                     list.into_iter()
                         .filter_map(|(area, local)| {
+                            if area == REMOTE_AREA {
+                                // Signal eines Bereichs in einem anderen Prozess (REQ-ETCS-004).
+                                return Some(local);
+                            }
                             self.areas
                                 .get(area)?
                                 .map
@@ -1218,6 +1332,26 @@ impl<F: FieldAdapter> Runtime<F> {
                 {
                     *slot = Some(message);
                 }
+            }
+            // Fahrerlaubnis-Vorschauen der Nachbar-RBC (REQ-ETCS-004).
+            for (ep, sender, p) in ils.take_previews() {
+                let ma = RemoteAuthority {
+                    sections: p
+                        .sections
+                        .iter()
+                        .map(|(len, speed)| railit_etcs::Section {
+                            area: sender.clone(),
+                            route: None,
+                            length_mm: u64::from(*len),
+                            speed_kmh: *speed,
+                        })
+                        .collect(),
+                    end: p.end,
+                    eoa_mm: u64::from(p.eoa_mm),
+                    danger_point_mm: u64::from(p.danger_mm),
+                    passable: p.passable,
+                };
+                self.remote_ma.insert(ep, (ma, self.now));
             }
             // Vorgemeldete und übernommene Züge an das Einfahrsignal der Grenze (REQ-OPS-006).
             for ((area, border), h) in ils.take_trains() {

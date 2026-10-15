@@ -39,6 +39,32 @@ pub trait RbcView {
     fn peer(&self, area: usize, border: BorderId) -> Option<(usize, BorderId)>;
     /// Name eines Bereichs (für Anzeigen).
     fn area_name(&self, area: usize) -> String;
+    /// Vorausmeldung des RBC hinter einer Grenze zu einem Bereich in einem anderen Prozess
+    /// (REQ-ETCS-004); `None`, wenn keine gültige vorliegt.
+    fn remote(&self, _area: usize, _border: BorderId) -> Option<&RemoteAuthority> {
+        None
+    }
+}
+
+/// Bereich eines Signals in einem anderen Prozess: Die Kennung des Signals in
+/// [`Authority::passable`] ist dann die des Gesamtnetzes.
+pub const REMOTE_AREA: usize = usize::MAX;
+
+/// Fahrerlaubnis ab einer Grenze zu einem Bereich in einem anderen Prozess, wie das RBC
+/// dort sie vorausmeldet: über den Annäherungsabschnitt bis zum Einfahrsignal und weiter
+/// entlang der Fahrstraßen mit Fahrt (REQ-ETCS-004).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteAuthority {
+    /// Abschnitte ab der Grenze.
+    pub sections: Vec<Section>,
+    /// Ende der Fahrerlaubnis.
+    pub end: String,
+    /// Abstand von der Grenze bis zum Ende.
+    pub eoa_mm: u64,
+    /// Abstand von der Grenze bis zum Gefahrpunkt.
+    pub danger_point_mm: u64,
+    /// Passierbare Signale (Kennungen des Gesamtnetzes).
+    pub passable: Vec<u32>,
 }
 
 /// Positionsmeldung eines Zuges.
@@ -169,6 +195,9 @@ struct TrainRecord {
 enum Released {
     /// Neuer Bezugspunkt vor diesem Signal.
     Reference(usize, SignalId),
+    /// Der Zug ist über eine Grenze zu einem Bereich in einem anderen Prozess (Bereich und
+    /// Grenze); dort übernimmt das andere RBC.
+    Remote(usize, BorderId),
     /// Zug steht am Ende des Netzes bzw. am Prellbock.
     AtEnd,
     /// Fahrstraße vor dem Ziel aufgelöst: Notbremsung.
@@ -197,10 +226,12 @@ fn released(view: &dyn RbcView, area: usize, route: RouteId, revoked: bool) -> R
     match end {
         RouteEnd::Signal(t) => Released::Reference(area, t),
         RouteEnd::Border(b) => {
-            let entry = view
-                .peer(area, b)
-                .and_then(|(pa, pb)| Some((pa, view.plan(pa)?.border_entry_signal(pb)?)));
-            entry.map_or(Released::Revoked, |(pa, e)| Released::Reference(pa, e))
+            let Some((pa, pb)) = view.peer(area, b) else {
+                // Nachbar in einem anderen Prozess: Dessen RBC übernimmt den Zug.
+                return Released::Remote(area, b);
+            };
+            let entry = view.plan(pa).and_then(|p| p.border_entry_signal(pb));
+            entry.map_or(Released::Revoked, |e| Released::Reference(pa, e))
         }
         RouteEnd::Boundary | RouteEnd::BufferStop => Released::AtEnd,
     }
@@ -245,6 +276,35 @@ fn end_name(view: &dyn RbcView, plan: &PlanView<'_>, area: usize, end: MaEnd) ->
             plan.border_name(b).unwrap_or("?")
         ),
     }
+}
+
+/// Hängt die Vorausmeldung eines RBC in einem anderen Prozess an (REQ-ETCS-004).
+fn append_remote(ma: &mut Authority, remote: &RemoteAuthority) {
+    ma.sections.extend(remote.sections.iter().cloned());
+    ma.danger_point_mm = ma.eoa_mm.saturating_add(remote.danger_point_mm);
+    ma.eoa_mm = ma.eoa_mm.saturating_add(remote.eoa_mm);
+    ma.end.clone_from(&remote.end);
+    ma.passable.extend(
+        remote
+            .passable
+            .iter()
+            .map(|id| (REMOTE_AREA, SignalId::new(*id))),
+    );
+}
+
+/// Fahrerlaubnis eines Zuges, der schon hinter einer Grenze zu einem anderen Prozess ist.
+fn remote_only(view: &dyn RbcView, area: usize, border: BorderId) -> Option<Authority> {
+    let remote = view.remote(area, border)?;
+    let mut ma = Authority {
+        sections: Vec::new(),
+        end: String::new(),
+        eoa_mm: 0,
+        danger_point_mm: 0,
+        passable: Vec::new(),
+        first: None,
+    };
+    append_remote(&mut ma, remote);
+    (!ma.sections.is_empty()).then_some(ma)
 }
 
 /// Fahrerlaubnis ab einem Bezugspunkt über alle Bereiche (REQ-ETCS-002).
@@ -292,6 +352,10 @@ pub fn compute(
         };
         // Über die Grenze: Annäherungsabschnitt des Nachbarn bis zu seinem Einfahrsignal.
         let Some((peer_area, peer_border)) = view.peer(area, border) else {
+            // Nachbar in einem anderen Prozess: dessen Vorausmeldung anhängen.
+            if let Some(remote) = view.remote(area, border) {
+                append_remote(&mut ma, remote);
+            }
             break;
         };
         let Some(peer_plan) = view.plan(peer_area) else {
@@ -404,7 +468,13 @@ impl Rbc {
                     record.virtual_ref = Some((a, s));
                     new_ma = compute(view, a, s, false);
                 }
-                Released::Reference(..) => {}
+                Released::Remote(a, b) if new_ma.is_none() => {
+                    // Im Annäherungsabschnitt des Nachbarn: dessen Vorausmeldung, bis der Zug
+                    // dort angemeldet ist; ohne Vorausmeldung keine Fahrerlaubnis.
+                    new_ma = remote_only(view, a, b);
+                    at_end = new_ma.is_none();
+                }
+                Released::Reference(..) | Released::Remote(..) => {}
                 Released::AtEnd => at_end = true,
                 Released::Revoked => {
                     revoked = true;

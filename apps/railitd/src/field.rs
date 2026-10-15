@@ -27,8 +27,8 @@ pub(crate) enum ServiceField {
     /// Simulator im Dienst.
     Local(DynField),
     /// Feldrechner über RaSTA/UDP, optional mit seiner Steuerung zum Einsetzen der Züge des
-    /// Fahrplans.
-    Remote(Box<UdpField>, Option<FieldControl>),
+    /// Fahrplans und der Funkstrecke zu den ETCS-Fahrzeuggeräten.
+    Remote(Box<UdpField>, Option<FieldControl>, Option<RadioLink>),
 }
 
 impl ServiceField {
@@ -41,9 +41,13 @@ impl ServiceField {
         areas: Option<&[String]>,
         control: Option<FieldControl>,
     ) -> Result<Self, String> {
+        let radio = control
+            .as_ref()
+            .map(|c| RadioLink::start(c.clone(), net.clone(), format!("{id:08X}")));
         Ok(Self::Remote(
             Box::new(UdpField::connect_areas(net, addrs, id, areas)?),
             control,
+            radio,
         ))
     }
 
@@ -59,7 +63,7 @@ impl ServiceField {
     pub(crate) fn links(&self) -> Vec<LinkStatus> {
         match self {
             Self::Local(f) => f.links(),
-            Self::Remote(f, _) => f.client().links(),
+            Self::Remote(f, _, _) => f.client().links(),
         }
     }
 
@@ -68,7 +72,7 @@ impl ServiceField {
     pub(crate) fn connected(&self) -> bool {
         match self {
             Self::Local(_) => true,
-            Self::Remote(f, _) => f.client().connected(),
+            Self::Remote(f, _, _) => f.client().connected(),
         }
     }
 
@@ -86,21 +90,21 @@ impl FieldAdapter for ServiceField {
         match self {
             Self::Local(f) => f.advance(now),
             // Der Feldrechner hat seine eigene Uhr; RaSTA läuft mit der Wanduhr.
-            Self::Remote(f, _) => f.advance(),
+            Self::Remote(f, _, _) => f.advance(),
         }
     }
 
     fn reports(&self, out: &mut Vec<Input>) {
         match self {
             Self::Local(f) => f.reports(out),
-            Self::Remote(f, _) => out.extend(f.reports()),
+            Self::Remote(f, _, _) => out.extend(f.reports()),
         }
     }
 
     fn apply(&mut self, commands: &[Command]) {
         match self {
             Self::Local(f) => f.apply(commands),
-            Self::Remote(f, _) => f.apply(commands),
+            Self::Remote(f, _, _) => f.apply(commands),
         }
     }
 
@@ -113,7 +117,7 @@ impl FieldAdapter for ServiceField {
             Self::Local(f) => f.spawn_train(spawn, signal),
             // Züge des Fahrplans setzt die Steuerung des Feldrechners ein, im Hintergrund:
             // Der Zyklus wartet nicht auf HTTP.
-            Self::Remote(_, Some(control)) => {
+            Self::Remote(_, Some(control), _) => {
                 let control = control.clone();
                 let body = json!({
                     "name": spawn.train,
@@ -131,20 +135,133 @@ impl FieldAdapter for ServiceField {
                 });
                 Ok(())
             }
-            Self::Remote(_, None) => Err(REMOTE.into()),
+            Self::Remote(_, None, _) => Err(REMOTE.into()),
         }
     }
 
     fn etcs_reports(&self) -> Vec<(String, SignalId, bool)> {
         match self {
             Self::Local(f) => f.etcs_reports(),
+            Self::Remote(_, _, Some(radio)) => radio.reports(),
             Self::Remote(..) => Vec::new(),
         }
     }
 
     fn set_cab_authority(&mut self, train: &str, authority: Option<Vec<SignalId>>) {
-        if let Self::Local(f) = self {
-            f.set_cab_authority(train, authority);
+        match self {
+            Self::Local(f) => f.set_cab_authority(train, authority),
+            Self::Remote(_, _, Some(radio)) => radio.set(train, authority),
+            Self::Remote(..) => {}
+        }
+    }
+}
+
+/// Abstand der Abfragen der Funkstrecke.
+const RADIO_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+/// Fahrerlaubnisse, die das RBC so lange nicht erneuert hat, gehen nicht mehr hinaus.
+const RADIO_STALE: std::time::Duration = std::time::Duration::from_secs(1);
+
+#[derive(Default)]
+struct RadioShared {
+    reports: Vec<(String, SignalId, bool)>,
+    authorities: std::collections::BTreeMap<String, (Option<Vec<SignalId>>, std::time::Instant)>,
+}
+
+/// Funkstrecke zu den ETCS-Fahrzeuggeräten über die Steuerung des Feldrechners
+/// (Prüfstand, REQ-ETCS-004): Positionsmeldungen herein, Fahrerlaubnisse hinaus. Ein eigener
+/// Faden spricht mit dem Feldrechner, damit der Zyklus des Kerns nicht wartet.
+pub(crate) struct RadioLink {
+    shared: std::sync::Arc<std::sync::Mutex<RadioShared>>,
+}
+
+impl RadioLink {
+    fn start(control: FieldControl, net: Topology, rbc: String) -> Self {
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(RadioShared::default()));
+        let inner = std::sync::Arc::clone(&shared);
+        let spawned = std::thread::Builder::new()
+            .name("funk".into())
+            .spawn(move || {
+                loop {
+                    radio_round(&control, &net, &rbc, &inner);
+                    std::thread::sleep(RADIO_POLL);
+                }
+            });
+        if let Err(e) = spawned {
+            tracing::error!(%e, "Funkstrecke: Faden startet nicht");
+        }
+        Self { shared }
+    }
+
+    fn reports(&self) -> Vec<(String, SignalId, bool)> {
+        self.shared
+            .lock()
+            .map(|s| s.reports.clone())
+            .unwrap_or_default()
+    }
+
+    fn set(&self, train: &str, authority: Option<Vec<SignalId>>) {
+        if let Ok(mut s) = self.shared.lock() {
+            s.authorities
+                .insert(train.to_string(), (authority, std::time::Instant::now()));
+        }
+    }
+}
+
+/// Eine Runde der Funkstrecke: Meldungen holen, aktuelle Fahrerlaubnisse senden.
+fn radio_round(
+    control: &FieldControl,
+    net: &Topology,
+    rbc: &str,
+    shared: &std::sync::Mutex<RadioShared>,
+) {
+    if let Ok(v) = control.request("GET", "/v1/sim/etcs", None) {
+        let reports: Vec<(String, SignalId, bool)> = v
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter_map(|r| {
+                        let railit_topology::ElementRef::Signal(signal) =
+                            net.lookup(r.get("signal")?.as_str()?)?
+                        else {
+                            return None;
+                        };
+                        Some((
+                            r.get("train")?.as_str()?.to_string(),
+                            signal,
+                            r.get("passed")?.as_bool()?,
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Ok(mut s) = shared.lock() {
+            s.reports = reports;
+        }
+    }
+    let due: Vec<(String, Option<Vec<SignalId>>)> = shared
+        .lock()
+        .map(|mut s| {
+            s.authorities
+                .retain(|_, (_, at)| at.elapsed() < RADIO_STALE);
+            s.authorities
+                .iter()
+                .map(|(t, (a, _))| (t.clone(), a.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    for (train, authority) in due {
+        let passable = authority.map(|list| {
+            list.iter()
+                .filter_map(|s| net.signal(*s).map(|x| x.name.clone()))
+                .collect::<Vec<_>>()
+        });
+        let body = json!({ "rbc": rbc, "passable": passable });
+        if let Err(e) = control.request(
+            "POST",
+            &format!("/v1/sim/etcs/{}", encode(&train)),
+            Some(body),
+        ) {
+            tracing::debug!(train, "Funkstrecke: {e}");
         }
     }
 }

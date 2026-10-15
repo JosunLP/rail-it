@@ -639,3 +639,79 @@ fn standby_takes_over_a_part_of_the_network() {
     assert!(!holds(&s, "Strecke>Bstadt"));
     drop((field, standby, east));
 }
+
+/// REQ-ETCS-004: ETCS über Prozessgrenzen. West (Adorf, Strecke) und Ost (Bstadt) rechnen in
+/// eigenen Prozessen am selben Feldrechner; die Funkstrecke geht über dessen Steuerung. Die
+/// Fahrerlaubnis aus dem Westen reicht über die Vorschau des Ostens bis BN1; nach der Grenze
+/// führt das RBC im Osten den Zug weiter.
+#[test]
+fn etcs_train_crosses_into_another_process() {
+    let (_field, udp, control) = nordbahn_field();
+    let udp = udp.as_str();
+    let dir = nordbahn_plans();
+    let (west_ils, east_ils) = (free_udp(), free_udp());
+    let spawn = |args: &[&str]| split_railitd(&dir, udp, &control, args);
+    let west = spawn(&[
+        "--field-id",
+        "0A000001",
+        "--areas",
+        "Adorf,Strecke",
+        "--ils-listen",
+        &west_ils,
+        "--ils-peer",
+        &format!("Bstadt={east_ils}"),
+    ]);
+    let east = spawn(&[
+        "--field-id",
+        "0A000003",
+        "--areas",
+        "Bstadt",
+        "--ils-listen",
+        &east_ils,
+        "--ils-peer",
+        &format!("Strecke={west_ils}"),
+    ]);
+    let (w, e) = (west.line.clone(), east.line.clone());
+    wait("West und Ost verbunden", || {
+        ils_up(&w) && ils_up(&e) && holds(&w, "Strecke>Bstadt")
+    });
+    assert_eq!(post(&format!("{e}/v1/routes/BA-BN1/set"), None).0, 200);
+    assert_eq!(
+        post(&format!("{w}/v1/routes/Sbk1-%3EBstadt/set"), None).0,
+        200
+    );
+    wait("BA-BN1 auf Fahrt", || {
+        route_phase(&e, "BA-BN1") == "proceed"
+    });
+    let (code, body) = post(
+        &format!("{control}/v1/sim/trains"),
+        Some(
+            json!({"name": "ICE7", "signal": "Sbk1", "length_m": 200, "speed_kmh": 250, "etcs": true}),
+        ),
+    );
+    assert_eq!(code, 200, "{body}");
+    let authority = |url: &str| {
+        let (_, state) = get(&format!("{url}/v1/state"));
+        state["etcs"]
+            .as_array()
+            .and_then(|l| l.iter().find(|t| t["train"] == "ICE7").cloned())
+            .map(|t| t["authority"]["end"].clone())
+    };
+    wait("Fahrerlaubnis im Westen bis BN1", || {
+        authority(&w) == Some(json!("BN1"))
+    });
+    let deadline = Instant::now() + Duration::from_mins(1);
+    while authority(&e) != Some(json!("BN1")) {
+        assert!(
+            Instant::now() < deadline,
+            "RBC im Osten führt den Zug nicht: {:?} {:?} {:?}",
+            get(&format!("{control}/v1/sim/trains")).1,
+            get(&format!("{e}/v1/state")).1["etcs"],
+            get(&format!("{w}/v1/state")).1["etcs"],
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Ohne Notbremsung über die Grenze.
+    let (_, trains) = get(&format!("{control}/v1/sim/trains"));
+    assert_eq!(trains[0]["state"], "running", "{trains}");
+}

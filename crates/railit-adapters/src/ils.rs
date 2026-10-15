@@ -42,6 +42,18 @@
 //! Übergaben und Vormeldungen, die bei unterbrochener Verbindung anfallen, warten, bis sie
 //! wieder steht.
 //!
+//! **Fahrerlaubnis-Vorschau** (Nachrichtentyp 0x0103, Erweiterung von rail-it): Das RBC
+//! hinter einer Grenze meldet dem Nachbarn laufend, wie weit eine Fahrerlaubnis ab der Grenze
+//! reicht – über seinen Annäherungsabschnitt bis zum Einfahrsignal und weiter entlang der
+//! Fahrstraßen mit Fahrt (REQ-ETCS-004, entsprechend der RBC-RBC-Übergabe):
+//!
+//! ```text
+//! Protokoll 0x60 · Nachrichtentyp 0x0103 · Absender 20 Byte · Empfänger 20 Byte · Grenze u8
+//! · EoA in mm u32 · Gefahrpunkt in mm u32 · Ende 20 Byte (UTF-8, mit 0 aufgefüllt)
+//! · Abschnitte u8 (≤ 8) · je Länge in mm u32, Geschwindigkeit in km/h u16 (0: keine)
+//! · passierbare Signale u8 (≤ 24) · je Kennung im Gesamtnetz u32
+//! ```
+//!
 //! Zugestellt wird nur, was über eine stehende Verbindung **neu** eingetroffen ist: Bleiben
 //! die Meldungen eines Nachbarn aus – weil die Verbindung gestört ist oder sein Kern nicht
 //! mehr rechnet, während die RaSTA-Lebenszeichen weiterlaufen –, bemerkt der Kern das am
@@ -72,6 +84,12 @@ pub const TRAIN_HANDOVER: u16 = 0x0101;
 pub const TRAIN_ANNOUNCE: u16 = 0x0102;
 /// Länge eines Telegramms „Zugübergabe“.
 pub const HANDOVER_LEN: usize = 3 + 3 * ID_LEN + 1 + 2 + 4 + 4;
+/// Nachrichtentyp „Fahrerlaubnis-Vorschau“ (Erweiterung von rail-it).
+pub const MA_PREVIEW: u16 = 0x0103;
+/// Höchstzahl der Abschnitte einer Vorschau.
+pub const PREVIEW_SECTIONS: usize = 8;
+/// Höchstzahl der passierbaren Signale einer Vorschau.
+pub const PREVIEW_SIGNALS: usize = 24;
 /// RaSTA-Kennungen der Stellwerke: diese Basis plus Index des Bereichs.
 const RASTA_BASE: u32 = 0x0C00_0000;
 
@@ -308,6 +326,175 @@ impl HandoverTelegram {
     }
 }
 
+/// Fahrerlaubnis ab einer Grenze, wie das RBC dahinter sie vorausmeldet (REQ-ETCS-004).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MaPreview {
+    /// Abstand von der Grenze bis zum Ende der Fahrerlaubnis.
+    pub eoa_mm: u32,
+    /// Abstand von der Grenze bis zum Gefahrpunkt.
+    pub danger_mm: u32,
+    /// Name des Endes (höchstens 20 Byte).
+    pub end: String,
+    /// Abschnitte: Länge und zulässige Geschwindigkeit.
+    pub sections: Vec<(u32, Option<u16>)>,
+    /// Passierbare Signale (Kennungen im Gesamtnetz).
+    pub passable: Vec<u32>,
+}
+
+impl MaPreview {
+    /// Kürzt die Vorschau auf die Grenzen des Telegramms – nur zur sicheren Seite: Fehlende
+    /// Abschnitte verkürzen `EoA` und Gefahrpunkt, fehlende Signale sind nicht passierbar.
+    #[must_use]
+    pub fn bounded(mut self) -> Self {
+        if self.sections.len() > PREVIEW_SECTIONS {
+            self.sections.truncate(PREVIEW_SECTIONS);
+            self.eoa_mm = self
+                .sections
+                .iter()
+                .fold(0u32, |a, (l, _)| a.saturating_add(*l));
+            self.danger_mm = self.eoa_mm;
+            self.end = "verkürzt".into();
+        }
+        self.passable.truncate(PREVIEW_SIGNALS);
+        let mut cut = self.end.len().min(ID_LEN);
+        while !self.end.is_char_boundary(cut) {
+            cut = cut.saturating_sub(1);
+        }
+        self.end.truncate(cut);
+        self
+    }
+}
+
+/// Telegramm „Fahrerlaubnis-Vorschau“.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreviewTelegram {
+    /// Absender (Name des Stellbereichs).
+    pub sender: String,
+    /// Empfänger (Name des Stellbereichs).
+    pub receiver: String,
+    /// Nummer der Grenze innerhalb des Paars.
+    pub border: u8,
+    /// Vorschau (höchstens [`PREVIEW_SECTIONS`] Abschnitte, [`PREVIEW_SIGNALS`] Signale).
+    pub preview: MaPreview,
+}
+
+impl PreviewTelegram {
+    /// Kodiert das Telegramm.
+    ///
+    /// # Errors
+    /// [`IlsError::Identifier`] bei unzulässigen Kennungen, [`IlsError::Length`], wenn die
+    /// Vorschau die Grenzen des Telegramms überschreitet.
+    pub fn encode(&self) -> Result<Vec<u8>, IlsError> {
+        let p = &self.preview;
+        if p.sections.len() > PREVIEW_SECTIONS
+            || p.passable.len() > PREVIEW_SIGNALS
+            || p.end.len() > ID_LEN
+        {
+            return Err(IlsError::Length);
+        }
+        let mut out = Vec::with_capacity(128);
+        out.push(PROTOCOL);
+        out.extend_from_slice(&MA_PREVIEW.to_be_bytes());
+        put_id(&mut out, &self.sender)?;
+        put_id(&mut out, &self.receiver)?;
+        out.push(self.border);
+        out.extend_from_slice(&p.eoa_mm.to_be_bytes());
+        out.extend_from_slice(&p.danger_mm.to_be_bytes());
+        out.extend_from_slice(p.end.as_bytes());
+        out.resize(out.len() + (ID_LEN - p.end.len()), 0);
+        out.push(u8::try_from(p.sections.len()).map_err(|_| IlsError::Length)?);
+        for (len, speed) in &p.sections {
+            out.extend_from_slice(&len.to_be_bytes());
+            out.extend_from_slice(&speed.unwrap_or(0).to_be_bytes());
+        }
+        out.push(u8::try_from(p.passable.len()).map_err(|_| IlsError::Length)?);
+        for id in &p.passable {
+            out.extend_from_slice(&id.to_be_bytes());
+        }
+        Ok(out)
+    }
+
+    /// Liest ein Telegramm.
+    ///
+    /// # Errors
+    /// [`IlsError`], wenn Länge, Teilschnittstelle, Nachricht oder Kennungen ungültig sind.
+    pub fn decode(raw: &[u8]) -> Result<Self, IlsError> {
+        let mut r = Reader { raw, at: 0 };
+        if r.byte()? != PROTOCOL || r.u16()? != MA_PREVIEW {
+            return Err(IlsError::Unknown);
+        }
+        let sender = get_id(r.take(ID_LEN)?)?;
+        let receiver = get_id(r.take(ID_LEN)?)?;
+        let border = r.byte()?;
+        let eoa_mm = r.u32()?;
+        let danger_mm = r.u32()?;
+        let end = r.take(ID_LEN)?;
+        let end = std::str::from_utf8(end)
+            .map_err(|_| IlsError::Identifier)?
+            .trim_end_matches('\0')
+            .to_string();
+        let n = usize::from(r.byte()?);
+        if n > PREVIEW_SECTIONS {
+            return Err(IlsError::Length);
+        }
+        let mut sections = Vec::with_capacity(n);
+        for _ in 0..n {
+            let len = r.u32()?;
+            let speed = r.u16()?;
+            sections.push((len, (speed != 0).then_some(speed)));
+        }
+        let n = usize::from(r.byte()?);
+        if n > PREVIEW_SIGNALS {
+            return Err(IlsError::Length);
+        }
+        let passable = (0..n).map(|_| r.u32()).collect::<Result<Vec<_>, _>>()?;
+        if r.at != raw.len() || danger_mm < eoa_mm {
+            return Err(IlsError::Length);
+        }
+        Ok(Self {
+            sender,
+            receiver,
+            border,
+            preview: MaPreview {
+                eoa_mm,
+                danger_mm,
+                end,
+                sections,
+                passable,
+            },
+        })
+    }
+}
+
+/// Liest ein Telegramm von vorn nach hinten.
+struct Reader<'a> {
+    raw: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8], IlsError> {
+        let end = self.at.checked_add(n).ok_or(IlsError::Length)?;
+        let part = self.raw.get(self.at..end).ok_or(IlsError::Length)?;
+        self.at = end;
+        Ok(part)
+    }
+
+    fn byte(&mut self) -> Result<u8, IlsError> {
+        Ok(self.take(1)?.first().copied().unwrap_or(0))
+    }
+
+    fn u16(&mut self) -> Result<u16, IlsError> {
+        let b: [u8; 2] = self.take(2)?.try_into().map_err(|_| IlsError::Length)?;
+        Ok(u16::from_be_bytes(b))
+    }
+
+    fn u32(&mut self) -> Result<u32, IlsError> {
+        let b: [u8; 4] = self.take(4)?.try_into().map_err(|_| IlsError::Length)?;
+        Ok(u32::from_be_bytes(b))
+    }
+}
+
 /// Ende einer Grenze: Bereich (Index) und Grenze aus dessen Sicht.
 pub type Endpoint = (usize, BorderId);
 
@@ -400,6 +587,8 @@ pub struct IlsNet {
     outgoing: Vec<(String, Vec<u8>)>,
     /// Eingegangene Zugübergaben mit ihrem Empfänger.
     trains: Vec<(Endpoint, TrainHandover)>,
+    /// Eingegangene Fahrerlaubnis-Vorschauen mit ihrem Empfänger und dem Namen des Absenders.
+    previews: Vec<(Endpoint, String, MaPreview)>,
     now: u64,
 }
 
@@ -501,6 +690,7 @@ impl IlsNet {
             links,
             outgoing: Vec::new(),
             trains: Vec::new(),
+            previews: Vec::new(),
             now: 0,
         })
     }
@@ -553,6 +743,62 @@ impl IlsNet {
             .map_err(|e| format!("Zug „{}“: {e}", tg.handover.train))?;
         link.pending[side].push(raw);
         Ok(())
+    }
+
+    /// Meldet dem Nachbarn hinter der Grenze `from` die Fahrerlaubnis-Vorschau
+    /// (REQ-ETCS-004). Steht die Verbindung nicht, geht sie verloren; der Nachbar verwirft
+    /// seine letzte Vorschau dann nach ihrem Alter.
+    pub fn send_preview(&mut self, from: Endpoint, preview: MaPreview) {
+        let t = rasta_now(self.now);
+        let Some(link) = self.links.iter_mut().find(|l| l.locate(from).is_some()) else {
+            return;
+        };
+        let Some((side, number)) = link.locate(from) else {
+            return;
+        };
+        let tg = PreviewTelegram {
+            sender: link.sides[side].area.name.clone(),
+            receiver: link.sides[1 - side].area.name.clone(),
+            border: number,
+            preview: preview.bounded(),
+        };
+        if let Ok(raw) = tg.encode()
+            && link.sides[side].conn.is_up()
+        {
+            let _ = link.sides[side].conn.send(t, &raw);
+        }
+    }
+
+    /// Eingegangene Fahrerlaubnis-Vorschauen seit dem letzten Aufruf mit ihrem Empfänger und
+    /// dem Namen des absendenden Bereichs.
+    pub fn take_previews(&mut self) -> Vec<(Endpoint, String, MaPreview)> {
+        std::mem::take(&mut self.previews)
+    }
+
+    /// Grenzen der Bereiche dieses Prozesses zu Bereichen anderer Prozesse.
+    pub fn remote_borders(&self) -> Vec<Endpoint> {
+        let mut out = Vec::new();
+        for link in &self.links {
+            for (i, side) in link.sides.iter().enumerate() {
+                let far = &link.sides[1 - i];
+                if let (Some(area), false) = (side.area.local, far.is_local()) {
+                    out.extend(
+                        link.borders
+                            .iter()
+                            .map(|(b0, b1)| (area, if i == 0 { *b0 } else { *b1 })),
+                    );
+                }
+            }
+        }
+        out
+    }
+
+    /// Steht die Verbindung an der Grenze `from`?
+    pub fn is_up(&self, from: Endpoint) -> bool {
+        self.links.iter().any(|l| {
+            l.locate(from)
+                .is_some_and(|(side, _)| l.sides[side].conn.is_up())
+        })
     }
 
     /// Eingegangene Zugübergaben seit dem letzten Aufruf mit ihrem Empfänger.
@@ -628,6 +874,10 @@ impl IlsNet {
                         continue;
                     }
                     for raw in telegrams {
+                        if let Some(preview) = link.accept_preview(to, &raw) {
+                            self.previews.push(preview);
+                            continue;
+                        }
                         if let Some(train) = link.accept_train(to, &raw) {
                             link.handovers = link.handovers.saturating_add(1);
                             self.trains.push(train);
@@ -768,6 +1018,18 @@ impl IlsLink {
         }
     }
 
+    /// Empfang einer Fahrerlaubnis-Vorschau auf Seite `to`.
+    fn accept_preview(&self, to: usize, raw: &[u8]) -> Option<(Endpoint, String, MaPreview)> {
+        let tg = PreviewTelegram::decode(raw).ok()?;
+        let from = 1 - to;
+        if tg.sender != self.sides[from].area.name || tg.receiver != self.sides[to].area.name {
+            return None;
+        }
+        let (b0, b1) = *self.borders.get(usize::from(tg.border))?;
+        let border = if to == 0 { b0 } else { b1 };
+        Some(((self.sides[to].area.local?, border), tg.sender, tg.preview))
+    }
+
     /// Empfang einer Zugübergabe auf Seite `to`.
     fn accept_train(&self, to: usize, raw: &[u8]) -> Option<(Endpoint, TrainHandover)> {
         let tg = HandoverTelegram::decode(raw).ok()?;
@@ -875,6 +1137,43 @@ mod tests {
             request: false,
             exclusive: seq.is_multiple_of(5),
         }
+    }
+
+    /// REQ-ETCS-004: Fahrerlaubnis-Vorschau, Rundreise und sichere Kürzung.
+    #[test]
+    fn previews_roundtrip_and_are_bounded() {
+        let preview = MaPreview {
+            eoa_mm: 1_800_000,
+            danger_mm: 1_920_000,
+            end: "BN1".into(),
+            sections: vec![(300_000, None), (1_500_000, Some(80))],
+            passable: vec![17, 18],
+        };
+        let t = PreviewTelegram {
+            sender: "Bstadt".into(),
+            receiver: "Strecke".into(),
+            border: 0,
+            preview: preview.clone(),
+        };
+        let raw = t.encode().unwrap();
+        assert_eq!(PreviewTelegram::decode(&raw).unwrap(), t);
+        let mut bad = raw.clone();
+        bad.push(0);
+        assert_eq!(PreviewTelegram::decode(&bad), Err(IlsError::Length));
+        // Zu lang: Abschnitte und Signale werden zur sicheren Seite gekürzt.
+        let long = MaPreview {
+            sections: vec![(100, None); 12],
+            passable: (0..40).collect(),
+            end: "ein sehr langer Name für ein Ende".into(),
+            ..preview
+        }
+        .bounded();
+        assert_eq!(long.sections.len(), PREVIEW_SECTIONS);
+        assert_eq!((long.eoa_mm, long.danger_mm), (800, 800));
+        assert_eq!(long.passable.len(), PREVIEW_SIGNALS);
+        assert!(long.end.len() <= ID_LEN);
+        let t = PreviewTelegram { preview: long, ..t };
+        assert!(t.encode().is_ok());
     }
 
     #[test]

@@ -15,6 +15,22 @@ railit etcs          # angemeldete Züge, Betriebsart, Ende der Fahrerlaubnis
 
 Ks- und H/V-Signale bleiben gleichzeitig gültig: Mischbetrieb ist der Normalfall.
 
+### Über Prozessgrenzen
+
+Rechnen benachbarte Stellbereiche in getrennten Prozessen ([Stellbereiche](./stellbereiche)),
+meldet das RBC hinter der Grenze dem Nachbarn über SCI-ILS laufend eine
+**Fahrerlaubnis-Vorschau** – wie bei der RBC-RBC-Übergabe: wie weit eine Fahrerlaubnis ab
+der Grenze reicht, mit EoA, Gefahrpunkt und den passierbaren Signalen (REQ-ETCS-004). Das RBC
+davor hängt sie an seine Fahrerlaubnis an; ist die Vorschau älter als 1,5 s oder die Verbindung
+gestört, endet die Fahrerlaubnis wieder an der Grenze. Hat der Zug die Grenze passiert,
+übernimmt das RBC des Nachbarn ihn mit seiner ersten Positionsmeldung.
+
+Mit einem Feldrechner läuft die Funkstrecke zu den Fahrzeuggeräten über dessen Steuerung
+(`--field-control`): `GET /v1/sim/etcs` liefert die Positionsmeldungen,
+`POST /v1/sim/etcs/{zug}` mit `{"rbc": "0A000001", "passable": ["BA", …]}` (oder `null` für die
+Notbremsung) die Fahrerlaubnis eines RBC. Das Fahrzeuggerät erhält die Vereinigung aller
+gültigen Fahrerlaubnisse; nicht erneuerte verfallen nach 2 s.
+
 ## EULYNX und RaSTA
 
 Mit `--field eulynx` laufen alle Stellbefehle und Meldungen als EULYNX-SCI-Telegramme über je

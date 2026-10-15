@@ -357,6 +357,66 @@ mod split {
         assert!(!east.ils_links()[0].up);
     }
 
+    /// REQ-ETCS-004: Die Fahrerlaubnis eines ETCS-Zuges reicht über die Grenze in einen
+    /// anderen Prozess, so weit das RBC dort sie vorausmeldet; fällt die Verbindung aus, endet
+    /// sie wieder an der Grenze.
+    #[test]
+    fn etcs_authority_reaches_into_another_process() {
+        let (mut west, mut east) = connect();
+        run(&mut west, &mut east, 80, true);
+        assert!(holds(&west, "Strecke>Bstadt"));
+        let net = railit_import::parse("nordbahn.toml", NORDBAHN)
+            .unwrap()
+            .topology;
+        let Some(railit_topology::ElementRef::Signal(sbk1)) = net.lookup("Sbk1") else {
+            panic!("Sbk1");
+        };
+        west.field_mut()
+            .add_train(railit_sim::TrainSpec {
+                name: "ICE1".into(),
+                signal: sbk1,
+                length: railit_types::Length::from_mm(200_000),
+                speed: railit_types::Speed::from_kmh(0),
+                ignore_signals: false,
+                etcs: true,
+                pzb: false,
+            })
+            .unwrap();
+        let end = |west: &Runtime<Simulator>| {
+            west.rbc()
+                .authority("ICE1")
+                .map(|a| (a.end.clone(), a.eoa_mm))
+        };
+        set_route(&mut west, 6, "Sbk1->Bstadt");
+        run(&mut west, &mut east, 20, true);
+        // Ohne Fahrstraße in Bstadt: bis zum Einfahrsignal BA.
+        let (e, short) = end(&west).unwrap_or_else(|| panic!("{:?}", west.etcs_snapshot()));
+        assert_eq!(e, "BA");
+        set_route(&mut east, 7, "BA-BN1");
+        let mut cycles = 0;
+        while end(&west).is_none_or(|(e, _)| e != "BN1") {
+            cycles += 1;
+            assert!(cycles < 150, "{:?}", west.etcs_snapshot());
+            run(&mut west, &mut east, 1, true);
+        }
+        let (_, long) = end(&west).unwrap();
+        assert!(long > short);
+        let passable = west.rbc().authority("ICE1").unwrap().passable.clone();
+        assert!(
+            passable
+                .iter()
+                .any(|(area, _)| *area == railit_etcs::REMOTE_AREA),
+            "{passable:?}"
+        );
+
+        // Bstadt schweigt: Die Vorschau veraltet, die Fahrerlaubnis endet an der Grenze.
+        for _ in 0..20 {
+            west.cycle_addressed(&[]);
+        }
+        let (e, _) = end(&west).unwrap_or_else(|| panic!("{:?}", west.etcs_snapshot()));
+        assert_eq!(e, "Strecke>Bstadt");
+    }
+
     /// Zwei Prozesse mit Zuglenkung und dem Nordbahn-Fahrplan, aus dem nur `train` fährt
     /// (jeder Prozess hat hier einen eigenen Simulator; ein Zug des anderen Prozesses bliebe
     /// dort physisch stehen und sperrte die eingleisige Strecke).

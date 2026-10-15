@@ -65,6 +65,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-ETCS-001 | H-009 | – | `etcs_train_over_api`<br>`apps/railitd/tests/api.rs`<br>Szenario 16 |
 | REQ-ETCS-002 | H-001, H-009, H-012 | `crates/railit-etcs/src/lib.rs` | `etcs_train_over_api`<br>`apps/railitd/tests/api.rs`<br>Szenario 16 |
 | REQ-ETCS-003 | H-001, H-009 | `crates/railit-etcs/src/lib.rs` | Szenario 17 |
+| REQ-ETCS-004 | H-001, H-009 | `apps/railit-field/src/main.rs`<br>`apps/railitd/src/field.rs`<br>`crates/railit-adapters/src/ils.rs`<br>`crates/railit-etcs/src/lib.rs`<br>`crates/railit-runtime/src/runtime.rs` | `etcs_authority_reaches_into_another_process`<br>`previews_roundtrip_and_are_bounded`<br>`etcs_train_crosses_into_another_process`<br>`apps/railitd/tests/field.rs`<br>`crates/railit-runtime/tests/ils.rs` |
 
 ## [fahrerlaubnis.md](../requirements/fahrerlaubnis.md)
 
@@ -207,4 +208,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-134 Anforderungen, davon 134 mit Nachweis.
+135 Anforderungen, davon 135 mit Nachweis.
