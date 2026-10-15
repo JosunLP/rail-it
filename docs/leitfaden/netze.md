@@ -63,8 +63,10 @@ position_m = 500
 ```
 
 ::: tip Hauptsignale an Abschnittsgrenzen
-Ein Hauptsignal muss an einer Gleisfreimeldegrenze stehen – in der Praxis am Gleisende. Die
-Validierung meldet Signale an anderen Stellen (REQ-PLN-010).
+Ein Hauptsignal muss an einer Gleisfreimeldegrenze stehen – am Gleisende oder bis zu 30 m
+davor, wie in Planungen, deren Achszählpunkt einige Meter hinter dem Signal liegt. Zwischen
+Signal und Gleisende darf kein Bahnübergang und keine Kreuzung liegen. Die Validierung meldet
+Signale an anderen Stellen (REQ-PLN-010).
 :::
 
 ## Kreuzungen und Kreuzungsweichen

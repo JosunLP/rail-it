@@ -131,6 +131,7 @@ fn example_phase2_data() {
 fn level_crossing_within_long_overlap() {
     let cfg = PlanningConfig {
         overlap_length: Length::from_m(600).unwrap(),
+        ..PlanningConfig::default()
     };
     let compiled = compile_with(&example(), None, &cfg).unwrap();
     let a_n1 = compiled
@@ -691,4 +692,52 @@ fn railml_roundtrip_yields_identical_plans() {
         };
         assert_eq!(images(&original), images(&back));
     }
+}
+
+/// REQ-PLN-010: Ein Hauptsignal darf bis zu `signal_gap` vor der Freimeldegrenze stehen. Die
+/// Längen zählen dann ab dem Signal: Fahrweg mit dem Rest des Startgleises und ohne das Stück
+/// hinter dem Zielsignal, Durchrutschweg ab dem Zielsignal. Liegt ein Bahnübergang im Stück
+/// dahinter oder ist der Abstand größer, ist das ein Fehler.
+#[test]
+fn signals_may_stand_shortly_before_the_tvd_boundary() {
+    // A steht 1000 m auf „west“ (am Ende), N1 auf Gleis 1 (600 m) am Ende.
+    let exact = generate(&example()).unwrap();
+    let moved = EXAMPLE
+        .replace(
+            "name = \"N1\"\ntrack = \"1\"\nposition_m = 600",
+            "name = \"N1\"\ntrack = \"1\"\nposition_m = 588",
+        )
+        .replace(
+            "name = \"A\"\ntrack = \"west\"\nposition_m = 1000",
+            "name = \"A\"\ntrack = \"west\"\nposition_m = 975",
+        );
+    let net = railit_import::toml_format::parse(&moved).unwrap().topology;
+    let plan = generate(&net).unwrap();
+    verify(&net, &plan).unwrap();
+    let route =
+        |p: &railit_plan::Plan, n: &str| p.routes.iter().find(|r| r.name == n).cloned().unwrap();
+    let (before, after) = (route(&exact, "A-N1"), route(&plan, "A-N1"));
+    assert_eq!(
+        after.length.as_mm(),
+        before.length.as_mm() + 25_000 - 12_000
+    );
+    assert_eq!(
+        after.overlap_length.as_mm(),
+        before.overlap_length.as_mm() + 12_000
+    );
+    assert_eq!(after.tvds, before.tvds);
+
+    let far = EXAMPLE.replace(
+        "name = \"N1\"\ntrack = \"1\"\nposition_m = 600",
+        "name = \"N1\"\ntrack = \"1\"\nposition_m = 560",
+    );
+    let err = generate(&railit_import::toml_format::parse(&far).unwrap().topology).unwrap_err();
+    assert!(err.errors.contains(&PlanningError::SignalNotAtTrackEnd {
+        signal: "N1".into()
+    }));
+    let strict = PlanningConfig {
+        signal_gap: Length::ZERO,
+        ..PlanningConfig::default()
+    };
+    assert!(railit_planning::generate_with(&net, &strict).is_err());
 }

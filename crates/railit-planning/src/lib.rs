@@ -45,13 +45,18 @@ pub use verify::{verify, verify_with};
 pub struct PlanningConfig {
     /// Mindestlänge des Durchrutschwegs hinter dem Zielsignal.
     pub overlap_length: Length,
+    /// Größter Abstand eines Hauptsignals vor der Gleisfreimeldegrenze an seinem Gleisende
+    /// (REQ-PLN-010): In realen Planungen liegt der Achszählpunkt oft einige Meter hinter dem
+    /// Signal.
+    pub signal_gap: Length,
 }
 
 impl Default for PlanningConfig {
-    /// Durchrutschweg 100 m.
+    /// Durchrutschweg 100 m, Signal höchstens 30 m vor der Freimeldegrenze.
     fn default() -> Self {
         Self {
             overlap_length: Length::from_mm(100_000),
+            signal_gap: Length::from_mm(30_000),
         }
     }
 }

@@ -82,10 +82,41 @@ const fn branch_port(pos: PointPosition) -> Port {
     }
 }
 
-/// REQ-PLN-010: Hauptsignale stehen am Gleisende an einer Gleisfreimeldegrenze.
+/// Abstand eines Signals bis zum Ende seines Gleises in Wirkrichtung (mm).
+pub(crate) fn signal_gap(net: &Topology, s: SignalId) -> u64 {
+    let Some(signal) = net.signal(s) else {
+        return 0;
+    };
+    let len = net.track(signal.track).map_or(0, |t| t.length.as_mm());
+    u64::from(match signal.direction {
+        Direction::AToB => len.saturating_sub(signal.position.as_mm()),
+        Direction::BToA => signal.position.as_mm(),
+    })
+}
+
+/// Liegt ein Bahnübergang oder eine Kreuzungsstelle zwischen dem Signal und dem Gleisende?
+fn gap_blocked(net: &Topology, s: SignalId) -> bool {
+    let Some(signal) = net.signal(s) else {
+        return true;
+    };
+    let p = signal.position.as_mm();
+    let inside = |x: u32| match signal.direction {
+        Direction::AToB => x > p,
+        Direction::BToA => x < p,
+    };
+    net.level_crossings_on(signal.track)
+        .any(|(_, l)| inside(l.position.as_mm()))
+        || net
+            .crossings_on(signal.track)
+            .any(|(_, at)| inside(at.as_mm()))
+}
+
+/// REQ-PLN-010: Hauptsignale stehen am Gleisende an einer Gleisfreimeldegrenze, höchstens
+/// [`PlanningConfig::signal_gap`] davor und ohne Bahnübergang oder Kreuzung dazwischen.
 /// Liefert die Zielsignale je (Gleis, Fahrtrichtung).
 fn check_signals(
     net: &Topology,
+    cfg: PlanningConfig,
     errors: &mut Vec<PlanningError>,
 ) -> HashMap<(TrackId, Direction), SignalId> {
     let mut ends = HashMap::new();
@@ -97,10 +128,8 @@ fn check_signals(
             )));
             continue;
         };
-        let at_end = match s.direction {
-            Direction::AToB => s.position == track.length,
-            Direction::BToA => s.position.as_mm() == 0,
-        };
+        let at_end =
+            signal_gap(net, id) <= u64::from(cfg.signal_gap.as_mm()) && !gap_blocked(net, id);
         if !at_end {
             errors.push(PlanningError::SignalNotAtTrackEnd {
                 signal: s.name.clone(),
@@ -480,9 +509,12 @@ fn approach(
     }
     let entry_signal = entry_signal.ok_or("kein Einfahrsignal gefunden")?;
     let (o_tvds, o_points, o_tracks) = overlap(net, entry_signal, length)?;
+    // Längen ab dem Einfahrsignal, das kurz vor dem Gleisende stehen darf (REQ-PLN-010).
+    let gap = signal_gap(net, entry_signal);
     let overlap_length = o_tracks.last().map_or(0, |(t, start, _)| {
-        u64::from(*start) + u64::from(net.track(*t).map_or(0, |x| x.length.as_mm()))
+        u64::from(*start) + u64::from(net.track(*t).map_or(0, |x| x.length.as_mm())) + gap
     });
+    let approach_length = approach_length.saturating_sub(gap);
     let mm = |v: u64| Length::from_mm(u32::try_from(v).unwrap_or(u32::MAX));
     for tvd in o_tvds {
         if tvds.contains(&tvd) {
@@ -1003,14 +1035,27 @@ fn route_defs(net: &Topology, drafts: Vec<Draft>, names: Vec<String>) -> Vec<Rou
         .into_iter()
         .zip(names)
         .map(|(d, name)| RouteDef {
-            // Hauptsignale stehen am Gleisende (REQ-PLN-010): Die Länge ist die Summe der
-            // Gleise hinter dem Startgleis.
-            length: mm(d
-                .tracks
-                .iter()
-                .map(|t| u64::from(net.track(*t).map_or(0, |x| x.length.as_mm())))
-                .sum()),
-            overlap_length: mm(d.overlap_length),
+            // Hauptsignale stehen am Gleisende oder kurz davor (REQ-PLN-010): Die Länge ist
+            // der Rest des Startgleises, dazu die Gleise dahinter, abzüglich des Stücks hinter
+            // dem Zielsignal; der Durchrutschweg zählt ab dem Zielsignal.
+            length: mm({
+                let tracks: u64 = d
+                    .tracks
+                    .iter()
+                    .map(|t| u64::from(net.track(*t).map_or(0, |x| x.length.as_mm())))
+                    .sum();
+                let end_gap = match d.end {
+                    RouteEnd::Signal(s) => signal_gap(net, s),
+                    _ => 0,
+                };
+                (tracks + signal_gap(net, d.start)).saturating_sub(end_gap)
+            }),
+            overlap_length: mm(match d.end {
+                RouteEnd::Signal(s) if d.overlap_length > 0 => {
+                    d.overlap_length + signal_gap(net, s)
+                }
+                _ => d.overlap_length,
+            }),
             name,
             start: d.start,
             end: d.end,
@@ -1032,7 +1077,7 @@ fn route_defs(net: &Topology, drafts: Vec<Draft>, names: Vec<String>) -> Vec<Rou
 /// [`PlanningReport`] mit allen gefundenen Fehlern.
 pub fn generate_with(net: &Topology, cfg: &PlanningConfig) -> Result<Plan, PlanningReport> {
     let mut errors = Vec::new();
-    let ends = check_signals(net, &mut errors);
+    let ends = check_signals(net, *cfg, &mut errors);
     let announces = announced_signals(net, &mut errors);
     if !errors.is_empty() {
         return Err(PlanningReport { errors });

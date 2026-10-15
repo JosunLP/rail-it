@@ -95,19 +95,68 @@ fn border_number(net: &Topology, terminal: TerminalId) -> Option<BorderId> {
     BorderId::from_index(before)
 }
 
-/// Hauptsignal auf `track` am Ende in Fahrtrichtung, wenn über `entered_at` eingefahren.
-fn end_signal(net: &Topology, track: TrackId, entered_at: Port) -> Option<SignalId> {
-    let length = net.track(track)?.length;
-    net.signals().find_map(|(id, s)| {
-        let matches = s.track == track
-            && is_route_signal(s.kind)
-            && match (entered_at, s.direction) {
-                (Port::A, Direction::AToB) => s.position == length,
-                (Port::B, Direction::BToA) => s.position.as_mm() == 0,
-                _ => false,
-            };
-        matches.then_some(id)
-    })
+/// Strecke vom Signal bis zum Gleisende in seiner Wirkrichtung (eigene Rechnung: Lage des
+/// Gleisendes in Wirkrichtung minus Lage des Signals in Wirkrichtung).
+fn rest(net: &Topology, signal: SignalId) -> u64 {
+    let Some(s) = net.signal(signal) else {
+        return 0;
+    };
+    let length = net
+        .track(s.track)
+        .map_or(0, |t| i64::from(t.length.as_mm()));
+    let pos = i64::from(s.position.as_mm());
+    let (end, here) = if s.direction == Direction::AToB {
+        (length, pos)
+    } else {
+        (0, -pos)
+    };
+    let end = if s.direction == Direction::AToB {
+        end
+    } else {
+        -end
+    };
+    u64::try_from(end - here).unwrap_or(0)
+}
+
+/// Hauptsignal auf `track` am Ende in Fahrtrichtung, wenn über `entered_at` eingefahren:
+/// höchstens `max_gap` mm vor dem Gleisende, dazwischen kein Bahnübergang und keine
+/// Kreuzungsstelle (REQ-PLN-010).
+fn end_signal(net: &Topology, track: TrackId, entered_at: Port, max_gap: u64) -> Option<SignalId> {
+    let mut found: Vec<(u64, SignalId)> = net
+        .signals()
+        .filter(|(_, s)| {
+            s.track == track
+                && is_route_signal(s.kind)
+                && matches!(
+                    (entered_at, s.direction),
+                    (Port::A, Direction::AToB) | (Port::B, Direction::BToA)
+                )
+        })
+        .map(|(id, _)| (rest(net, id), id))
+        .filter(|(r, id)| *r <= max_gap && !blocked_behind(net, *id))
+        .collect();
+    found.sort_unstable();
+    found.first().map(|(_, id)| *id)
+}
+
+/// Bahnübergang oder Kreuzungsstelle zwischen Signal und Gleisende?
+fn blocked_behind(net: &Topology, signal: SignalId) -> bool {
+    let Some(s) = net.signal(signal) else {
+        return true;
+    };
+    let ahead = |pos: u32| {
+        if s.direction == Direction::AToB {
+            pos > s.position.as_mm()
+        } else {
+            pos < s.position.as_mm()
+        }
+    };
+    net.level_crossings()
+        .any(|(_, l)| l.track == s.track && ahead(l.position.as_mm()))
+        || net
+            .crossings()
+            .flat_map(|c| c.legs)
+            .any(|(t, at)| t == s.track && ahead(at.as_mm()))
 }
 
 /// Ergebnis eines Laufs: Fahrweg und befahrene Gleise (ohne das Startgleis).
@@ -121,6 +170,7 @@ fn walk(
     net: &Topology,
     start: SignalId,
     choices: &[PointPosition],
+    max_gap: u64,
 ) -> (Result<Walked, String>, usize) {
     let mut used = 0usize;
     let Some(signal) = net.signal(start) else {
@@ -164,7 +214,7 @@ fn walk(
             }
             (NodeRef::Track(t), entered) => {
                 tracks.push(t);
-                if let Some(s) = end_signal(net, t, entered) {
+                if let Some(s) = end_signal(net, t, entered, max_gap) {
                     return (Ok(done(EndKey::Signal(s), &points, &tvds, &tracks)), used);
                 }
                 port = PortRef::new(entry.node, leave(entered));
@@ -200,10 +250,16 @@ fn walk(
 }
 
 /// Alle Fahrwege ab `start`: Aufzählung der Weichenlagen wie ein Zählwerk.
-fn enumerate(net: &Topology, start: SignalId, out: &mut Vec<Walked>, problems: &mut Vec<String>) {
+fn enumerate(
+    net: &Topology,
+    start: SignalId,
+    max_gap: u64,
+    out: &mut Vec<Walked>,
+    problems: &mut Vec<String>,
+) {
     let mut choices: Vec<PointPosition> = Vec::new();
     loop {
-        let (result, used) = walk(net, start, &choices);
+        let (result, used) = walk(net, start, &choices, max_gap);
         match result {
             Ok(w) => out.push(w),
             Err(msg) => problems.push(msg),
@@ -677,14 +733,26 @@ fn check_details(
     // Längen (Plan v4): Fahrweg als Summe der befahrenen Gleise hinter dem Startgleis,
     // Durchrutschweg bis zum Ende seines letzten Gleises.
     let track_len = |t: &TrackId| u64::from(net.track(*t).map_or(0, |x| x.length.as_mm()));
-    let route_length: u64 = tracks.iter().map(track_len).sum();
+    // Signale dürfen kurz vor dem Gleisende stehen: Rest des Startgleises dazu, Stück hinter
+    // dem Zielsignal ab; der Durchrutschweg zählt ab dem Zielsignal.
+    let end_rest = match r.end {
+        RouteEnd::Signal(e) => rest(net, e),
+        _ => 0,
+    };
+    let route_length: u64 =
+        (tracks.iter().map(track_len).sum::<u64>() + rest(net, r.start)) - end_rest;
     if u64::from(r.length.as_mm()) != route_length {
         fail("Länge");
     }
     let overlap_length = overlap
         .as_ref()
         .and_then(|o| o.tracks.last())
-        .map_or(0, |(t, start, _)| start + track_len(t));
+        .map_or(0, |(t, start, _)| start + track_len(t))
+        + if overlap.as_ref().is_some_and(|o| !o.tracks.is_empty()) {
+            end_rest
+        } else {
+            0
+        };
     if u64::from(r.overlap_length.as_mm()) != overlap_length {
         fail("Länge des Durchrutschwegs");
     }
@@ -731,7 +799,13 @@ fn check_routes(net: &Topology, cfg: PlanningConfig, plan: &Plan, problems: &mut
     let mut walked = Vec::new();
     for (id, s) in net.signals() {
         if is_route_signal(s.kind) {
-            enumerate(net, id, &mut walked, problems);
+            enumerate(
+                net,
+                id,
+                u64::from(cfg.signal_gap.as_mm()),
+                &mut walked,
+                problems,
+            );
         }
     }
     // Wege, die gekoppelte Weichen gegen ihre Kopplung verlangen, gibt es nicht.
@@ -801,6 +875,7 @@ fn expected_approach(
     net: &Topology,
     terminal: TerminalId,
     length_mm: u64,
+    max_gap: u64,
 ) -> Result<Approach, String> {
     let mut tvds: Vec<TvdId> = Vec::new();
     let mut points = BTreeSet::new();
@@ -821,7 +896,7 @@ fn expected_approach(
         match (at.node, at.port) {
             (NodeRef::Track(t), entered) => {
                 distance += u64::from(net.track(t).ok_or("Gleis fehlt")?.length.as_mm());
-                if let Some(s) = end_signal(net, t, entered) {
+                if let Some(s) = end_signal(net, t, entered, max_gap) {
                     break s;
                 }
                 port = PortRef::new(at.node, leave(entered));
@@ -838,12 +913,14 @@ fn expected_approach(
         }
     };
     let overlap = expected_overlap(net, entry, length_mm)?;
+    let behind = rest(net, entry);
     let overlap_length = match overlap.tracks.last() {
         Some((t, start, _)) => {
-            start + u64::from(net.track(*t).ok_or("Gleis fehlt")?.length.as_mm())
+            start + u64::from(net.track(*t).ok_or("Gleis fehlt")?.length.as_mm()) + behind
         }
         None => 0,
     };
+    let distance = distance - behind.min(distance);
     for t in overlap.tvds {
         if tvds.contains(&t) {
             return Err("Durchrutschweg führt zur Grenze zurück".into());
@@ -873,7 +950,7 @@ fn check_borders(net: &Topology, cfg: PlanningConfig, plan: &Plan, problems: &mu
                 t.name
             ));
         }
-        match expected_approach(net, id, length) {
+        match expected_approach(net, id, length, u64::from(cfg.signal_gap.as_mm())) {
             Ok((entry, tvds, points, distance, overlap_length)) => {
                 let plan_points: BTreeSet<_> = def.approach_points.iter().copied().collect();
                 if def.entry_signal != entry
