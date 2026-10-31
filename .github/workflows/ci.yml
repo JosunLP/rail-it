@@ -119,6 +119,9 @@ jobs:
       - name: Shellcheck
         if: runner.os == 'Linux'
         run: shellcheck -s sh scripts/install.sh scripts/package.sh scripts/test-installer.sh
+      - name: install.ps1 nur ASCII (Windows PowerShell 5.1 liest ohne BOM als Windows-1252)
+        if: runner.os == 'Linux'
+        run: "! grep -nP '[^\\x00-\\x7F]' scripts/install.ps1"
       - name: install.sh (installieren, aktualisieren, entfernen, Prüfsumme)
         if: runner.os != 'Windows'
         run: sh scripts/test-installer.sh

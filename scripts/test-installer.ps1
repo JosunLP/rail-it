@@ -67,6 +67,11 @@ try {
 
     & $install install -Prefix $prefix
     & $install update -Prefix $prefix -Version $Version -Force
+    if ($windows) {
+        # Wie `railit self update`: Windows PowerShell 5.1 liest das Skript als Windows-1252.
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $install update -Prefix $prefix -Version $Version -Force
+        Check ($LASTEXITCODE -eq 0) 'install.ps1 unter Windows PowerShell 5.1'
+    }
 
     if ($real) {
         $railit = Join-Path $bindir 'railit.exe'

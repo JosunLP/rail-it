@@ -1,14 +1,17 @@
-# rail-it – Installation, Aktualisierung und Deinstallation (Windows).
+# rail-it - Installation, Aktualisierung und Deinstallation (Windows).
+#
+# Nur ASCII: Windows PowerShell 5.1 liest Skripte ohne BOM als Windows-1252
+# (`railit self update` startet dieses Skript mit `powershell -File`).
 #
 #   irm https://josunlp.github.io/rail-it/install.ps1 | iex
 #   & ([scriptblock]::Create((irm https://josunlp.github.io/rail-it/install.ps1))) update
 #   & ([scriptblock]::Create((irm https://josunlp.github.io/rail-it/install.ps1))) uninstall
 #
-# Nach der Installation genügen `railit self update` und `railit self uninstall`.
+# Nach der Installation genuegen `railit self update` und `railit self uninstall`.
 #
 # Programme nach <Prefix>\bin (Vorgabe %LOCALAPPDATA%\Programs\rail-it), Daten nach
-# <Prefix>\share\rail-it. Das bin-Verzeichnis wird dem PATH des Benutzers hinzugefügt. Jede
-# heruntergeladene Datei wird gegen SHA256SUMS des Releases geprüft.
+# <Prefix>\share\rail-it. Das bin-Verzeichnis wird dem PATH des Benutzers hinzugefuegt. Jede
+# heruntergeladene Datei wird gegen SHA256SUMS des Releases geprueft.
 #
 # Umgebung: RAILIT_VERSION, RAILIT_PREFIX, RAILIT_REPO, RAILIT_DOWNLOAD_URL
 
@@ -34,7 +37,7 @@ function Fail([string] $Text) { throw "rail-it: Fehler: $Text" }
 
 function Get-Target {
     $arch = $env:PROCESSOR_ARCHITECTURE
-    if ($arch -ne 'AMD64') { Fail "Prozessor $arch wird nicht unterstützt (x86_64)" }
+    if ($arch -ne 'AMD64') { Fail "Prozessor $arch wird nicht unterstuetzt (x86_64)" }
     'x86_64-pc-windows-msvc'
 }
 
@@ -57,7 +60,7 @@ function Add-UserPath([string] $Dir) {
     $parts = @($path -split ';' | Where-Object { $_ })
     if ($parts -notcontains $Dir) {
         [Environment]::SetEnvironmentVariable('Path', (($parts + $Dir) -join ';'), 'User')
-        Say "$Dir zum PATH des Benutzers hinzugefügt (neue Konsole öffnen)"
+        Say "$Dir zum PATH des Benutzers hinzugefuegt (neue Konsole oeffnen)"
     }
 }
 
@@ -77,15 +80,15 @@ function Install-Release([string] $Prefix, [string] $Ver, [bool] $Force, [bool] 
     New-Item -ItemType Directory -Path $tmp | Out-Null
     try {
         $label = if ($Ver) { $Ver } else { 'neueste Version' }
-        Say "lade $label für $target"
+        Say "lade $label fuer $target"
         Invoke-WebRequest -UseBasicParsing -Uri (Get-Url $Ver $archive) -OutFile (Join-Path $tmp $archive)
         Invoke-WebRequest -UseBasicParsing -Uri (Get-Url $Ver 'SHA256SUMS') -OutFile (Join-Path $tmp 'SHA256SUMS')
         $expected = (Get-Content (Join-Path $tmp 'SHA256SUMS') |
             Where-Object { ($_ -split '\s+')[1] -in @($archive, "*$archive") } |
             ForEach-Object { ($_ -split '\s+')[0] }) | Select-Object -First 1
-        if (-not $expected) { Fail "keine Prüfsumme für $archive" }
+        if (-not $expected) { Fail "keine Pruefsumme fuer $archive" }
         $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp $archive)).Hash.ToLower()
-        if ($actual -ne $expected.ToLower()) { Fail "Prüfsumme von $archive stimmt nicht" }
+        if ($actual -ne $expected.ToLower()) { Fail "Pruefsumme von $archive stimmt nicht" }
 
         Expand-Archive -Path (Join-Path $tmp $archive) -DestinationPath $tmp -Force
         $stage = Join-Path $tmp "railit-$target"
@@ -102,7 +105,7 @@ function Install-Release([string] $Prefix, [string] $Ver, [bool] $Force, [bool] 
         $files = @()
         foreach ($bin in $Binaries) {
             $dest = Join-Path $bindir "$bin.exe"
-            # Ein laufendes Programm lässt sich nicht überschreiben, wohl aber umbenennen.
+            # Ein laufendes Programm laesst sich nicht ueberschreiben, wohl aber umbenennen.
             if (Test-Path $dest) {
                 $stale = "$dest.old"
                 Remove-Item -Force $stale -ErrorAction SilentlyContinue
@@ -149,8 +152,8 @@ function Uninstall-Release([string] $Prefix) {
     Say "rail-it $($m.version) entfernt"
 }
 
-# `railit self uninstall` startet den Installer und beendet sich: erst danach lässt sich
-# railit.exe löschen.
+# `railit self uninstall` startet den Installer und beendet sich: erst danach laesst sich
+# railit.exe loeschen.
 if ($env:RAILIT_WAIT_PID) {
     Wait-Process -Id ([int] $env:RAILIT_WAIT_PID) -Timeout 30 -ErrorAction SilentlyContinue
 }
@@ -162,7 +165,7 @@ if ($Version) { $Version = $Version.TrimStart('v') }
 switch ($Command) {
     'install' { Install-Release $Prefix $Version $Force.IsPresent $true }
     'update' {
-        if (-not (Test-Path (Join-Path $Prefix 'share\rail-it\manifest'))) { Fail "keine Installation unter $Prefix – erst installieren" }
+        if (-not (Test-Path (Join-Path $Prefix 'share\rail-it\manifest'))) { Fail "keine Installation unter $Prefix - erst installieren" }
         Install-Release $Prefix $Version $Force.IsPresent $false
     }
     'uninstall' { Uninstall-Release $Prefix }
