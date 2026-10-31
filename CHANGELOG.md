@@ -2,6 +2,13 @@
 
 Alle Releases von rail-it. Jeder Abschnitt nennt die Commits seit dem vorigen Release.
 
+## [1.0.1] – 2026-10-31
+
+### Behoben
+
+- Fix: install.ps1 unter Windows PowerShell 5.1
+- Fix: Advisories und Playwright-Runner
+
 ## [1.0.0] – 2026-10-15
 
 ### Neu
