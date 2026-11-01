@@ -282,6 +282,12 @@ fn level_crossings_match_routes(plan: &PlanView<'_>, st: &KernelState<'_>) -> Re
 /// Weichen, Schutzsignale und Bahnübergänge einer Fahrstraße sind gesichert.
 fn secured(st: &KernelState<'_>, view: &RouteView<'_>, now: Tick, timeout: Duration) -> Res<bool> {
     let mut ok = signal(st, view.start())?.stop_holds == 0;
+    // Gesperrte Elemente (REQ-IXL-027): Startsignal und Abschnitte in Fahrweg und
+    // Durchrutschweg.
+    ok &= !st.signal_blocked(view.start());
+    for t in view.tvds().chain(view.overlap_tvds()) {
+        ok &= !st.tvd_blocked(t);
+    }
     for (p, pos) in view.points().chain(view.overlap_points()) {
         ok &= effective_position(&point(st, p)?, now, timeout) == Some(pos);
     }

@@ -359,6 +359,28 @@ impl Service {
             .await
     }
 
+    /// Sperren oder Entsperren (REQ-IXL-027). Eine Gleissperrung hebt nur die Hilfshandlung
+    /// `unblock_tvd` auf; der Kern lehnt das Entsperren hier mit `aux_required` ab.
+    pub(crate) async fn block(
+        &self,
+        who: &Principal,
+        kind: railit_runtime::BlockKind,
+        name: &str,
+        blocked: bool,
+    ) -> Res<Answer> {
+        let (area, target) = self
+            .directory
+            .find_block(kind, name)
+            .ok_or_else(|| not_found(kind.as_str(), name))?;
+        let (action, request) = if blocked {
+            ("block", Request::Block(target))
+        } else {
+            ("unblock", Request::Unblock(target))
+        };
+        self.operate(who, Permission::Operate, action, name, area, request)
+            .await
+    }
+
     pub(crate) async fn request_permission(
         &self,
         who: &Principal,

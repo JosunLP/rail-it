@@ -23,11 +23,13 @@
 //! ```
 //!
 //! **Aktionen:** `set_route`, `cancel_route`, `move_point = { point, position }`,
+//! `block` / `unblock = { kind, element }` mit `kind` aus `point`, `tvd`, `signal`
+//! (Sperren, REQ-IXL-027),
 //! `add_train = { name, signal, length_m, speed_kmh, ignore_signals, etcs, pzb }`,
 //! `fault` / `clear_fault = { kind, element }` mit `kind` aus `point_disturbed`,
 //! `tvd_disturbed`, `tvd_occupied`, `signal_defective`, `lx_disturbed`,
 //! `aux = { kind, element, position, operator }` (Hilfshandlung anfordern; `kind` aus
-//! `release_route`, `reset_tvd`, `substitute`, `force_point`),
+//! `release_route`, `reset_tvd`, `substitute`, `force_point`, `unblock_tvd`),
 //! `confirm_aux = { operator }` (zuletzt angeforderte Hilfshandlung bestätigen; mit `kind`,
 //! `element`, `position` nennt der zweite Bediener sie selbst – weicht sie ab, lehnt der Kern
 //! mit `aux_mismatch` ab und die Hilfshandlung verfällt).
@@ -251,6 +253,10 @@ struct Step {
     #[serde(default)]
     request_permission: Option<String>,
     #[serde(default)]
+    block: Option<BlockEntry>,
+    #[serde(default)]
+    unblock: Option<BlockEntry>,
+    #[serde(default)]
     add_train: Option<TrainEntry>,
     #[serde(default)]
     fault: Option<FaultEntry>,
@@ -362,6 +368,14 @@ struct LinkEntry {
 struct MovePoint {
     point: String,
     position: PointPosition,
+}
+
+/// Sperre: `block = { kind = "tvd", element = "3" }` (REQ-IXL-027).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BlockEntry {
+    kind: crate::BlockKind,
+    element: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -933,6 +947,24 @@ impl<F: SimulatedField> Ctx<F> {
         }
     }
 
+    /// Sperren und Entsperren (REQ-IXL-027).
+    fn block_actions(&mut self, step: &Step) -> Vec<String> {
+        let mut failures = Vec::new();
+        for (entry, blocked) in [(&step.block, true), (&step.unblock, false)] {
+            let Some(b) = entry else { continue };
+            match self.rt.directory().find_block(b.kind, &b.element) {
+                Some((a, target)) if blocked => self.request(a, Request::Block(target)),
+                Some((a, target)) => self.request(a, Request::Unblock(target)),
+                None => failures.push(format!(
+                    "unbekanntes Element „{}“ ({})",
+                    b.element,
+                    b.kind.as_str()
+                )),
+            }
+        }
+        failures
+    }
+
     fn actions(&mut self, step: &Step) -> Vec<String> {
         let mut failures = Vec::new();
         if let Some(name) = &step.set_route {
@@ -959,6 +991,7 @@ impl<F: SimulatedField> Ctx<F> {
                 None => failures.push(format!("unbekannte Grenze „{address}“")),
             }
         }
+        failures.extend(self.block_actions(step));
         if let Some(t) = &step.add_train {
             failures.extend(self.add_train(t));
         }

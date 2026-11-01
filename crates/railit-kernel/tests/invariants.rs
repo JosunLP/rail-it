@@ -11,6 +11,8 @@
 //!   bestätigte Hilfshandlung) oder eine Fahrstraße über sie festgelegt ist.
 //! - Fahrt zeigt ein Signal nur bei freiem Durchrutschweg, Weichen in Lage (auch Flanken-
 //!   schutz) und geschlossenen Bahnübergängen; das Ersatzsignal nur bei gesichertem Fahrweg.
+//! - Gesperrte Weichen werden nie gestellt; ein Signal zeigt nie Fahrt oder Ersatzsignal,
+//!   wenn es selbst oder ein Abschnitt seiner Fahrstraße gesperrt ist (REQ-IXL-027).
 
 mod common;
 
@@ -31,6 +33,8 @@ enum Action {
     Lx(LxReport),
     Aux(AuxOperation, u32),
     Confirm(u32, u32, AuxOperation),
+    /// Sperren (`true`) oder Entsperren (REQ-IXL-027).
+    Block(BlockTarget, bool),
     Wait(u64),
     /// Übernahme durch einen Bereitschaftsrechner nach `ms` (REQ-IXL-025).
     TakeOver(u64),
@@ -66,6 +70,12 @@ fn action() -> impl Strategy<Value = Action> {
         route.prop_map(AuxOperation::Substitute),
         (0u32..6).prop_map(|t| AuxOperation::ResetTvd(TvdId::new(t))),
         (0u32..2, pos.clone()).prop_map(|(p, pos)| AuxOperation::ForcePoint(PointId::new(p), pos)),
+        (0u32..6).prop_map(|t| AuxOperation::UnblockTvd(TvdId::new(t))),
+    ];
+    let target = prop_oneof![
+        (0u32..2).prop_map(|p| BlockTarget::Point(PointId::new(p))),
+        (0u32..6).prop_map(|t| BlockTarget::Tvd(TvdId::new(t))),
+        (0u32..6).prop_map(|s| BlockTarget::Signal(railit_plan::SignalId::new(s))),
     ];
     prop_oneof![
         1 => lx.prop_map(Action::Lx),
@@ -79,6 +89,7 @@ fn action() -> impl Strategy<Value = Action> {
         1 => (0usize..2, pos).prop_map(|(i, p)| Action::Move(i, p)),
         2 => (0u64..70_000).prop_map(Action::Wait),
         1 => (0u64..3_000).prop_map(Action::TakeOver),
+        1 => (target, any::<bool>()).prop_map(|(t, b)| Action::Block(t, b)),
     ]
 }
 
@@ -242,6 +253,37 @@ fn check_take_over(h: &Harness, before: &OwnedState) {
     assert_eq!(h.state.pending_aux().count(), 0);
 }
 
+/// Sperren wirken (REQ-IXL-027): keine gesperrte Weiche gestellt, kein Fahrtbegriff und kein
+/// Ersatzsignal über gesperrte Elemente.
+fn check_blocks(h: &Harness) {
+    let blocked = |t| h.state.blocked(t);
+    for c in &h.out.commands {
+        if let Command::MovePoint { point, .. } = c {
+            assert!(
+                !blocked(BlockTarget::Point(*point)),
+                "gesperrte Weiche gestellt"
+            );
+        }
+    }
+    let plan = *h.plan();
+    for r in plan.routes() {
+        let phase = h.state.routes()[r.id().index().unwrap()].phase();
+        if phase == RoutePhase::Idle {
+            continue;
+        }
+        let start = h.state.signals()[r.start().index().unwrap()];
+        if start.commanded() == Aspect::Proceed || start.substitute() {
+            assert!(
+                !blocked(BlockTarget::Signal(r.start())),
+                "Fahrt an gesperrtem Signal"
+            );
+            for t in r.tvds().chain(r.overlap_tvds()) {
+                assert!(!blocked(BlockTarget::Tvd(t)), "Fahrt über gesperrtes Gleis");
+            }
+        }
+    }
+}
+
 proptest! {
     // Standard: 256 Fälle; mehr über die Umgebungsvariable PROPTEST_CASES.
     #[test]
@@ -261,6 +303,8 @@ proptest! {
                 Action::Lx(r) => h.lxs[0] = r,
                 Action::Aux(op, who) => requests.push(Request::AuxRequest { op, operator: OperatorId(who) }),
                 Action::Confirm(id, who, op) => requests.push(Request::AuxConfirm { aux: AuxId(id), operator: OperatorId(who), op }),
+                Action::Block(t, true) => requests.push(Request::Block(t)),
+                Action::Block(t, false) => requests.push(Request::Unblock(t)),
                 Action::Wait(ms) => dt = ms,
                 Action::TakeOver(ms) => {
                     let before = h.state.clone();
@@ -275,6 +319,7 @@ proptest! {
             h.step_after(dt, &requests);
             prop_assert_eq!(h.last, Ok(()), "sicherer Zustand nach {:?}", a);
             check_outputs(&h, &field_points, &field_tvds);
+            check_blocks(&h);
         }
     }
 }

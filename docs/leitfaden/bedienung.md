@@ -39,6 +39,8 @@ railit point move W1 left       # nur unverschlossen und in freiem Abschnitt
 | `same_operator` | dieselbe Person darf eine Hilfshandlung nicht bestätigen |
 | `aux_mismatch` | Bestätigung wiederholt die Hilfshandlung nicht – sie verfällt |
 | `aux_expired`, `aux_unknown`, `aux_busy`, `aux_not_applicable` | Hilfshandlung verfallen, unbekannt, zu viele offen bzw. hier nicht anwendbar |
+| `blocked` | Element gesperrt (Weiche, Gleis oder Startsignal) |
+| `aux_required` | Gleissperrung lässt sich nur als Hilfshandlung aufheben |
 | `unknown_element` | Element gibt es im Plan nicht |
 
 ## Hilfshandlungen
@@ -49,6 +51,7 @@ railit point move W1 left       # nur unverschlossen und in freiem Abschnitt
 | `reset-tvd` | Achszählgrundstellung eines Abschnitts |
 | `substitute` | Ersatzsignal (Zs1) für eine festgelegte Fahrstraße |
 | `force-point` | Weiche im gestörten Abschnitt umstellen (mit `--position left\|right`) |
+| `unblock-tvd` | Gleissperrung aufheben |
 
 ```sh
 railit aux request reset-tvd T2 --operator 1
@@ -58,6 +61,29 @@ railit aux confirm 3 reset-tvd T2 --operator 2    # anderer Bediener, Hilfshandl
 
 Jede Hilfshandlung verfällt, wenn sie nicht rechtzeitig bestätigt wird; das Zählwerk zählt die
 ausgeführten.
+
+## Sperren
+
+Weichen, Gleise und Signale lassen sich sperren, etwa für Arbeiten im Gleis oder eine
+beschädigte Weiche (REQ-IXL-027). Die Sperre wirkt im Kern, nicht nur am Bedienplatz:
+
+| Sperre | Wirkung | Aufheben |
+|--------|---------|----------|
+| Weichensperre (`point`) | Weiche wird nicht mehr gestellt – weder einzeln, noch für eine Fahrstraße, noch per Hilfshandlung. Fahrstraßen über sie bleiben möglich, wenn sie schon in der richtigen Lage liegt. | einfache Bedienung |
+| Gleissperrung (`tvd`) | Keine Fahrstraße und kein Durchrutschweg über den Abschnitt; eine eingestellte Fahrstraße darüber fällt auf Halt, auch kein Ersatzsignal. | nur Hilfshandlung `unblock-tvd` (zwei Bediener, Zählwerk) |
+| Signalsperre (`signal`) | Ab dem Signal wird keine Fahrstraße eingestellt; es zeigt weder Fahrt noch Ersatzsignal. | einfache Bedienung |
+
+```sh
+railit block tvd T2                               # Gleis 2 sperren
+railit route set A-N2                             # abgelehnt: T2 ist gesperrt
+railit aux request unblock-tvd T2 --operator 1    # Gleissperrung aufheben …
+railit aux confirm 4 unblock-tvd T2 --operator 2  # … nur mit einem zweiten Bediener
+railit block point W1 && railit unblock point W1  # Weichensperre
+```
+
+Sperren bleiben beim Rücksetzen des sicheren Zustands und bei der Übernahme durch den
+Bereitschaftsrechner bestehen. `railit state` markiert gesperrte Elemente mit `GESPERRT`; das
+Szenario `tests/scenarios/28_sperren.toml` zeigt alle drei Sperren.
 
 ## Sicherer Zustand
 

@@ -429,6 +429,21 @@ svg.plan text {
   fill: var(--disturbed);
 }
 
+/* Sperren (REQ-IXL-027): gestrichelt bzw. mit Sperrring, wie am Stelltisch. */
+.track.tvd-blocked {
+  stroke-dasharray: 6 4;
+}
+
+.point.blocked .point-name {
+  fill: var(--disturbed);
+  text-decoration: underline;
+}
+
+.signal.sig-blocked .lamp {
+  stroke: var(--disturbed);
+  stroke-width: 3;
+}
+
 .signal.selected .lamp {
   stroke: var(--accent);
   stroke-width: 3;

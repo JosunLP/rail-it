@@ -222,7 +222,8 @@ export class PlanView {
     for (const [name, p] of this.points) {
       const cls = tvdClass(snapshot, p.tvd);
       const pos = pointPosition(snapshot, name);
-      const locked = snapshot.points.find((x) => x.name === name)?.locked_by ? ' locked' : '';
+      const state = snapshot.points.find((x) => x.name === name);
+      const locked = (state?.locked_by ? ' locked' : '') + (state?.blocked ? ' blocked' : '');
       p.left.setAttribute('class', `track leg ${cls} ${pos === 'left' ? 'leg-on' : 'leg-off'}`);
       p.right.setAttribute('class', `track leg ${cls} ${pos === 'right' ? 'leg-on' : 'leg-off'}`);
       p.group.setAttribute('class', `point${pos ? '' : ' point-unknown'}${locked}`);

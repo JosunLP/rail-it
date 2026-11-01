@@ -11,8 +11,8 @@ use railit_types::{LxId, PointId, PointPosition, RouteId, SignalId, Tick, TvdId}
 
 use crate::invariants;
 use crate::io::{
-    Alarm, Aspect, AuxId, AuxOperation, Command, Event, Input, LxReport, Occupancy, OperatorId,
-    Outputs, Rejection, Request, RequestId, RoutePhase, SafeStateReason, SignalReport,
+    Alarm, Aspect, AuxId, AuxOperation, BlockTarget, Command, Event, Input, LxReport, Occupancy,
+    OperatorId, Outputs, Rejection, Request, RequestId, RoutePhase, SafeStateReason, SignalReport,
 };
 use crate::state::{AuxSlot, KernelState, LxState, PointState, RouteState, SignalState, TvdState};
 
@@ -462,12 +462,57 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
             }
             Request::RequestPermission(b) => self.request_permission(st, b, true)?,
             Request::WithdrawPermissionRequest(b) => self.request_permission(st, b, false)?,
+            Request::Block(target) => Self::block(st, target, true, out)?,
+            Request::Unblock(BlockTarget::Tvd(t)) => {
+                // Eine Gleissperrung hebt nur die Hilfshandlung auf (REQ-IXL-027).
+                if tvd(st, t).is_err() {
+                    Err(Rejection::UnknownElement)
+                } else {
+                    Err(Rejection::AuxRequired)
+                }
+            }
+            Request::Unblock(target) => Self::block(st, target, false, out)?,
         };
         out.event(match result {
             Ok(()) => Event::Accepted(id),
             Err(reason) => Event::Rejected(id, reason),
         });
         Ok(())
+    }
+
+    /// Sperren und Entsperren (REQ-IXL-027). Eine unveränderte Sperre wird angenommen, aber
+    /// nicht gemeldet.
+    fn block<O: Outputs>(
+        st: &mut KernelState<'_>,
+        target: BlockTarget,
+        blocked: bool,
+        out: &mut O,
+    ) -> Res<Result<(), Rejection>> {
+        let known = match target {
+            BlockTarget::Point(p) => point(st, p).is_ok(),
+            BlockTarget::Tvd(t) => tvd(st, t).is_ok(),
+            BlockTarget::Signal(s) => signal(st, s).is_ok(),
+        };
+        if !known {
+            return Ok(Err(Rejection::UnknownElement));
+        }
+        if st.blocked(target) != blocked {
+            st.set_blocked(target, blocked)?;
+            out.event(Event::Blocked { target, blocked });
+        }
+        Ok(Ok(()))
+    }
+
+    /// Erstes gesperrtes Element, das die Fahrstraße ausschließt: Startsignal, Abschnitte
+    /// in Fahrweg und Durchrutschweg (REQ-IXL-027).
+    fn route_blocked(st: &KernelState<'_>, view: &RouteView<'_>) -> Option<BlockTarget> {
+        if st.signal_blocked(view.start()) {
+            return Some(BlockTarget::Signal(view.start()));
+        }
+        view.tvds()
+            .chain(view.overlap_tvds())
+            .find(|t| st.tvd_blocked(*t))
+            .map(BlockTarget::Tvd)
     }
 
     fn tvd_clear(&self, st: &KernelState<'_>, t: TvdId, now: Tick) -> Res<bool> {
@@ -503,6 +548,15 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
         }
         if signal(st, view.start())?.stop_holds > 0 {
             return Ok(Err(Rejection::SignalHeld(view.start())));
+        }
+        if let Some(target) = Self::route_blocked(st, view) {
+            return Ok(Err(Rejection::Blocked(target)));
+        }
+        // Eine gesperrte Weiche wird nicht umgestellt: Sie muss schon in Lage sein.
+        for (p, pos) in all_points(view) {
+            if st.point_blocked(p) && !self.in_position(st, p, pos, now)? {
+                return Ok(Err(Rejection::Blocked(BlockTarget::Point(p))));
+            }
         }
         if let RouteEnd::Border(b) = view.end()
             && !self.exit_permitted(st, b, now, false)?
@@ -651,12 +705,18 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
         if state.is_locked() {
             return Ok(Err(Rejection::PointLocked(p)));
         }
+        if st.point_blocked(p) {
+            return Ok(Err(Rejection::Blocked(BlockTarget::Point(p))));
+        }
         if !self.tvd_clear(st, t, now)? {
             return Ok(Err(Rejection::PointNotOperable(p)));
         }
         // REQ-IXL-026: Eine gekoppelte Weiche läuft nur mit ihrer Partnerweiche um.
         let partner = self.partner(p, pos);
         if let Some((q, _)) = partner {
+            if st.point_blocked(q) {
+                return Ok(Err(Rejection::Blocked(BlockTarget::Point(q))));
+            }
             if point(st, q)?.is_locked() {
                 return Ok(Err(Rejection::PointLocked(q)));
             }
@@ -701,6 +761,10 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
             return Err(SafeStateReason::LockedPointCommanded(p));
         }
         if state.locked_pos.is_some_and(|lp| lp != pos) {
+            return Err(SafeStateReason::LockedPointCommanded(p));
+        }
+        // Eine gesperrte Weiche wird nie gestellt (REQ-IXL-027).
+        if st.point_blocked(p) {
             return Err(SafeStateReason::LockedPointCommanded(p));
         }
         if !forced && !self.point_tvd_clear(st, p, now)? {
@@ -763,10 +827,20 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
                         let q_occupancy =
                             effective_occupancy(&tvd(st, qt)?, now, self.rules.report_timeout());
                         !point(st, q)?.is_locked()
+                            && !st.point_blocked(q)
                             && matches!(q_occupancy, Occupancy::Disturbed | Occupancy::Clear)
                     }
                 };
-                !state.is_locked() && occupancy == Occupancy::Disturbed && partner_free
+                !state.is_locked()
+                    && !st.point_blocked(p)
+                    && occupancy == Occupancy::Disturbed
+                    && partner_free
+            }
+            AuxOperation::UnblockTvd(t) => {
+                if tvd(st, t).is_err() {
+                    return Ok(Err(Rejection::UnknownElement));
+                }
+                st.tvd_blocked(t)
             }
         };
         Ok(if applicable {
@@ -879,6 +953,10 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
                 Ok(())
             }
             AuxOperation::TakePermission(b) => Self::take_back(st, b),
+            AuxOperation::UnblockTvd(t) => {
+                // Die Voraussetzungen sind geprüft: Das Element ist bekannt.
+                Self::block(st, BlockTarget::Tvd(t), false, out)?.map_err(|_| IDX)
+            }
         }
     }
 
@@ -954,6 +1032,9 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
         if let RouteEnd::Border(b) = view.end()
             && !self.exit_permitted(st, b, now, false)?
         {
+            return Ok(false);
+        }
+        if Self::route_blocked(st, view).is_some() {
             return Ok(false);
         }
         Ok(signal(st, view.start())?.stop_holds == 0)

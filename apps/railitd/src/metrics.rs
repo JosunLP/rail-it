@@ -82,7 +82,8 @@ impl Counters {
             NamedEvent::RoutePhase { .. }
             | NamedEvent::AuxPending { .. }
             | NamedEvent::AuxExpired { .. }
-            | NamedEvent::Permission { .. } => {}
+            | NamedEvent::Permission { .. }
+            | NamedEvent::Blocked { .. } => {}
         }
     }
 }

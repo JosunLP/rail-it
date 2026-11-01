@@ -1,0 +1,100 @@
+[scenario]
+name = "Sperren: Weichensperre, Gleissperrung, Signalsperre"
+network = "../../examples/beispielstadt.toml"
+
+[[step]]
+note = "W1 in die Lage links bringen und sperren"
+move_point = { point = "W1", position = "left" }
+wait_s = 6
+
+[[step]]
+block = { kind = "point", element = "W1" }
+wait_s = 1
+expect = { accepted = true }
+
+[[step]]
+note = "Gesperrte Weiche wird nicht umgestellt – weder einzeln noch für eine Fahrstraße"
+move_point = { point = "W1", position = "right" }
+expect = { rejected = "blocked" }
+
+[[step]]
+set_route = "A-N2"
+expect = { rejected = "blocked", route = { "A-N2" = "idle" } }
+
+[[step]]
+note = "Über die Weiche in ihrer Lage ist die Fahrstraße zulässig"
+set_route = "A-N1"
+until = { route = { "A-N1" = "proceed" } }
+timeout_s = 15
+expect = { signal = { A = "proceed" }, point = { W1 = "left" } }
+
+[[step]]
+note = "Gleissperrung im Fahrweg: Signal fällt auf Halt"
+block = { kind = "tvd", element = "T1" }
+wait_s = 1
+expect = { route = { "A-N1" = "halted" }, signal = { A = "stop" }, alarm = ["signal_dropped"] }
+
+[[step]]
+note = "Auch das Ersatzsignal ist über ein gesperrtes Gleis nicht möglich"
+aux = { kind = "substitute", element = "A-N1", operator = 7 }
+expect = { rejected = "aux_not_applicable" }
+
+[[step]]
+cancel_route = "A-N1"
+until = { route = { "A-N1" = "idle" } }
+timeout_s = 200
+
+[[step]]
+note = "Weichensperre aufheben (einfache Bedienung), Gleissperrung bleibt"
+unblock = { kind = "point", element = "W1" }
+wait_s = 1
+expect = { accepted = true }
+
+[[step]]
+set_route = "A-N1"
+expect = { rejected = "blocked", route = { "A-N1" = "idle" } }
+
+[[step]]
+note = "Gleissperrung hebt nur die Hilfshandlung auf"
+unblock = { kind = "tvd", element = "T1" }
+expect = { rejected = "aux_required" }
+
+[[step]]
+aux = { kind = "unblock_tvd", element = "T1", operator = 7 }
+wait_s = 1
+
+[[step]]
+confirm_aux = { operator = 8, kind = "unblock_tvd", element = "T1" }
+wait_s = 1
+expect = { accepted = true, aux_counter = 1 }
+
+[[step]]
+set_route = "A-N1"
+until = { route = { "A-N1" = "proceed" } }
+timeout_s = 15
+
+[[step]]
+note = "Signalsperre: das Startsignal zeigt keine Fahrt mehr"
+block = { kind = "signal", element = "A" }
+wait_s = 1
+expect = { route = { "A-N1" = "halted" }, signal = { A = "stop" } }
+
+[[step]]
+cancel_route = "A-N1"
+until = { route = { "A-N1" = "idle" } }
+timeout_s = 200
+
+[[step]]
+note = "Ab einem gesperrten Signal wird keine Fahrstraße eingestellt"
+set_route = "A-N2"
+expect = { rejected = "blocked", route = { "A-N2" = "idle" } }
+
+[[step]]
+unblock = { kind = "signal", element = "A" }
+wait_s = 1
+
+[[step]]
+set_route = "A-N2"
+until = { route = { "A-N2" = "proceed" } }
+timeout_s = 15
+expect = { point = { W1 = "right" }, safe_state = false }

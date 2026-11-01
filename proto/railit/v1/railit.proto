@@ -33,6 +33,10 @@ service Interlocking {
   // Zählpflichtige Hilfshandlung anfordern und durch einen zweiten Bediener bestätigen.
   rpc RequestAux(AuxRequest) returns (Answer);
   rpc ConfirmAux(ConfirmAuxRequest) returns (Answer);
+  // Weiche, Gleis oder Signal sperren bzw. entsperren. Eine Gleissperrung hebt nur die
+  // Hilfshandlung "unblock_tvd" auf.
+  rpc Block(BlockRequest) returns (Answer);
+  rpc Unblock(BlockRequest) returns (Answer);
 }
 
 message GetStateRequest {}
@@ -47,13 +51,20 @@ message MovePointRequest {
   string position = 2;
 }
 
+message BlockRequest {
+  // "point", "tvd" oder "signal".
+  string kind = 1;
+  string element = 2;
+}
+
 message BorderRequest {
   // Adresse "Bereich>Nachbar", z. B. "Adorf>Strecke".
   string border = 1;
 }
 
 message AuxRequest {
-  // "release_route", "reset_tvd", "substitute", "force_point", "take_permission".
+  // "release_route", "reset_tvd", "substitute", "force_point", "take_permission",
+  // "unblock_tvd".
   string kind = 1;
   string element = 2;
   // Nur für "force_point": "left" oder "right".
@@ -144,6 +155,7 @@ message SignalState {
   string commanded = 3;
   string picture = 4;
   bool substitute = 5;
+  bool blocked = 6;
 }
 
 message PointState {
@@ -151,6 +163,7 @@ message PointState {
   string name = 2;
   string report = 3;
   string locked_by = 4;
+  bool blocked = 5;
 }
 
 message TvdState {
@@ -158,6 +171,7 @@ message TvdState {
   string name = 2;
   string occupancy = 3;
   string locked_by = 4;
+  bool blocked = 5;
 }
 
 // ── Betriebsführung ──────────────────────────────────────────────────────────────────────

@@ -187,6 +187,7 @@ impl Interlocking for Grpc {
                     commanded: name(&x.commanded),
                     picture: x.picture.clone(),
                     substitute: x.substitute,
+                    blocked: x.blocked,
                 })
                 .collect(),
             points: s
@@ -197,6 +198,7 @@ impl Interlocking for Grpc {
                     name: p.name.clone(),
                     report: name(&p.report),
                     locked_by: p.locked_by.clone().unwrap_or_default(),
+                    blocked: p.blocked,
                 })
                 .collect(),
             tvds: s
@@ -207,6 +209,7 @@ impl Interlocking for Grpc {
                     name: t.name.clone(),
                     occupancy: name(&t.occupancy),
                     locked_by: t.locked_by.clone().unwrap_or_default(),
+                    blocked: t.blocked,
                 })
                 .collect(),
             aux_counter: s.aux_counter,
@@ -237,6 +240,22 @@ impl Interlocking for Grpc {
         let r = request.get_ref();
         let position = parse("Lage", &r.position)?;
         let a = self.service.move_point(&who, &r.point, position).await?;
+        Ok(Response::new(answer(a)))
+    }
+
+    async fn block(&self, request: Request<pb::BlockRequest>) -> Res<pb::Answer> {
+        let who = who(&request)?;
+        let r = request.get_ref();
+        let kind = r.kind.parse().map_err(Status::invalid_argument)?;
+        let a = self.service.block(&who, kind, &r.element, true).await?;
+        Ok(Response::new(answer(a)))
+    }
+
+    async fn unblock(&self, request: Request<pb::BlockRequest>) -> Res<pb::Answer> {
+        let who = who(&request)?;
+        let r = request.get_ref();
+        let kind = r.kind.parse().map_err(Status::invalid_argument)?;
+        let a = self.service.block(&who, kind, &r.element, false).await?;
         Ok(Response::new(answer(a)))
     }
 

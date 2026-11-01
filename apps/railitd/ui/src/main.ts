@@ -22,6 +22,7 @@ import {
   COMMAND_HELP,
   findRoute,
   health,
+  isBlocked,
   mergeSnapshots,
   operable,
   parseCommand,
@@ -33,7 +34,7 @@ import {
 } from './model';
 import { displayHealth, messages, report, reviewAt, reviewRowsSignal, snapshot, standbyRole } from './panels';
 import { type PlanTarget, PlanView } from './plan';
-import type { Answer, AuxKind, JournalInfo, NamedAux, PendingAux, Snapshot } from './types';
+import type { Answer, AuxKind, BlockKind, JournalInfo, NamedAux, PendingAux, Snapshot } from './types';
 
 const POLL_MS = 300;
 /** Die Rückschau zeigt Befehle und Ereignisse dieser Spanne vor dem gewählten Zeitpunkt. */
@@ -140,6 +141,16 @@ function auxItem(label: string, op: NamedAux): MenuItem {
   return { label: `${label} (Hilfshandlung)`, run: () => void act(auxText(op), () => api.requestAux(op)) };
 }
 
+/** Sperren bzw. Entsperren (REQ-IXL-027); eine Gleissperrung hebt nur die Hilfshandlung auf. */
+function blockItem(s: Snapshot, kind: BlockKind, name: string): MenuItem {
+  const label = kind === 'point' ? 'Weiche' : kind === 'tvd' ? 'Gleis' : 'Signal';
+  if (!isBlocked(s, kind, name)) {
+    return { label: `${label} sperren`, run: () => void act(`${label} ${name} sperren`, () => api.block(kind, name)) };
+  }
+  if (kind === 'tvd') return auxItem('Gleissperrung aufheben', { kind: 'unblock_tvd', element: name });
+  return { label: `${label} entsperren`, run: () => void act(`${label} ${name} entsperren`, () => api.unblock(kind, name)) };
+}
+
 function menuFor(target: PlanTarget, s: Snapshot): { title: string; items: MenuItem[] } {
   switch (target.kind) {
     case 'signal': {
@@ -150,12 +161,14 @@ function menuFor(target: PlanTarget, s: Snapshot): { title: string; items: MenuI
       for (const r of routesFrom(s, target.name)) {
         items.push(auxItem(`Ersatzsignal für ${r}`, { kind: 'substitute', element: r }));
       }
+      items.push(blockItem(s, 'signal', target.name));
       return { title: `Signal ${target.name}`, items };
     }
     case 'point':
       return {
         title: `Weiche ${target.name}`,
-        items: (['left', 'right'] as const).flatMap((position) => [
+        items: [
+          ...(['left', 'right'] as const).flatMap((position) => [
           {
             label: `nach ${position === 'left' ? 'links' : 'rechts'} umstellen`,
             run: () => void act(`Weiche ${target.name}`, () => api.movePoint(target.name, position)),
@@ -165,12 +178,17 @@ function menuFor(target: PlanTarget, s: Snapshot): { title: string; items: MenuI
             element: target.name,
             position,
           }),
-        ]),
+          ]),
+          blockItem(s, 'point', target.name),
+        ],
       };
     case 'track':
       return {
         title: `Abschnitt ${target.tvd}`,
-        items: [auxItem('Achszählgrundstellung', { kind: 'reset_tvd', element: target.tvd })],
+        items: [
+          auxItem('Achszählgrundstellung', { kind: 'reset_tvd', element: target.tvd }),
+          blockItem(s, 'tvd', target.tvd),
+        ],
       };
     case 'border': {
       const items: MenuItem[] = [

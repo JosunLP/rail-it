@@ -138,6 +138,28 @@ pub enum AuxOperation {
     /// Erlaubnis zurückholen, wenn der Nachbar sie nicht hält, aber auch nicht abgibt
     /// (z. B. nach seinem Neustart). Der Kern übernimmt sie erst nach der Einschwingzeit.
     TakePermission(BorderId),
+    /// Gleissperrung aufheben (REQ-IXL-027). Ein gesperrtes Gleis wird oft für Arbeiten
+    /// gesperrt; wieder befahrbar wird es nur mit Zählung durch zwei Bediener.
+    UnblockTvd(TvdId),
+}
+
+/// Element, das der Bediener sperren kann (REQ-IXL-027).
+///
+/// Eine Sperre schränkt nur ein: Sie verhindert Umstellen, Einstellen und Fahrt, löst aber
+/// nichts auf. Deshalb ist Sperren immer erlaubt.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum BlockTarget {
+    /// Weichensperre: Die Weiche wird nicht mehr umgestellt. Fahrstraßen über sie sind nur
+    /// zulässig, wenn sie schon überwacht in der geforderten Lage liegt.
+    Point(PointId),
+    /// Gleissperrung: Keine Fahrstraße und kein Durchrutschweg führt über den Abschnitt;
+    /// eingestellte Fahrstraßen darüber zeigen keine Fahrt mehr.
+    Tvd(TvdId),
+    /// Signalsperre (Startsperre): Ab dem Signal wird keine Fahrstraße eingestellt, und es
+    /// zeigt weder Fahrt noch Ersatzsignal.
+    Signal(SignalId),
 }
 
 /// Signalbegriff, den der Kern befiehlt.
@@ -194,6 +216,11 @@ pub enum Request {
         /// Hilfshandlung, wie der bestätigende Bediener sie verstanden hat.
         op: AuxOperation,
     },
+    /// Element sperren (REQ-IXL-027).
+    Block(BlockTarget),
+    /// Sperre aufheben. Für Weichen und Signale eine einfache Bedienung; eine Gleissperrung
+    /// hebt nur die Hilfshandlung [`AuxOperation::UnblockTvd`] auf.
+    Unblock(BlockTarget),
 }
 
 /// Eingabe eines Zyklus.
@@ -354,6 +381,10 @@ pub enum Rejection {
     AuxNotApplicable,
     /// Für die Grenze fehlt die Erlaubnis; sie muss erst angefordert werden.
     NoPermission(BorderId),
+    /// Das Element ist gesperrt (REQ-IXL-027).
+    Blocked(BlockTarget),
+    /// Die Bedienung ist nur als zählpflichtige Hilfshandlung zulässig.
+    AuxRequired,
 }
 
 /// Störungs- und Gefahrenmeldung.
@@ -423,6 +454,13 @@ pub enum Event {
         border: BorderId,
         /// Hält dieser Kern die Erlaubnis jetzt?
         holding: bool,
+    },
+    /// Ein Element wurde gesperrt oder entsperrt (REQ-IXL-027).
+    Blocked {
+        /// Element.
+        target: BlockTarget,
+        /// Ist das Element jetzt gesperrt?
+        blocked: bool,
     },
 }
 

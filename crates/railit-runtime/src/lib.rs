@@ -24,8 +24,9 @@ pub mod scenario;
 pub use directory::Directory;
 pub use field::{DynField, FieldAdapter, SimulatedField};
 pub use names::{
-    AreaSnapshot, AuxKind, AuxSnapshot, BorderSnapshot, LxSnapshot, NamedAux, NamedCommand,
-    NamedEvent, PointSnapshot, RouteSnapshot, SignalSnapshot, Snapshot, TvdSnapshot, aux_check,
+    AreaSnapshot, AuxKind, AuxSnapshot, BlockKind, BorderSnapshot, LxSnapshot, NamedAux,
+    NamedCommand, NamedEvent, PointSnapshot, RouteSnapshot, SignalSnapshot, Snapshot, TvdSnapshot,
+    aux_check, block_name,
 };
 pub use names::{ChannelSnapshot, SafetySnapshot};
 pub use railit_adapters;

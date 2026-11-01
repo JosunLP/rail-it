@@ -17,15 +17,43 @@
 //!   zählen ihre Halter ebenso.
 
 use railit_plan::PlanView;
-use railit_types::{PointPosition, RouteId, Tick};
+use railit_types::bitset::{BitSet, BitSetMut};
+use railit_types::{PointId, PointPosition, RouteId, SignalId, Tick, TvdId};
 
 use crate::io::{
-    Aspect, AuxId, AuxOperation, BorderMessage, LxReport, Occupancy, OperatorId, PointReport,
-    RoutePhase, SafeStateReason, SignalReport,
+    Aspect, AuxId, AuxOperation, BlockTarget, BorderMessage, LxReport, Occupancy, OperatorId,
+    PointReport, RoutePhase, SafeStateReason, SignalReport,
 };
 
 /// Empfohlene Anzahl gleichzeitig offener Hilfshandlungen.
 pub const AUX_SLOTS: usize = 8;
+
+/// Anzahl `u64`-Wörter der Bitmenge gesperrter Elemente (REQ-IXL-027): je ein Bit für jede
+/// Weiche, jeden Abschnitt und jedes Signal, in dieser Reihenfolge.
+pub fn block_words(plan: &PlanView<'_>) -> usize {
+    let bits = plan
+        .point_count()
+        .saturating_add(plan.tvd_count())
+        .saturating_add(plan.signal_count());
+    bits.div_ceil(64)
+}
+
+/// Bitposition eines sperrbaren Elements in der Bitmenge gesperrter Elemente; `None` für ein
+/// Element, das es nicht gibt. `counts` sind die Anzahlen der Weichen, Abschnitte und Signale.
+pub(crate) fn block_bit(counts: (usize, usize, usize), target: BlockTarget) -> Option<usize> {
+    let (points, tvds, signals) = counts;
+    match target {
+        BlockTarget::Point(p) => p.index().filter(|i| *i < points),
+        BlockTarget::Tvd(t) => t
+            .index()
+            .filter(|i| *i < tvds)
+            .and_then(|i| points.checked_add(i)),
+        BlockTarget::Signal(s) => s
+            .index()
+            .filter(|i| *i < signals)
+            .and_then(|i| points.checked_add(tvds)?.checked_add(i)),
+    }
+}
 
 /// Zustand einer Weiche.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -376,6 +404,8 @@ pub enum StatePart {
     Active(u16, u64),
     /// Globaler Zustand.
     Meta(Meta),
+    /// Wort der Bitmenge gesperrter Elemente (REQ-IXL-027).
+    Blocks(u16, u64),
 }
 
 /// Veränderliche Sicht auf den Zustandsspeicher.
@@ -395,6 +425,8 @@ pub struct KernelState<'s> {
     /// Bitmenge der eingestellten Fahrstraßen.
     pub(crate) active: &'s mut [u64],
     pub(crate) meta: &'s mut Meta,
+    /// Bitmenge der gesperrten Elemente, siehe [`block_words`].
+    pub(crate) blocks: &'s mut [u64],
 }
 
 /// Vom Aufrufer bereitgestellter Speicher für [`KernelState::new`].
@@ -418,6 +450,8 @@ pub struct Buffers<'s> {
     pub active: &'s mut [u64],
     /// Globaler Zustand.
     pub meta: &'s mut Meta,
+    /// Bitmenge der gesperrten Elemente, Länge = [`block_words`].
+    pub blocks: &'s mut [u64],
 }
 
 impl<'s> KernelState<'s> {
@@ -436,6 +470,7 @@ impl<'s> KernelState<'s> {
             aux,
             active,
             meta,
+            blocks,
         } = buffers;
         if points.len() != plan.point_count()
             || tvds.len() != plan.tvd_count()
@@ -444,6 +479,7 @@ impl<'s> KernelState<'s> {
             || lxs.len() != plan.lx_count()
             || borders.len() != plan.border_count()
             || active.len() != plan.route_set_words()
+            || blocks.len() != block_words(plan)
         {
             return Err(SafeStateReason::StateMismatch);
         }
@@ -457,6 +493,7 @@ impl<'s> KernelState<'s> {
             aux,
             active,
             meta,
+            blocks,
         })
     }
 
@@ -488,6 +525,7 @@ impl<'s> KernelState<'s> {
             aux: self.aux,
             active: self.active,
             meta: self.meta,
+            blocks: self.blocks,
         }
     }
 
@@ -506,6 +544,7 @@ impl<'s> KernelState<'s> {
             || self.borders.len() != other.borders.len()
             || self.aux.len() != other.aux.len()
             || self.active.len() != other.active.len()
+            || self.blocks.len() != other.blocks.len()
         {
             return Err(SafeStateReason::StateMismatch);
         }
@@ -517,13 +556,14 @@ impl<'s> KernelState<'s> {
         self.borders.copy_from_slice(other.borders);
         self.aux.copy_from_slice(other.aux);
         self.active.copy_from_slice(other.active);
+        self.blocks.copy_from_slice(other.blocks);
         *self.meta = *other.meta;
         Ok(())
     }
 
     /// Setzt den gesamten Zustand auf den Anfangszustand zurück: keine Meldungen, alle
-    /// Signale Halt, keine Fahrstraßen, keine offenen Hilfshandlungen. Das Zählwerk bleibt
-    /// erhalten.
+    /// Signale Halt, keine Fahrstraßen, keine offenen Hilfshandlungen. Das Zählwerk und die
+    /// Sperren bleiben erhalten: Ein Neustart darf kein gesperrtes Gleis freigeben.
     pub fn reset(&mut self) {
         let counter = self.meta.aux_counter;
         self.points.fill(PointState::default());
@@ -538,6 +578,50 @@ impl<'s> KernelState<'s> {
         self.meta.aux_counter = counter;
     }
 
+    /// Ist das Element gesperrt? Unbekannte Elemente gelten als gesperrt.
+    pub fn blocked(&self, target: BlockTarget) -> bool {
+        block_bit(
+            (self.points.len(), self.tvds.len(), self.signals.len()),
+            target,
+        )
+        .is_none_or(|bit| BitSet::new(self.blocks).contains(bit))
+    }
+
+    /// Ist die Weiche gesperrt?
+    pub fn point_blocked(&self, p: PointId) -> bool {
+        self.blocked(BlockTarget::Point(p))
+    }
+
+    /// Ist der Abschnitt gesperrt?
+    pub fn tvd_blocked(&self, t: TvdId) -> bool {
+        self.blocked(BlockTarget::Tvd(t))
+    }
+
+    /// Ist das Signal gesperrt?
+    pub fn signal_blocked(&self, s: SignalId) -> bool {
+        self.blocked(BlockTarget::Signal(s))
+    }
+
+    /// Sperrt das Element oder hebt die Sperre auf.
+    pub(crate) fn set_blocked(
+        &mut self,
+        target: BlockTarget,
+        blocked: bool,
+    ) -> Result<(), SafeStateReason> {
+        let bit = block_bit(
+            (self.points.len(), self.tvds.len(), self.signals.len()),
+            target,
+        )
+        .ok_or(SafeStateReason::InternalIndex)?;
+        let mut set = BitSetMut::new(self.blocks);
+        let result = if blocked {
+            set.insert(bit)
+        } else {
+            set.remove(bit)
+        };
+        result.map_err(|_| SafeStateReason::InternalIndex)
+    }
+
     /// Anzahl der Teile für die Zustandsübertragung ([`StatePart`]).
     pub fn part_count(&self) -> usize {
         [
@@ -550,6 +634,7 @@ impl<'s> KernelState<'s> {
             self.aux.len(),
             self.active.len(),
             1,
+            self.blocks.len(),
         ]
         .iter()
         .fold(0usize, |sum, n| sum.saturating_add(*n))
@@ -589,7 +674,11 @@ impl<'s> KernelState<'s> {
         if let Some((k, v)) = take(self.active, &mut i) {
             return Some(StatePart::Active(k, v));
         }
-        (i == 0).then_some(StatePart::Meta(*self.meta))
+        if i == 0 {
+            return Some(StatePart::Meta(*self.meta));
+        }
+        i = i.checked_sub(1)?;
+        take(self.blocks, &mut i).map(|(k, v)| StatePart::Blocks(k, v))
     }
 
     /// Setzt einen Teil der Zustandsübertragung ein.
@@ -613,6 +702,7 @@ impl<'s> KernelState<'s> {
             StatePart::Border(i, v) => put(self.borders, i, v),
             StatePart::Aux(i, v) => put(self.aux, i, v),
             StatePart::Active(i, v) => put(self.active, i, v),
+            StatePart::Blocks(i, v) => put(self.blocks, i, v),
             StatePart::Meta(m) => {
                 *self.meta = m;
                 Ok(())
@@ -668,7 +758,7 @@ mod owned {
 
     use super::{
         AUX_SLOTS, AuxSlot, BorderState, KernelState, LxState, Meta, PointState, RouteState,
-        SignalState, TvdState,
+        SignalState, TvdState, block_words,
     };
     use crate::io::{Command, Event, Outputs};
     use railit_plan::PlanView;
@@ -686,6 +776,10 @@ mod owned {
         aux: Vec<Option<AuxSlot>>,
         active: Vec<u64>,
         meta: Meta,
+        /// Fehlt in Zustandsabzügen vor Journalformat 5; [`OwnedState::fit_blocks`] legt die
+        /// Bitmenge dann leer an.
+        #[cfg_attr(feature = "serde", serde(default))]
+        blocks: Vec<u64>,
     }
 
     impl OwnedState {
@@ -701,7 +795,31 @@ mod owned {
                 aux: vec![None; AUX_SLOTS],
                 active: vec![0; plan.route_set_words()],
                 meta: Meta::default(),
+                blocks: vec![0; block_words(plan)],
             }
+        }
+
+        /// Legt die Bitmenge der Sperren für Zustandsabzüge an, die vor den Sperren entstanden
+        /// sind (Journalformat bis 4). Eine vorhandene Bitmenge bleibt unverändert.
+        pub fn fit_blocks(&mut self, plan: &PlanView<'_>) {
+            if self.blocks.is_empty() {
+                self.blocks = vec![0; block_words(plan)];
+            }
+        }
+
+        /// Hash wie vor den Sperren (Journalformat bis 4): alle Teile außer der Bitmenge der
+        /// Sperren. Dient nur der Prüfung älterer Journale, in denen nichts gesperrt sein kann.
+        pub fn hash_without_blocks<H: core::hash::Hasher>(&self, h: &mut H) {
+            use core::hash::Hash;
+            self.points.hash(h);
+            self.tvds.hash(h);
+            self.signals.hash(h);
+            self.routes.hash(h);
+            self.lxs.hash(h);
+            self.borders.hash(h);
+            self.aux.hash(h);
+            self.active.hash(h);
+            self.meta.hash(h);
         }
 
         /// Passt der Speicher zu `plan` (etwa nach dem Einlesen eines Zustandsabzugs)?
@@ -714,6 +832,7 @@ mod owned {
                 && self.borders.len() == plan.border_count()
                 && self.aux.len() == AUX_SLOTS
                 && self.active.len() == plan.route_set_words()
+                && self.blocks.len() == block_words(plan)
         }
 
         /// Veränderliche Sicht für einen Zyklus.
@@ -728,6 +847,7 @@ mod owned {
                 aux: &mut self.aux,
                 active: &mut self.active,
                 meta: &mut self.meta,
+                blocks: &mut self.blocks,
             }
         }
 
@@ -769,6 +889,20 @@ mod owned {
         /// Globaler Zustand.
         pub fn meta(&self) -> &Meta {
             &self.meta
+        }
+
+        /// Bitmenge der gesperrten Elemente.
+        pub fn blocks(&self) -> &[u64] {
+            &self.blocks
+        }
+
+        /// Ist das Element gesperrt? Unbekannte Elemente gelten als gesperrt.
+        pub fn blocked(&self, target: crate::io::BlockTarget) -> bool {
+            super::block_bit(
+                (self.points.len(), self.tvds.len(), self.signals.len()),
+                target,
+            )
+            .is_none_or(|bit| railit_types::bitset::BitSet::new(&self.blocks).contains(bit))
         }
     }
 

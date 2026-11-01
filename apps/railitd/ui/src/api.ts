@@ -3,7 +3,7 @@
 import { createHttp, signal } from '@bquery/bquery/reactive';
 import type { HttpClient } from '@bquery/bquery/reactive';
 import { type Role, roleOf } from './model';
-import type { Answer, JournalInfo, Layout, NamedAux, PendingAux, ReviewCycle, Snapshot } from './types';
+import type { Answer, BlockKind, JournalInfo, Layout, NamedAux, PendingAux, ReviewCycle, Snapshot } from './types';
 
 const TOKEN_KEY = 'railit.token';
 const OPERATOR_KEY = 'railit.operator';
@@ -117,6 +117,10 @@ export const setRoute = (route: string) => request(`/v1/routes/${seg(route)}/set
 export const cancelRoute = (route: string) => request(`/v1/routes/${seg(route)}/cancel`);
 export const movePoint = (point: string, position: 'left' | 'right') =>
   request(`/v1/points/${seg(point)}/move`, { position });
+export const block = (kind: BlockKind, element: string) =>
+  request(`/v1/blocks/${kind}/${seg(element)}/block`);
+export const unblock = (kind: BlockKind, element: string) =>
+  request(`/v1/blocks/${kind}/${seg(element)}/unblock`);
 export const requestPermission = (address: string) => request(`/v1/borders/${seg(address)}/request`);
 export const requestAux = (op: NamedAux) => request('/v1/aux', { ...op });
 

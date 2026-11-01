@@ -181,15 +181,11 @@ impl Engine {
             let named = self.rt.name_event(e);
             self.counters.observe_event(&named);
             let area = self.rt.area_name(e.area).unwrap_or("?").to_string();
+            log_event(&area, &named);
             match &named {
-                NamedEvent::Alarm { alarm, element } => {
-                    tracing::warn!(area, alarm, ?element, "Alarm");
-                }
-                NamedEvent::AuxExecuted { aux, op, counter } => {
-                    tracing::warn!(area, aux, ?op, counter, "Hilfshandlung ausgeführt");
-                    aux_event = Some(named.clone());
-                }
-                NamedEvent::AuxPending { .. } | NamedEvent::AuxExpired { .. } => {
+                NamedEvent::AuxExecuted { .. }
+                | NamedEvent::AuxPending { .. }
+                | NamedEvent::AuxExpired { .. } => {
                     aux_event = Some(named.clone());
                 }
                 NamedEvent::Accepted { request } | NamedEvent::Rejected { request, .. } => {
@@ -202,10 +198,10 @@ impl Engine {
                         });
                     }
                 }
-                NamedEvent::Permission { border, holding } => {
-                    tracing::info!(border, holding, "Erlaubniswechsel");
-                }
-                NamedEvent::RoutePhase { .. } => {}
+                NamedEvent::Alarm { .. }
+                | NamedEvent::Permission { .. }
+                | NamedEvent::Blocked { .. }
+                | NamedEvent::RoutePhase { .. } => {}
             }
             let value = serde_json::to_value(&named).unwrap_or(Value::Null);
             let _ = self
@@ -499,4 +495,23 @@ fn add_train(rt: &mut Runtime<ServiceField>, spec: TrainSpec) -> SimReply {
         return SimReply::Error(e);
     }
     SimReply::Done
+}
+
+/// Protokolliert ein Ereignis des Kerns, das der Betrieb sehen soll.
+fn log_event(area: &str, event: &NamedEvent) {
+    match event {
+        NamedEvent::Alarm { alarm, element } => tracing::warn!(area, alarm, ?element, "Alarm"),
+        NamedEvent::AuxExecuted { aux, op, counter } => {
+            tracing::warn!(area, aux, ?op, counter, "Hilfshandlung ausgeführt");
+        }
+        NamedEvent::Permission { border, holding } => {
+            tracing::info!(border, holding, "Erlaubniswechsel");
+        }
+        NamedEvent::Blocked {
+            kind,
+            element,
+            blocked,
+        } => tracing::info!(area, ?kind, element, blocked, "Sperre"),
+        _ => {}
+    }
 }

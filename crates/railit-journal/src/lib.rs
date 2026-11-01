@@ -372,9 +372,16 @@ impl Hasher for ShaHasher {
 }
 
 /// SHA-256 über den gesamten Kernzustand (Hex).
+///
+/// Ist nichts gesperrt (REQ-IXL-027), bleibt die Bitmenge der Sperren außen vor: Der Wert ist
+/// dann derselbe wie vor den Sperren, und ältere Journale lassen sich weiter prüfen.
 pub fn state_digest(state: &OwnedState) -> String {
     let mut h = ShaHasher(Sha256::new());
-    state.hash(&mut h);
+    if state.blocks().iter().all(|w| *w == 0) {
+        state.hash_without_blocks(&mut h);
+    } else {
+        state.hash(&mut h);
+    }
     to_hex(&h.0.finalize())
 }
 
@@ -1122,8 +1129,10 @@ impl<'p> Replayer<'p> {
             Item::Adopt(resync) => {
                 self.tripped = false;
                 self.state = resync.state;
+                self.state.fit_blocks(self.kernel.plan());
             }
-            Item::End(snapshot) => {
+            Item::End(mut snapshot) => {
+                snapshot.state.fit_blocks(self.kernel.plan());
                 if snapshot.state != self.state {
                     return Err(JournalError::Divergence {
                         cycle: snapshot.cycle,
@@ -1201,7 +1210,8 @@ impl Visit for Live<'_> {
         self.feed(Item::End(snapshot))
     }
 
-    fn resync(&mut self, resync: Box<Resync>) -> Result<(), JournalError> {
+    fn resync(&mut self, mut resync: Box<Resync>) -> Result<(), JournalError> {
+        resync.state.fit_blocks(&self.plan);
         if !resync.state.fits(&self.plan) {
             return Err(JournalError::Format(format!(
                 "Zustandsübernahme bei Zyklus {} passt nicht zum Plan",
@@ -1397,7 +1407,8 @@ impl Visit for Parallel<'_, '_, '_> {
         Ok(())
     }
 
-    fn snapshot(&mut self, snapshot: Box<Snapshot>) -> Result<(), JournalError> {
+    fn snapshot(&mut self, mut snapshot: Box<Snapshot>) -> Result<(), JournalError> {
+        snapshot.state.fit_blocks(self.plan);
         if !snapshot.state.fits(self.plan) {
             return Err(JournalError::Format(format!(
                 "Zustandsabzug nach Zyklus {} passt nicht zum Plan",
@@ -1412,7 +1423,8 @@ impl Visit for Parallel<'_, '_, '_> {
 
     /// Eine Übernahme beendet den Abschnitt ohne Vergleich; der nächste beginnt mit dem
     /// übernommenen Zustand.
-    fn resync(&mut self, resync: Box<Resync>) -> Result<(), JournalError> {
+    fn resync(&mut self, mut resync: Box<Resync>) -> Result<(), JournalError> {
+        resync.state.fit_blocks(self.plan);
         if !resync.state.fits(self.plan) {
             return Err(JournalError::Format(format!(
                 "Zustandsübernahme bei Zyklus {} passt nicht zum Plan",
@@ -1495,7 +1507,8 @@ impl Visit for Window<'_> {
         Ok(())
     }
 
-    fn snapshot(&mut self, snapshot: Box<Snapshot>) -> Result<(), JournalError> {
+    fn snapshot(&mut self, mut snapshot: Box<Snapshot>) -> Result<(), JournalError> {
+        snapshot.state.fit_blocks(self.plan);
         if !snapshot.state.fits(self.plan) {
             return Err(JournalError::Format(format!(
                 "Zustandsabzug nach Zyklus {} passt nicht zum Plan",
@@ -1511,7 +1524,8 @@ impl Visit for Window<'_> {
         Ok(())
     }
 
-    fn resync(&mut self, resync: Box<Resync>) -> Result<(), JournalError> {
+    fn resync(&mut self, mut resync: Box<Resync>) -> Result<(), JournalError> {
+        resync.state.fit_blocks(self.plan);
         if !resync.state.fits(self.plan) {
             return Err(JournalError::Format(format!(
                 "Zustandsübernahme bei Zyklus {} passt nicht zum Plan",

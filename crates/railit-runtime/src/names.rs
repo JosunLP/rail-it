@@ -1,8 +1,8 @@
 //! Zustand und Ereignisse mit fachlichen Namen statt IDs.
 
 use railit_kernel::{
-    Alarm, Aspect, AuxOperation, Command, Event, LxReport, Occupancy, OwnedState, PointReport,
-    Rejection, RoutePhase, SignalReport,
+    Alarm, Aspect, AuxOperation, BlockTarget, Command, Event, LxReport, Occupancy, OwnedState,
+    PointReport, Rejection, RoutePhase, SignalReport,
 };
 use railit_plan::{PlanView, RouteEnd};
 use railit_types::{BorderId, LxId, PointId, PointPosition, RouteId, SignalId, Tick, TvdId};
@@ -47,6 +47,8 @@ pub enum AuxKind {
     ForcePoint,
     /// Erlaubnis an einer Bereichsgrenze zurückholen (Element: Grenze).
     TakePermission,
+    /// Gleissperrung aufheben (Element: Abschnitt).
+    UnblockTvd,
 }
 
 impl AuxKind {
@@ -58,6 +60,7 @@ impl AuxKind {
             Self::Substitute => "substitute",
             Self::ForcePoint => "force_point",
             Self::TakePermission => "take_permission",
+            Self::UnblockTvd => "unblock_tvd",
         }
     }
 }
@@ -135,6 +138,7 @@ impl NamedAux {
                 format!("{area}{}", border_name(plan, b)),
                 None,
             ),
+            AuxOperation::UnblockTvd(t) => (AuxKind::UnblockTvd, tvd_name(plan, t), None),
         };
         Self {
             kind,
@@ -162,12 +166,71 @@ impl NamedAux {
             AuxKind::TakePermission => {
                 AuxOperation::TakePermission(plan.find_border(&self.element).ok_or_else(unknown)?)
             }
+            AuxKind::UnblockTvd => {
+                AuxOperation::UnblockTvd(plan.find_tvd(&self.element).ok_or_else(unknown)?)
+            }
             AuxKind::ForcePoint => AuxOperation::ForcePoint(
                 plan.find_point(&self.element).ok_or_else(unknown)?,
                 self.position
                     .ok_or_else(|| "force_point braucht eine Lage (position)".to_string())?,
             ),
         })
+    }
+}
+
+/// Art eines sperrbaren Elements (REQ-IXL-027).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockKind {
+    /// Weichensperre.
+    Point,
+    /// Gleissperrung.
+    Tvd,
+    /// Signalsperre.
+    Signal,
+}
+
+impl BlockKind {
+    /// Name wie in API und Szenarien.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Point => "point",
+            Self::Tvd => "tvd",
+            Self::Signal => "signal",
+        }
+    }
+
+    /// Löst ein Element dieser Art gegen den Plan auf.
+    pub fn resolve(self, plan: &PlanView<'_>, name: &str) -> Option<BlockTarget> {
+        Some(match self {
+            Self::Point => BlockTarget::Point(plan.find_point(name)?),
+            Self::Tvd => BlockTarget::Tvd(plan.find_tvd(name)?),
+            Self::Signal => BlockTarget::Signal(plan.find_signal(name)?),
+        })
+    }
+}
+
+impl std::str::FromStr for BlockKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "point" | "weiche" => Ok(Self::Point),
+            "tvd" | "gleis" | "abschnitt" => Ok(Self::Tvd),
+            "signal" => Ok(Self::Signal),
+            other => Err(format!(
+                "unbekannte Art „{other}“ (erwartet: point, tvd, signal)"
+            )),
+        }
+    }
+}
+
+/// Art und Name eines gesperrten Elements.
+pub fn block_name(plan: &PlanView<'_>, target: BlockTarget) -> (BlockKind, String) {
+    match target {
+        BlockTarget::Point(p) => (BlockKind::Point, point_name(plan, p)),
+        BlockTarget::Tvd(t) => (BlockKind::Tvd, tvd_name(plan, t)),
+        BlockTarget::Signal(s) => (BlockKind::Signal, signal_name(plan, s)),
     }
 }
 
@@ -232,6 +295,15 @@ pub enum NamedEvent {
         border: String,
         /// Hält der Bereich die Erlaubnis jetzt?
         holding: bool,
+    },
+    /// Element gesperrt oder entsperrt (REQ-IXL-027).
+    Blocked {
+        /// Art des Elements.
+        kind: BlockKind,
+        /// Element.
+        element: String,
+        /// Ist es jetzt gesperrt?
+        blocked: bool,
     },
 }
 
@@ -392,6 +464,8 @@ impl NamedEvent {
                     Rejection::AuxMismatch => ("aux_mismatch", None),
                     Rejection::AuxNotApplicable => ("aux_not_applicable", None),
                     Rejection::NoPermission(b) => ("no_permission", Some(border_name(b))),
+                    Rejection::Blocked(target) => ("blocked", Some(block_name(plan, target).1)),
+                    Rejection::AuxRequired => ("aux_required", None),
                 };
                 Self::Rejected {
                     request: id.0,
@@ -442,6 +516,14 @@ impl NamedEvent {
                 border: border_name(border),
                 holding,
             },
+            Event::Blocked { target, blocked } => {
+                let (kind, element) = block_name(plan, target);
+                Self::Blocked {
+                    kind,
+                    element,
+                    blocked,
+                }
+            }
         }
     }
 }
@@ -463,6 +545,8 @@ pub struct PointSnapshot {
     pub locked_position: Option<PointPosition>,
     /// Anzahl geteilter Verschlüsse (Durchrutschweg, Flankenschutz).
     pub holds: u8,
+    /// Weichensperre (REQ-IXL-027).
+    pub blocked: bool,
 }
 
 /// Zustand eines Signals.
@@ -484,6 +568,8 @@ pub struct SignalSnapshot {
     pub aspects: Option<railit_movement::Picture>,
     /// Anzahl der Fahrstraßen, die das Signal als Flankenschutz in Halt halten.
     pub flank_holds: u8,
+    /// Signalsperre (REQ-IXL-027).
+    pub blocked: bool,
 }
 
 /// Zustand eines Bahnübergangs.
@@ -531,6 +617,8 @@ pub struct TvdSnapshot {
     pub locked_by: Option<String>,
     /// Fahrstraße, deren Durchrutschweg den Abschnitt verschlossen hat.
     pub overlap_of: Option<String>,
+    /// Gleissperrung (REQ-IXL-027).
+    pub blocked: bool,
 }
 
 /// Zustand einer Fahrstraße.
@@ -772,6 +860,7 @@ impl Snapshot {
                     locked_by: owner(p.owner()),
                     locked_position: p.locked_position(),
                     holds: p.holds(),
+                    blocked: state.blocked(BlockTarget::Point(id)),
                 }),
         );
         self.signals.extend(
@@ -792,6 +881,7 @@ impl Snapshot {
                         .unwrap_or_default(),
                     aspects: pictures.picture(id),
                     flank_holds: s.stop_holds(),
+                    blocked: state.blocked(BlockTarget::Signal(id)),
                 }),
         );
         self.tvds.extend(
@@ -806,6 +896,7 @@ impl Snapshot {
                     occupancy: t.occupancy(),
                     locked_by: owner(t.owner()),
                     overlap_of: owner(t.overlap_owner()),
+                    blocked: state.blocked(BlockTarget::Tvd(id)),
                 }),
         );
         self.routes.extend(plan.routes().map(|r| {

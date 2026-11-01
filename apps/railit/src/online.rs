@@ -226,6 +226,10 @@ fn reason_text(reason: &str, element: Option<&str>) -> String {
         }
         "check_mismatch" => "Prüfcode stimmt nicht mit der offenen Hilfshandlung überein".into(),
         "aux_not_applicable" => "Voraussetzungen der Hilfshandlung nicht erfüllt".into(),
+        "blocked" => format!("{e} ist gesperrt"),
+        "aux_required" => {
+            "nur als Hilfshandlung möglich (railit aux request unblock-tvd <ABSCHNITT>)".into()
+        }
         other => other.into(),
     }
 }
@@ -258,10 +262,13 @@ pub(crate) fn state(c: &Client, output: Output) -> Res<ExitCode> {
         } else {
             "Halt"
         };
-        let held = match sig["flank_holds"].as_u64() {
-            Some(n) if n > 0 => " · Flankenschutz",
-            _ => "",
+        let mut held = match sig["flank_holds"].as_u64() {
+            Some(n) if n > 0 => " · Flankenschutz".to_string(),
+            _ => String::new(),
         };
+        if sig["blocked"] == true {
+            held.push_str(" · GESPERRT");
+        }
         println!(
             "  {:<8} {aspect:<6} {:<22} (Meldung: {}){held}",
             show(&sig["name"]),
@@ -282,6 +289,9 @@ pub(crate) fn state(c: &Client, output: Output) -> Res<ExitCode> {
                 show(&p["locked_position"])
             );
         }
+        if p["blocked"] == true {
+            lock.push_str(" · GESPERRT");
+        }
         println!("  {:<8} {}{lock}", show(&p["name"]), show(&p["report"]));
     }
     println!("\nGleisfreimeldeabschnitte:");
@@ -292,6 +302,9 @@ pub(crate) fn state(c: &Client, output: Output) -> Res<ExitCode> {
             .unwrap_or_default();
         if let Some(r) = t["overlap_of"].as_str() {
             let _ = write!(lock, " · Durchrutschweg von {r}");
+        }
+        if t["blocked"] == true {
+            lock.push_str(" · GESPERRT");
         }
         println!("  {:<8} {}{lock}", show(&t["name"]), show(&t["occupancy"]));
     }
@@ -488,6 +501,16 @@ pub(crate) fn watch(c: &Client, output: Output) -> Res<ExitCode> {
                 e["counter"]
             ),
             "aux_expired" => format!("Hilfshandlung #{} verfallen", e["aux"]),
+            "blocked" => format!(
+                "{} {} {}",
+                show(&e["kind"]),
+                show(&e["element"]),
+                if e["blocked"] == true {
+                    "gesperrt"
+                } else {
+                    "entsperrt"
+                }
+            ),
             _ => data.to_string(),
         };
         println!("[{t:>8.1} s] {text}");

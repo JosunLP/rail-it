@@ -69,6 +69,24 @@ impl Directory {
         self.find_in(|p| p.find_signal(name))
     }
 
+    /// Sperrbares Element einer Art mit dem Namen `name` (REQ-IXL-027).
+    pub fn find_block(
+        &self,
+        kind: crate::BlockKind,
+        name: &str,
+    ) -> Option<(usize, railit_kernel::BlockTarget)> {
+        use railit_kernel::BlockTarget;
+        match kind {
+            crate::BlockKind::Point => self
+                .find_point(name)
+                .map(|(a, p)| (a, BlockTarget::Point(p))),
+            crate::BlockKind::Tvd => self.find_tvd(name).map(|(a, t)| (a, BlockTarget::Tvd(t))),
+            crate::BlockKind::Signal => self
+                .find_signal(name)
+                .map(|(a, s)| (a, BlockTarget::Signal(s))),
+        }
+    }
+
     /// Gleisfreimeldeabschnitt mit dem Namen `name`.
     pub fn find_tvd(&self, name: &str) -> Option<(usize, TvdId)> {
         self.find_in(|p| p.find_tvd(name))

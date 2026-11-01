@@ -13,6 +13,7 @@ import {
   routesFrom,
   parseCommand,
   STALE_AFTER_MS,
+  isBlocked,
   signalClass,
   trainText,
   tvdClass,
@@ -139,6 +140,22 @@ describe('Darstellung', () => {
     expect(signalClass(s, 'S3')).toBe('sig-substitute');
     expect(signalClass(s, 'S4')).toBe('sig-defective');
     expect(signalClass(s, 'S9')).toBe('sig-unknown');
+  });
+
+  test('Sperren werden markiert (REQ-IXL-027)', () => {
+    const base = snapshot();
+    const s = snapshot({
+      tvds: base.tvds.map((t) => (t.name === 'T1' ? { ...t, blocked: true } : t)),
+      signals: base.signals.map((x) => (x.name === 'S2' ? { ...x, blocked: true } : x)),
+      points: base.points.map((p) => (p.name === 'W1' ? { ...p, blocked: true } : p)),
+    });
+    expect(tvdClass(s, 'T1')).toBe('tvd-clear tvd-blocked');
+    expect(signalClass(s, 'S2')).toBe('sig-stop sig-blocked');
+    expect(isBlocked(s, 'point', 'W1')).toBe(true);
+    expect(isBlocked(s, 'tvd', 'T1')).toBe(true);
+    expect(isBlocked(s, 'signal', 'S1')).toBe(false);
+    expect(reasonText('blocked', 'T1')).toBe('T1 ist gesperrt');
+    expect(auxText({ kind: 'unblock_tvd', element: 'T1' })).toBe('Gleissperrung aufheben T1');
   });
 
   test('Weichen: nur Endlagen werden als Lage gezeigt', () => {

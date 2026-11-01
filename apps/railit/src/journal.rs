@@ -472,6 +472,19 @@ fn event_text(e: &NamedEvent) -> String {
             "Erlaubnis an {border} {}",
             if *holding { "übernommen" } else { "abgegeben" }
         ),
+        NamedEvent::Blocked {
+            kind,
+            element,
+            blocked,
+        } => format!(
+            "{} {element} {}",
+            match kind {
+                railit_runtime::BlockKind::Point => "Weiche",
+                railit_runtime::BlockKind::Tvd => "Gleis",
+                railit_runtime::BlockKind::Signal => "Signal",
+            },
+            if *blocked { "gesperrt" } else { "entsperrt" }
+        ),
     }
 }
 

@@ -57,6 +57,8 @@ Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`; mit
 | POST | `/v1/routes/{name}/cancel` | Fahrstraße zurücknehmen | 200 / 409 |
 | POST | `/v1/points/{name}/move` | Weiche umstellen, Body `{"position":"left"\|"right"}` | 200 / 409 |
 | GET | `/v1/areas` | Stellbereiche mit Grenzen und Erlaubnissen | JSON-Liste |
+| POST | `/v1/blocks/{Art}/{Element}/block` | Sperren (REQ-IXL-027): `Art` ist `point` (Weichensperre), `tvd` (Gleissperrung) oder `signal` (Signalsperre) | 200 / 409 / 404 / 400 |
+| POST | `/v1/blocks/{Art}/{Element}/unblock` | Sperre aufheben; eine Gleissperrung lehnt der Kern mit `aux_required` ab (nur Hilfshandlung `unblock_tvd`) | 200 / 409 / 404 / 400 |
 | POST | `/v1/borders/{Bereich>Nachbar}/request` | Erlaubnis anfordern | 200 / 409 |
 | POST | `/v1/borders/{Bereich>Nachbar}/withdraw` | Anforderung zurückziehen | 200 / 409 |
 | GET | `/v1/aux` | Offene Hilfshandlungen mit Prüfcode (`check`) und Zählwerk | `{"pending": […], "counter"}` |
@@ -110,7 +112,8 @@ Ablehnungsgründe: `conflict`, `tvd_not_clear`, `point_locked`, `point_not_opera
 `signal_held`, `aux_busy`, `aux_unknown`, `aux_expired`, `same_operator`,
 `aux_mismatch` (Bestätigung weicht ab, Hilfshandlung verfallen), `check_mismatch` (Prüfcode
 der Anzeige weicht ab, vom Dienst), `aux_not_applicable`, `no_permission` (Ausfahrt über eine
-Grenze ohne Erlaubnis).
+Grenze ohne Erlaubnis), `blocked` (Element gesperrt, `element` nennt es), `aux_required`
+(Gleissperrung nur als Hilfshandlung aufzuheben).
 
 ## Hilfshandlungen
 
@@ -125,6 +128,7 @@ und erhöht das Zählwerk. Der Kopf `X-Railit-Operator: <Nummer>` identifiziert 
 | `substitute` | Fahrstraße | festgelegt oder haltgefallen, Weichen in Lage, Schutzsignale Halt, BÜ geschlossen |
 | `force_point` | Weiche, dazu `"position"` | unverschlossen, Abschnitt gestört |
 | `take_permission` | Grenze `Bereich>Nachbar` | Erlaubnis zurückholen: weder dieser Kern noch der Nachbar hält sie |
+| `unblock_tvd` | Abschnitt | Gleissperrung aufheben: Abschnitt ist gesperrt |
 
 ```sh
 curl -s -X POST -H "Authorization: Bearer $RAILIT_TOKEN" -H "X-Railit-Operator: 1" \
@@ -197,9 +201,9 @@ Knotens; Handlungen an der Sicherheitsschicht (`/v1/safety/…`) gehen an ihn.
 
 | Feld | Inhalt je Eintrag |
 |------|-------------------|
-| `signals` | `name`, `commanded` (`stop`/`proceed`), `report`, `substitute` (Zs1), `picture` (z. B. `"Ks1 Zs3(4)"`, `"Hp2 Vr0"`), `aspects` (strukturiert), `flank_holds` |
-| `points` | `name`, `report`, `commanded`, `locked_by` (Fahrweg), `locked_position`, `holds` (Durchrutschweg/Flankenschutz) |
-| `tvds` | `name`, `occupancy`, `locked_by` (Fahrweg), `overlap_of` (Durchrutschweg) |
+| `signals` | `name`, `commanded` (`stop`/`proceed`), `report`, `substitute` (Zs1), `picture` (z. B. `"Ks1 Zs3(4)"`, `"Hp2 Vr0"`), `aspects` (strukturiert), `flank_holds`, `blocked` (Signalsperre) |
+| `points` | `name`, `report`, `commanded`, `locked_by` (Fahrweg), `locked_position`, `holds` (Durchrutschweg/Flankenschutz), `blocked` (Weichensperre) |
+| `tvds` | `name`, `occupancy`, `locked_by` (Fahrweg), `overlap_of` (Durchrutschweg), `blocked` (Gleissperrung) |
 | `routes` | `name`, `start`, `end`, `phase` |
 | `level_crossings` | `name`, `report` (`open`, `closing`, `closed`, `disturbed`), `close_commanded`, `holds` |
 | `pending_aux` | `aux`, `op`, `operator`, `since_ms` |
@@ -215,6 +219,7 @@ Jedes Ereignis trägt `time_ms` (Simulationszeit) und `type`:
 | `route_phase` | `route`, `phase` | Phasenwechsel: `idle`, `setting`, `locked`, `proceed`, `occupied`, `arrived` (Ziel erreicht, Durchrutschweg noch festgelegt), `cancelling`, `halted` |
 | `alarm` | `alarm`, `element` | `setting_timeout`, `signal_dropped`, `train_entered_cancelled_route`, `signal_defective`, `signal_mismatch`, `unknown_element`, `unauthorized_occupancy`, `signal_passed_at_danger`, `border_lost` (keine aktuelle Meldung des Nachbarn), `permission_conflict` |
 | `permission` | `border`, `holding` | Erlaubnis an einer Grenze übernommen bzw. abgegeben |
+| `blocked` | `kind` (`point`, `tvd`, `signal`), `element`, `blocked` | Element gesperrt bzw. entsperrt (REQ-IXL-027) |
 | `aux_pending` / `aux_executed` / `aux_expired` | `aux`, `op`, `operator` bzw. `counter` | Hilfshandlung angefordert, ausgeführt, verfallen |
 | `train_described`, `train_moved`, `train_left`, `train_erased`, `arrived`, `departed`, `route_requested`, `permission_requested`, `spawned`, `spawn_failed`, `announced`, `handed_over`, `taken_over`, `handover_failed` | `train`, … (`"source":"ops"`) | Betriebsführung: Zugnummern, Halte mit `delay_s`, Anforderungen der Zuglenkung, Vormeldung und Übergabe an Stellwerke anderer Prozesse (REQ-OPS-006) |
 | `train_registered`, `train_deregistered`, `authority_granted`, `authority_shortened`, `emergency_stop` | `train`, `end`, `eoa_mm` bzw. `reason` (`"source":"etcs"`) | RBC: Anmeldung, Fahrerlaubnis, Verkürzung, Notbremsung |

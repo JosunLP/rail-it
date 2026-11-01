@@ -49,7 +49,9 @@ Zuglenkung über Prozessgrenzen, PZB im Simulator) und Phase 14 (Kreuzungsweiche
 Signale vor der Freimeldegrenze, PZB 90) und Phase 15 (Version 1.0: Vier-Augen-Freigabe der
 Pläne, Sperrlisten für mTLS, Betriebsführung bei der Übernahme, RaSTA-Redundanzschicht,
 zyklische Speicherprüfung, ETCS über Prozessgrenzen, Siegel mit Zeitstempel und Zeugen,
-[FMEA](docs/safety/fmea.md)) sind umgesetzt.
+[FMEA](docs/safety/fmea.md)) sind umgesetzt. Phase 16 (Betrieb im Alltag) hat begonnen: Sperren
+von Weichen, Gleisen und Signalen im Kern (`railit block`, siehe
+[Bedienung](docs/leitfaden/bedienung.md#sperren)).
 
 **Version 1.0** schließt den Funktionsumfang für Labor, Ausbildung und Prüfstände ab. Was bis
 zu einer Zulassung fehlt – unabhängige Begutachtung, qualifizierte Toolchain, Hardware, Regeln
@@ -134,6 +136,10 @@ railit state            # Signalbilder, Verschlüsse, Bahnübergänge, Hilfshand
 # Hilfshandlung: Bediener 1 fordert an, Bediener 2 bestätigt und nennt sie dabei selbst
 railit aux request release-route A-N1 --operator 1
 railit aux confirm 0 release-route A-N1 --operator 2
+
+# Sperren: Gleis für Arbeiten sperren; aufheben nur als Hilfshandlung mit zwei Bedienern
+railit block tvd T2
+railit aux request unblock-tvd T2 --operator 1
 
 # Spurplan als SVG (für Dokumentation und Projektierung)
 railit net layout examples/beispielstadt.toml --out beispielstadt.svg

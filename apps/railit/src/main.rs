@@ -136,6 +136,24 @@ enum Command {
     /// Weichen (online).
     #[command(subcommand)]
     Point(PointCommand),
+    /// Weiche, Gleis oder Signal sperren (online): Weichensperre, Gleissperrung,
+    /// Signalsperre.
+    Block {
+        /// Art des Elements.
+        #[arg(value_enum)]
+        kind: BlockKind,
+        /// Name, z. B. W1, 3 oder A.
+        element: String,
+    },
+    /// Sperre aufheben (online). Eine Gleissperrung hebt nur die Hilfshandlung
+    /// `railit aux request unblock-tvd …` auf.
+    Unblock {
+        /// Art des Elements.
+        #[arg(value_enum)]
+        kind: BlockKind,
+        /// Name.
+        element: String,
+    },
     /// Simulation steuern (online).
     #[command(subcommand)]
     Sim(SimCommand),
@@ -588,6 +606,34 @@ enum JournalCommand {
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
+enum BlockKind {
+    /// Weiche (Weichensperre).
+    Point,
+    /// Gleisfreimeldeabschnitt (Gleissperrung).
+    Tvd,
+    /// Signal (Signalsperre).
+    Signal,
+}
+
+impl BlockKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Point => "point",
+            Self::Tvd => "tvd",
+            Self::Signal => "signal",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Point => "Weiche",
+            Self::Tvd => "Gleis",
+            Self::Signal => "Signal",
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
 enum AuxKind {
     /// Fahrstraßenhilfsauflösung (Element: Fahrstraße).
     ReleaseRoute,
@@ -597,6 +643,8 @@ enum AuxKind {
     Substitute,
     /// Weiche im gestörten Abschnitt umstellen (Element: Weiche, mit --position).
     ForcePoint,
+    /// Gleissperrung aufheben (Element: Abschnitt).
+    UnblockTvd,
 }
 
 impl AuxKind {
@@ -606,6 +654,7 @@ impl AuxKind {
             Self::ResetTvd => "reset_tvd",
             Self::Substitute => "substitute",
             Self::ForcePoint => "force_point",
+            Self::UnblockTvd => "unblock_tvd",
         }
     }
 }
@@ -911,6 +960,32 @@ fn main() -> ExitCode {
     }
 }
 
+/// `railit block` / `railit unblock` (REQ-IXL-027).
+fn block(
+    c: &online::Client,
+    kind: BlockKind,
+    element: &str,
+    blocked: bool,
+    output: Output,
+) -> Result<ExitCode, online::Failure> {
+    let (action, text) = if blocked {
+        ("block", "sperren")
+    } else {
+        ("unblock", "entsperren")
+    };
+    online::request(
+        c,
+        &format!(
+            "/v1/blocks/{}/{}/{action}",
+            kind.as_str(),
+            online::segment(element)
+        ),
+        None,
+        &format!("{} {element} {text}", kind.label()),
+        output,
+    )
+}
+
 fn run_online(
     c: &online::Client,
     command: Command,
@@ -934,6 +1009,8 @@ fn run_online(
             &format!("Fahrstraße {name} zurücknehmen"),
             output,
         ),
+        Command::Block { kind, element } => block(c, kind, &element, true, output),
+        Command::Unblock { kind, element } => block(c, kind, &element, false, output),
         Command::Point(PointCommand::Move { name, position }) => {
             let pos = position.as_str();
             let label = match position {

@@ -2,7 +2,7 @@
 
 use railit_kernel::{
     AUX_SLOTS, AuxSlot, BorderState, Buffers, KernelState, LxState, Meta, PointState, RouteState,
-    SignalState, TvdState,
+    SignalState, TvdState, block_words,
 };
 use railit_plan::PlanView;
 
@@ -22,6 +22,7 @@ pub struct ChannelMemory<const N: usize> {
     aux: [Option<AuxSlot>; AUX_SLOTS],
     active: [u64; N],
     meta: Meta,
+    blocks: [u64; N],
 }
 
 impl<const N: usize> Default for ChannelMemory<N> {
@@ -43,6 +44,7 @@ impl<const N: usize> ChannelMemory<N> {
             aux: [None; AUX_SLOTS],
             active: [0; N],
             meta: Meta::default(),
+            blocks: [0; N],
         }
     }
 
@@ -56,6 +58,7 @@ impl<const N: usize> ChannelMemory<N> {
             plan.lx_count(),
             plan.border_count(),
             plan.route_set_words(),
+            block_words(plan),
         ]
         .iter()
         .all(|n| *n <= N)
@@ -76,6 +79,7 @@ impl<const N: usize> ChannelMemory<N> {
             aux: &mut self.aux,
             active: self.active.get_mut(..plan.route_set_words())?,
             meta: &mut self.meta,
+            blocks: self.blocks.get_mut(..block_words(plan))?,
         };
         KernelState::new(plan, buffers).ok()
     }

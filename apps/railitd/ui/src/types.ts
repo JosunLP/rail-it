@@ -46,7 +46,16 @@ export interface NamedAux {
   position?: 'left' | 'right';
 }
 
-export type AuxKind = 'release_route' | 'reset_tvd' | 'substitute' | 'force_point' | 'take_permission';
+export type AuxKind =
+  | 'release_route'
+  | 'reset_tvd'
+  | 'substitute'
+  | 'force_point'
+  | 'take_permission'
+  | 'unblock_tvd';
+
+/** Art eines sperrbaren Elements (REQ-IXL-027). */
+export type BlockKind = 'point' | 'tvd' | 'signal';
 
 export interface PendingAux {
   area: string;
@@ -123,6 +132,8 @@ export interface Snapshot {
     commanded: string | null;
     locked_by: string | null;
     holds: number;
+    /** Weichensperre. */
+    blocked?: boolean;
   }[];
   signals: {
     area: string;
@@ -131,8 +142,18 @@ export interface Snapshot {
     report: string;
     substitute: boolean;
     picture: string;
+    /** Signalsperre. */
+    blocked?: boolean;
   }[];
-  tvds: { area: string; name: string; occupancy: Occupancy; locked_by: string | null; overlap_of: string | null }[];
+  tvds: {
+    area: string;
+    name: string;
+    occupancy: Occupancy;
+    locked_by: string | null;
+    overlap_of: string | null;
+    /** Gleissperrung. */
+    blocked?: boolean;
+  }[];
   routes: { area: string; name: string; start: string; end: string; phase: RoutePhase }[];
   level_crossings: { name: string; report: string; close_commanded: boolean }[];
   pending_aux: PendingAux[];

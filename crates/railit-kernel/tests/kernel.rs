@@ -408,6 +408,7 @@ fn state_buffers_must_match_plan() {
     let mut aux = vec![None; AUX_SLOTS];
     let mut active = vec![0u64; plan.route_set_words()];
     let mut meta = Meta::default();
+    let mut blocks = vec![0u64; railit_kernel::block_words(&plan)];
     let err = KernelState::new(
         &plan,
         Buffers {
@@ -420,6 +421,7 @@ fn state_buffers_must_match_plan() {
             aux: &mut aux,
             active: &mut active,
             meta: &mut meta,
+            blocks: &mut blocks,
         },
     )
     .unwrap_err();

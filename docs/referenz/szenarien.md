@@ -56,13 +56,14 @@ und prüft danach `expect`. `note` beschreibt den Schritt in der Ausgabe.
 | `set_route` | Fahrstraße | Fahrstraße anfordern |
 | `cancel_route` | Fahrstraße | Fahrstraße zurücknehmen |
 | `move_point` | `{ point, position }` | Einzelne Weiche umstellen (`left`/`right`) |
+| `block` / `unblock` | `{ kind, element }` | Sperren bzw. entsperren; `kind` ist `point`, `tvd` oder `signal` (REQ-IXL-027) |
 | `request_permission` | Grenze | Erlaubnis an einer Bereichsgrenze anfordern (z. B. `"Adorf>Strecke"`) |
 | `aux` | `{ kind, element, position, operator }` | Hilfshandlung anfordern |
 | `confirm_aux` | `{ operator }` bzw. `{ operator, kind, element, position }` | Zuletzt angeforderte Hilfshandlung bestätigen; mit Angaben nennt der zweite Bediener sie selbst |
 
 Hilfshandlungen (`kind`): `release_route` (Fahrstraße), `reset_tvd` (Abschnitt), `substitute`
 (Ersatzsignal, Fahrstraße), `force_point` (Weiche mit `position`), `take_permission`
-(Grenze). Weicht eine selbst genannte Bestätigung ab, lehnt der Kern mit `aux_mismatch` ab und
+(Grenze), `unblock_tvd` (Gleissperrung aufheben, Abschnitt). Weicht eine selbst genannte Bestätigung ab, lehnt der Kern mit `aux_mismatch` ab und
 die Hilfshandlung verfällt.
 
 ### Simulation

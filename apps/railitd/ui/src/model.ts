@@ -1,7 +1,7 @@
 // Anzeigemodell: reine Funktionen von Zustandsbild und Spurplan zu Darstellung und
 // Bedienhandlungen. Ohne DOM, damit sie sich mit `bun test` prüfen lassen.
 
-import type { AuxKind, NamedAux, ReviewCycle, ReviewRow, Snapshot, TrainState } from './types';
+import type { AuxKind, BlockKind, NamedAux, ReviewCycle, ReviewRow, Snapshot, TrainState } from './types';
 
 /** Nach so vielen Millisekunden ohne neues Zustandsbild gilt die Anzeige als gestört. */
 export const STALE_AFTER_MS = 2000;
@@ -59,6 +59,11 @@ export function routesFrom(snapshot: Snapshot, signal: string): string[] {
 export function tvdClass(snapshot: Snapshot, tvd: string | null): string {
   const t = tvd ? snapshot.tvds.find((x) => x.name === tvd) : undefined;
   if (!t) return 'tvd-unknown';
+  const base = tvdState(t);
+  return t.blocked ? `${base} tvd-blocked` : base;
+}
+
+function tvdState(t: Snapshot['tvds'][number]): string {
   if (t.occupancy === 'disturbed') return 'tvd-disturbed';
   if (t.occupancy === 'occupied') return 'tvd-occupied';
   if (t.locked_by) return 'tvd-route';
@@ -70,9 +75,16 @@ export function tvdClass(snapshot: Snapshot, tvd: string | null): string {
 export function signalClass(snapshot: Snapshot, name: string): string {
   const s = snapshot.signals.find((x) => x.name === name);
   if (!s) return 'sig-unknown';
-  if (s.report === 'defective') return 'sig-defective';
-  if (s.substitute) return 'sig-substitute';
-  return s.commanded === 'proceed' ? 'sig-proceed' : 'sig-stop';
+  const blocked = s.blocked ? ' sig-blocked' : '';
+  if (s.report === 'defective') return `sig-defective${blocked}`;
+  if (s.substitute) return `sig-substitute${blocked}`;
+  return (s.commanded === 'proceed' ? 'sig-proceed' : 'sig-stop') + blocked;
+}
+
+/** Ist das Element gesperrt (REQ-IXL-027)? */
+export function isBlocked(snapshot: Snapshot, kind: BlockKind, name: string): boolean {
+  const list = kind === 'point' ? snapshot.points : kind === 'tvd' ? snapshot.tvds : snapshot.signals;
+  return list.find((x) => x.name === name)?.blocked === true;
 }
 
 /** Lage einer Weiche, wie gemeldet: `left`, `right` oder `null` (keine Endlage, gestört). */
@@ -87,6 +99,7 @@ const AUX_TEXT: Record<AuxKind, string> = {
   substitute: 'Ersatzsignal',
   force_point: 'Weiche hilfsweise umstellen',
   take_permission: 'Erlaubnis zurückholen',
+  unblock_tvd: 'Gleissperrung aufheben',
 };
 
 /** Hilfshandlung in Worten. */
@@ -119,6 +132,10 @@ export function reasonText(reason: string | undefined, element?: string | null):
       return 'unbekanntes Element';
     case 'signal_held':
       return `Signal ${e} wird als Flankenschutz in Halt gehalten`;
+    case 'blocked':
+      return `${e} ist gesperrt`;
+    case 'aux_required':
+      return 'nur als Hilfshandlung möglich';
     case 'aux_busy':
       return 'zu viele offene Hilfshandlungen';
     case 'aux_unknown':

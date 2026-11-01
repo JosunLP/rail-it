@@ -133,6 +133,8 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/v1/routes/{name}/set", post(set_route))
         .route("/v1/routes/{name}/cancel", post(cancel_route))
         .route("/v1/points/{name}/move", post(move_point))
+        .route("/v1/blocks/{kind}/{name}/block", post(block))
+        .route("/v1/blocks/{kind}/{name}/unblock", post(unblock))
         .route("/v1/borders/{address}/request", post(request_permission))
         .route("/v1/borders/{address}/withdraw", post(withdraw_permission))
         .route("/v1/aux", get(aux_list).post(aux_request))
@@ -452,6 +454,31 @@ async fn move_point(
     Ok(answer(
         state.service.move_point(&who, &name, body.position).await?,
     ))
+}
+
+fn block_kind(kind: &str) -> Result<railit_runtime::BlockKind, ApiError> {
+    kind.parse()
+        .map_err(|e: String| ApiError(StatusCode::BAD_REQUEST, e))
+}
+
+/// `POST /v1/blocks/{kind}/{name}/block`: Weiche, Gleis oder Signal sperren (REQ-IXL-027).
+async fn block(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Path((kind, name)): Path<(String, String)>,
+) -> ApiResult {
+    let kind = block_kind(&kind)?;
+    Ok(answer(state.service.block(&who, kind, &name, true).await?))
+}
+
+/// `POST /v1/blocks/{kind}/{name}/unblock`: Sperre aufheben (Gleise nur als Hilfshandlung).
+async fn unblock(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Path((kind, name)): Path<(String, String)>,
+) -> ApiResult {
+    let kind = block_kind(&kind)?;
+    Ok(answer(state.service.block(&who, kind, &name, false).await?))
 }
 
 async fn request_permission(
