@@ -31,6 +31,22 @@ struct Installation {
     files: Vec<String>,
 }
 
+/// Pfad ohne das Präfix `\\?\` erweiterter Windows-Pfade, das `canonicalize` unter Windows
+/// liefert. Windows PowerShell 5.1 (`Join-Path`, `Test-Path`) kann damit nicht umgehen: Der
+/// Installer brach bei `railit self update` mit „drive is null“ ab.
+fn plain_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\")
+        && rest.as_bytes().get(1) == Some(&b':')
+    {
+        return PathBuf::from(rest);
+    }
+    path.to_path_buf()
+}
+
 impl Installation {
     /// Installation, zu der dieses Programm gehört (oder unter `RAILIT_PREFIX`).
     fn find() -> Option<Self> {
@@ -40,7 +56,7 @@ impl Installation {
                 let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
                 Some(exe.parent()?.parent()?.to_path_buf())
             })?;
-        Self::at(&prefix)
+        Self::at(&plain_path(&prefix))
     }
 
     fn at(prefix: &Path) -> Option<Self> {
@@ -248,6 +264,18 @@ pub(crate) fn uninstall() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verbatim_windows_paths_are_plain() {
+        let plain = |p: &str| plain_path(Path::new(p)).to_string_lossy().into_owned();
+        assert_eq!(plain(r"\\?\C:\Users\a\prefix"), r"C:\Users\a\prefix");
+        assert_eq!(
+            plain(r"\\?\UNC\server\share\rail-it"),
+            r"\\server\share\rail-it"
+        );
+        assert_eq!(plain(r"\\?\Volume{x}\rail-it"), r"\\?\Volume{x}\rail-it");
+        assert_eq!(plain("/usr/local"), "/usr/local");
+    }
 
     #[test]
     fn versions_compare() {

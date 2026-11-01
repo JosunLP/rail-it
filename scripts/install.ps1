@@ -160,6 +160,10 @@ if ($env:RAILIT_WAIT_PID) {
 
 if ($Command -eq 'help') { Get-Help $PSCommandPath -ErrorAction SilentlyContinue; return }
 if (-not $Prefix) { $Prefix = Join-Path $env:LOCALAPPDATA 'Programs\rail-it' }
+# Erweiterte Pfade (\\?\C:\...) versteht Join-Path in Windows PowerShell 5.1 nicht
+# ("drive is null"); aeltere railit-Versionen uebergeben sie bei `railit self update`.
+if ($Prefix.StartsWith('\\?\UNC\')) { $Prefix = '\\' + $Prefix.Substring(8) }
+elseif ($Prefix.StartsWith('\\?\')) { $Prefix = $Prefix.Substring(4) }
 if ($Version) { $Version = $Version.TrimStart('v') }
 
 switch ($Command) {
