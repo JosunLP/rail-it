@@ -235,6 +235,7 @@ async fn trains(State(field): State<Arc<Field>>) -> Json<Value> {
 /// Neuer Zug (wie `POST /v1/sim/trains` von `railitd`).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)]
 struct NewTrain {
     name: String,
     signal: String,
@@ -246,6 +247,8 @@ struct NewTrain {
     etcs: bool,
     #[serde(default)]
     pzb: bool,
+    #[serde(default)]
+    shunting: bool,
 }
 
 async fn add_train(State(field): State<Arc<Field>>, Json(t): Json<NewTrain>) -> ApiResult {
@@ -268,6 +271,7 @@ async fn add_train(State(field): State<Arc<Field>>, Json(t): Json<NewTrain>) -> 
             ignore_signals: t.ignore_signals,
             etcs: t.etcs,
             pzb: t.pzb,
+            shunting: t.shunting,
         })
         .map_err(|e| error(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(json!({ "status": "ok" })).into_response())

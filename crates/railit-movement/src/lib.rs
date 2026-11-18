@@ -13,6 +13,7 @@
 //! | Vorsignal     | Ks1, Ks1 blinkend, Ks2; Zs3v         | Vr0, Vr1, Vr2                |
 //! | Kombiniert    | wie Hauptsignal (Mehrabschnitt)      | Hp und Vr am selben Mast     |
 //! | Ersatzsignal  | Zs1 zusätzlich zu Hp0                | Zs1 zusätzlich zu Hp0        |
+//! | Rangiersignal | Sh0, Sh1 (Rangierstraße mit Fahrt)   | Sh0, Sh1                     |
 //!
 //! Regeln:
 //!
@@ -65,6 +66,8 @@ pub enum MainAspect {
     Ks2,
     /// Rangierhalt.
     Sh0,
+    /// Rangierfahrt erlaubt (Rangierstraße mit Fahrt, REQ-MOV-008).
+    Sh1,
 }
 
 /// Begriff am Vorsignal(schirm).
@@ -115,7 +118,13 @@ impl Picture {
         self.zs1
             || matches!(
                 self.main,
-                Some(MainAspect::Hp1 | MainAspect::Hp2 | MainAspect::Ks1 | MainAspect::Ks2)
+                Some(
+                    MainAspect::Hp1
+                        | MainAspect::Hp2
+                        | MainAspect::Ks1
+                        | MainAspect::Ks2
+                        | MainAspect::Sh1
+                )
             )
     }
 }
@@ -248,10 +257,19 @@ impl<'a, 'p> Pictures<'a, 'p> {
                 self.main_picture(signal, kind, system, state.substitute())
             }
             SignalKind::Distant => self.distant_picture(signal, system),
-            SignalKind::Shunting => Picture {
-                main: Some(MainAspect::Sh0),
-                ..Picture::default()
-            },
+            // REQ-MOV-008: Sh1 nur, solange eine Rangierstraße ab dem Signal Fahrt hat.
+            SignalKind::Shunting => {
+                let own = self.main_state(signal);
+                let shunting = own.proceed && own.route.is_some_and(|r| r.is_shunting());
+                Picture {
+                    main: Some(if shunting {
+                        MainAspect::Sh1
+                    } else {
+                        MainAspect::Sh0
+                    }),
+                    ..Picture::default()
+                }
+            }
             SignalKind::EtcsStopMarker => Picture::default(),
         })
     }

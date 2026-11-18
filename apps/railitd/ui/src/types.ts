@@ -151,7 +151,7 @@ export interface Snapshot {
     overlap_of: string | null;
     blocked?: boolean;
   }[];
-  routes: { area: string; name: string; start: string; end: string; phase: RoutePhase }[];
+  routes: { area: string; name: string; start: string; end: string; phase: RoutePhase; shunting?: boolean }[];
   level_crossings: { name: string; report: string; close_commanded: boolean }[];
   pending_aux: PendingAux[];
   aux_counter: number;

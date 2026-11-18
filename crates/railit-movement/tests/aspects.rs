@@ -23,7 +23,11 @@ use railit_types::{Duration, LxId, PointId, SignalId, SignalKind, Tick, TvdId};
 const EXAMPLE: &str = include_str!("../../../examples/beispielstadt.toml");
 
 fn plan() -> PlanView<'static> {
-    let net = railit_import::toml_format::parse(EXAMPLE).unwrap().topology;
+    plan_of(EXAMPLE)
+}
+
+fn plan_of(network: &str) -> PlanView<'static> {
+    let net = railit_import::toml_format::parse(network).unwrap().topology;
     let image = railit_planning::compile(&net, None)
         .unwrap()
         .plan
@@ -47,7 +51,10 @@ struct Station {
 
 impl Station {
     fn new() -> Self {
-        let plan = plan();
+        Self::with_plan(plan())
+    }
+
+    fn with_plan(plan: PlanView<'static>) -> Self {
         let mut s = Self {
             kernel: Interlocking::new(plan, GenericRules::default()),
             state: OwnedState::new(&plan),
@@ -324,6 +331,34 @@ fn check_consistency(s: &Station) {
             SignalKind::Shunting | SignalKind::EtcsStopMarker => {}
         }
     }
+}
+
+/// REQ-MOV-008: Sh1 nur, solange eine Rangierstraße ab dem Rangiersignal Fahrt hat.
+#[test]
+fn shunting_signal_shows_sh1() {
+    let mut s = Station::with_plan(plan_of(include_str!("../../../examples/rangieren.toml")));
+    let plan = s.plan();
+    let ra5 = plan.find_signal("Ra5").unwrap();
+    let main = |s: &Station| {
+        Pictures::new(&s.plan(), s.state.signals(), s.state.routes())
+            .picture(ra5)
+            .unwrap()
+            .main
+    };
+    assert_eq!(main(&s), Some(MainAspect::Sh0));
+    let r = plan.find_route("Ra5-N1").unwrap();
+    s.step(&[Request::SetRoute(r)]);
+    for _ in 0..3 {
+        s.step(&[]);
+    }
+    let picture = Pictures::new(&s.plan(), s.state.signals(), s.state.routes())
+        .picture(ra5)
+        .unwrap();
+    assert_eq!(picture.main, Some(MainAspect::Sh1));
+    assert!(picture.permits_passing());
+    assert_eq!(picture.to_string(), "Sh1");
+    s.step(&[Request::CancelRoute(r)]);
+    assert_eq!(main(&s), Some(MainAspect::Sh0));
 }
 
 proptest! {

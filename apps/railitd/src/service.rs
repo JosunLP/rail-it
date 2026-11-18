@@ -104,6 +104,7 @@ pub(crate) enum FaultKind {
 /// Neuer Zug in der Simulation.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct NewTrain {
     pub(crate) name: String,
     pub(crate) signal: String,
@@ -115,6 +116,8 @@ pub(crate) struct NewTrain {
     pub(crate) etcs: bool,
     #[serde(default)]
     pub(crate) pzb: bool,
+    #[serde(default)]
+    pub(crate) shunting: bool,
 }
 
 /// Gemeinsamer Zugang zu Engine, Zustandsbild und Ereignissen.
@@ -540,6 +543,7 @@ impl Service {
             ignore_signals: train.ignore_signals,
             etcs: train.etcs,
             pzb: train.pzb,
+            shunting: train.shunting,
         });
         self.act(
             who,
@@ -871,6 +875,7 @@ fn route_json(p: &PlanView<'_>, area: &str, r: &railit_plan::RouteView<'_>) -> V
             RouteEnd::BufferStop => "Prellbock".into(),
             RouteEnd::Border(b) => format!("{area}{}", p.border_name(b).unwrap_or("?")),
         },
+        "shunting": r.is_shunting(),
         "speed_kmh": r.speed().map(Speed::as_kmh),
         "points": r.points().map(point).collect::<Vec<_>>(),
         "tvds": r.tvds().map(|t| p.tvd_name(t)).collect::<Vec<_>>(),

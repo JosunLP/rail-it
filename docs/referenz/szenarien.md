@@ -70,7 +70,7 @@ die Hilfshandlung verfällt.
 
 | Aktion | Wert | Wirkung |
 |--------|------|---------|
-| `add_train` | `{ name, signal, length_m, speed_kmh, ignore_signals, etcs, pzb }` | Zug vor einem Signal einsetzen; `ignore_signals` überfährt Halt (Prüfung des Schutzes); `pzb` bremst ihn dann an wirksamen Gleismagneten zwangsweise (REQ-MOV-007) |
+| `add_train` | `{ name, signal, length_m, speed_kmh, ignore_signals, etcs, pzb, shunting }` | Zug vor einem Signal einsetzen; `ignore_signals` überfährt Halt (Prüfung des Schutzes); `pzb` bremst ihn dann an wirksamen Gleismagneten zwangsweise (REQ-MOV-007); `shunting` macht ihn zur Rangierfahrt, die auch Rangiersignale beachtet (REQ-MOV-008) |
 | `fault` / `clear_fault` | `{ kind, element }` | Störung setzen bzw. aufheben |
 | `link` | `{ controller, down, loss_percent, corrupt_percent, delay_ms }` | Übertragungsstrecke zu einer Objektsteuerung stören (nur `field = "eulynx"`) |
 | `ils_link` | `{ link, down, loss_percent, corrupt_percent, delay_ms }` | SCI-ILS-Strecke zwischen zwei Stellwerken stören, z. B. `link = "Adorf-Strecke"` (nur `borders = "ils"`) |

@@ -57,6 +57,7 @@ fn run_with_snapshots(every: Option<u64>) -> (Runtime<Simulator>, Vec<u8>) {
             ignore_signals: false,
             etcs: false,
             pzb: false,
+            shunting: false,
         })
         .unwrap();
     let mut id = 0;
@@ -429,6 +430,7 @@ fn node_journal_replays_across_resyncs() {
             ignore_signals: false,
             etcs: false,
             pzb: false,
+            shunting: false,
         })
         .unwrap();
     let mut id = 0;
@@ -531,6 +533,7 @@ fn follower_tracks_the_running_interlocking() {
             ignore_signals: false,
             etcs: false,
             pzb: false,
+            shunting: false,
         })
         .unwrap();
 

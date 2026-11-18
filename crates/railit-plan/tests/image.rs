@@ -29,6 +29,7 @@ fn route(
         conflicts: conflicts.into_iter().map(RouteId::new).collect(),
         length: railit_types::Length::from_mm(500_000),
         overlap_length: railit_types::Length::from_mm(0),
+        shunting: false,
     }
 }
 
@@ -499,4 +500,121 @@ fn plans_need_approvals_from_distinct_trusted_reviewers() {
     };
     assert!(!raw.is_valid_for(&digest));
     assert!(a2.is_valid_for(&digest));
+}
+
+/// REQ-PLN-023: Rangierstraßen beginnen an einem Rangiersignal, enden an einem Haupt- oder
+/// Rangiersignal oder am Prellbock und haben keinen Durchrutschweg. Version 5 kennt sie
+/// nicht.
+#[test]
+fn shunting_routes_are_checked() {
+    let shunt = |p: &mut Plan| {
+        p.signals.push(signal("Ra1", SignalKind::Shunting));
+        let mut r = route(
+            "Ra1-N2",
+            7,
+            RouteEnd::Signal(SignalId::new(2)),
+            vec![],
+            vec![3],
+            vec![],
+        );
+        r.shunting = true;
+        p.routes.push(r);
+    };
+    let mut p = sample();
+    shunt(&mut p);
+    let image = p.to_image().unwrap();
+    let view = PlanView::parse(&image).unwrap();
+    let r = view
+        .find_route("Ra1-N2")
+        .and_then(|r| view.route(r))
+        .unwrap();
+    assert!(r.is_shunting());
+    assert!(!view.route(RouteId::new(0)).unwrap().is_shunting());
+    assert_eq!(Plan::from_view(&view), p);
+
+    // Startsignal ist kein Rangiersignal.
+    let mut p = sample();
+    shunt(&mut p);
+    p.routes[3].start = SignalId::new(1);
+    assert!(matches!(
+        p.to_image(),
+        Err(PlanError::InvalidReference {
+            what: "Startsignal der Rangierstraße",
+            ..
+        })
+    ));
+    // Rangierstraße mit Durchrutschweg.
+    let mut p = sample();
+    shunt(&mut p);
+    p.routes[3].overlap_tvds = vec![TvdId::new(4)];
+    assert!(matches!(
+        p.to_image(),
+        Err(PlanError::InvalidReference {
+            what: "Durchrutschweg einer Rangierstraße",
+            ..
+        })
+    ));
+    // Rangierstraße zur Netzgrenze.
+    let mut p = sample();
+    shunt(&mut p);
+    p.routes[3].end = RouteEnd::Boundary;
+    assert!(matches!(
+        p.to_image(),
+        Err(PlanError::InvalidReference {
+            what: "Ziel der Rangierstraße",
+            ..
+        })
+    ));
+    // Zugstraße an einem Rangiersignal.
+    let mut p = sample();
+    shunt(&mut p);
+    p.routes[3].shunting = false;
+    assert!(matches!(
+        p.to_image(),
+        Err(PlanError::InvalidReference {
+            what: "Startsignal",
+            ..
+        })
+    ));
+}
+
+/// Version 5 wird gelesen; das Merkmal „Rangierstraße“ ist dort ungültig.
+#[test]
+fn version_5_is_read_without_shunting_routes() {
+    let set_version = |image: &mut Vec<u8>, v: u32| {
+        image[4..8].copy_from_slice(&v.to_le_bytes());
+        let body = u32::from_le_bytes(image[8..12].try_into().unwrap()) as usize;
+        let digest: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(&image[..body]).into();
+        image[body..body + 32].copy_from_slice(&digest);
+    };
+    let mut image = sample().to_image().unwrap();
+    set_version(&mut image, 5);
+    assert!(PlanView::parse(&image).is_ok());
+    set_version(&mut image, 7);
+    assert_eq!(
+        PlanView::parse(&image).err(),
+        Some(PlanError::UnsupportedVersion(7))
+    );
+
+    let mut p = sample();
+    p.signals.push(signal("Ra1", SignalKind::Shunting));
+    let mut r = route(
+        "Ra1-N2",
+        7,
+        RouteEnd::Signal(SignalId::new(2)),
+        vec![],
+        vec![3],
+        vec![],
+    );
+    r.shunting = true;
+    p.routes.push(r);
+    let mut image = p.to_image().unwrap();
+    set_version(&mut image, 5);
+    assert!(matches!(
+        PlanView::parse(&image),
+        Err(PlanError::InvalidReference {
+            what: "Startsignal der Rangierstraße",
+            ..
+        })
+    ));
 }

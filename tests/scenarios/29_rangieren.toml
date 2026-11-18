@@ -1,0 +1,58 @@
+[scenario]
+name = "Rangieren: Rangierstraße ins besetzte Abstellgleis"
+description = """
+Im Abstellgleis 3 stehen Wagen (Gleis besetzt). Eine Zugstraße dorthin ist ausgeschlossen,
+eine Rangierstraße von Ra5 aber zulässig: Ra5 zeigt Sh1, die Rangierlok fährt über W1 ins
+Abstellgleis. Die Rangierstraße löst erst auf, wenn die Lok die Weiche geräumt hat
+(REQ-IXL-028). Danach fährt eine Zugfahrt über Ra5 hinweg, ohne das Rangiersignal zu
+beachten.
+"""
+network = "../../examples/rangieren.toml"
+
+[[step]]
+note = "Wagen im Abstellgleis"
+fault = { kind = "tvd_occupied", element = "T3" }
+wait_s = 1
+expect = { tvd = { T3 = "occupied" }, picture = { Ra5 = "Sh0" } }
+
+[[step]]
+note = "Zugstraße ins besetzte Abstellgleis abgelehnt"
+set_route = "A-PB3"
+wait_s = 1
+expect = { rejected = "tvd_not_clear", route = { "A-PB3" = "idle" } }
+
+[[step]]
+note = "Rangierlok vor Ra5"
+add_train = { name = "Lok", signal = "Ra5", length_m = 20, speed_kmh = 25, shunting = true }
+wait_s = 2
+expect = { train = { Lok = "waiting" } }
+
+[[step]]
+note = "Rangierstraße Ra5-PB3: Sh1"
+set_route = "Ra5-PB3"
+until = { route = { "Ra5-PB3" = "proceed" } }
+timeout_s = 15
+expect = { picture = { Ra5 = "Sh1" }, point = { W1 = "right" } }
+
+[[step]]
+note = "Lok fährt ins Abstellgleis; Auflösung erst nach Räumen der Weiche"
+until = { route = { "Ra5-PB3" = "occupied" } }
+timeout_s = 30
+expect = { picture = { Ra5 = "Sh0" } }
+
+[[step]]
+until = { route = { "Ra5-PB3" = "idle" } }
+timeout_s = 120
+expect = { tvd = { TW1 = "clear", T3 = "occupied" }, no_alarm = ["unauthorized_occupancy", "signal_passed_at_danger"] }
+
+[[step]]
+note = "Zugfahrt nach Gleis 1 fährt an Ra5 vorbei"
+add_train = { name = "RB1", signal = "A", length_m = 60, speed_kmh = 60 }
+set_route = "A-N1"
+until = { route = { "A-N1" = "occupied" } }
+timeout_s = 60
+
+[[step]]
+until = { tvd = { T1 = "occupied", TV = "clear", TW1 = "clear" } }
+timeout_s = 120
+expect = { no_alarm = ["signal_passed_at_danger"] }

@@ -624,6 +624,9 @@ pub struct RouteSnapshot {
     pub end: String,
     /// Phase.
     pub phase: RoutePhase,
+    /// Rangierstraße (REQ-PLN-023).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub shunting: bool,
 }
 
 /// Zustand einer Grenze zu einem Nachbarbereich.
@@ -906,6 +909,7 @@ impl Snapshot {
                     .and_then(|i| state.routes().get(i))
                     .map(railit_kernel::RouteState::phase)
                     .unwrap_or_default(),
+                shunting: r.is_shunting(),
             }
         }));
         self.level_crossings.extend(

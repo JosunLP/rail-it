@@ -256,6 +256,8 @@ message AddTrainRequest {
   bool etcs = 6;
   // Zug mit PZB-Fahrzeuggerät (Zwangsbremsung an wirksamen Gleismagneten).
   bool pzb = 7;
+  // Rangierfahrt (beachtet auch Rangiersignale).
+  bool shunting = 8;
 }
 
 message FaultRequest {

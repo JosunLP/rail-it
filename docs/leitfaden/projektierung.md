@@ -43,6 +43,16 @@ ls nordbahn/       # Adorf.rplan  Bstadt.rplan  Strecke.rplan
 | Geschwindigkeit | aus abzweigenden Weichensträngen, angezeigt als Zs3 bzw. im Vorsignal |
 | Feindlichkeiten | Paare von Fahrstraßen, die nie gleichzeitig eingestellt sein dürfen |
 | Grenzen | Annäherungsabschnitte und Einfahrsignale an Bereichsgrenzen |
+| Rangierstraßen | ab Rangiersignalen bis zum nächsten Haupt- oder Rangiersignal oder Prellbock, ohne Durchrutschweg; das Zielgleis darf besetzt sein (REQ-PLN-023) |
+
+Rangierstraßen entstehen nur an Rangiersignalen (`kind = "shunting"`), die am Gleisende an
+einer Grenze der Gleisfreimeldung stehen und dort kein Hauptsignal derselben Richtung neben
+sich haben. Andere Rangiersignale wirken nur als Schutzsignal im Flankenschutz. Netze ohne
+Rangiersignale behalten genau ihre Zugstraßen. Beispiel: `examples/rangieren.toml`
+(`railit plan info` kennzeichnet Rangierstraßen).
+
+Plan-Images haben seit Phase 16 die Formatversion 6 (Merkmal „Rangierstraße“); Images der
+Version 5 werden weiter gelesen.
 
 ## Plan laden
 

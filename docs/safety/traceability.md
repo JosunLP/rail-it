@@ -76,6 +76,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-MOV-003 | H-009 | – | `display_of_dark_and_substitute`<br>Analyse (Architektur) |
 | REQ-MOV-004 | H-001, H-002, H-009 | `crates/railit-movement/src/etcs.rs` | `etcs_authority_follows_the_routes_with_proceed`<br>`etcs_authority_carries_speed_and_survives_passing`<br>`crates/railit-movement/tests/aspects.rs` |
 | REQ-MOV-007 | H-009 | `crates/railit-sim/src/lib.rs` | `pzb_2000_hz_brakes_at_a_stop_signal`<br>`pzb_500_hz_stops_before_the_announced_signal`<br>`pzb_90_supervision`<br>`crates/railit-sim/tests/sim.rs`<br>Szenario 26 |
+| REQ-MOV-008 | H-009, H-019 | `crates/railit-movement/src/lib.rs` | `shunting_signal_shows_sh1`<br>`crates/railit-movement/tests/aspects.rs`<br>Szenario 29 |
 
 ## [journal.md](../requirements/journal.md)
 
@@ -123,6 +124,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-IXL-025 | H-001, H-003, H-015, H-017 | `apps/railitd/src/takeover.rs`<br>`crates/railit-kernel/src/kernel.rs`<br>`crates/railit-runtime/src/runtime.rs` | `proceed_falls_to_halt_and_locks_remain`<br>`locked_route_and_train_in_route_continue`<br>`pending_aux_expires_and_substitute_goes_out`<br>`safe_state_is_kept`<br>`kernel_never_becomes_unsafe`<br>`crates/railit-kernel/tests/common/mod.rs`<br>`crates/railit-kernel/tests/invariants.rs`<br>`crates/railit-kernel/tests/takeover.rs`<br>`crates/railit-runtime/tests/takeover.rs` |
 | REQ-IXL-026 | H-002, H-003 | `crates/railit-kernel/src/kernel.rs` | `single_move_takes_the_partner_along`<br>`route_locks_all_four_points`<br>`forced_move_takes_the_partner_along`<br>`coupled_points_share_one_drive`<br>`crates/railit-adapters/tests/drives.rs`<br>`crates/railit-kernel/tests/coupling.rs`<br>Szenario 25<br>Szenario 27 |
 | REQ-IXL-027 | H-003, H-018 | `apps/railit/src/main.rs`<br>`apps/railitd/src/api.rs`<br>`apps/railitd/src/service.rs`<br>`apps/railitd/ui/src/main.ts`<br>`apps/railitd/ui/src/model.ts`<br>`apps/railitd/ui/src/types.ts`<br>`crates/railit-kernel/src/invariants.rs`<br>`crates/railit-kernel/src/invariants/reference.rs`<br>`crates/railit-kernel/src/io.rs`<br>`crates/railit-kernel/src/kernel.rs`<br>`crates/railit-kernel/src/state.rs`<br>`crates/railit-runtime/src/directory.rs`<br>`crates/railit-runtime/src/names.rs`<br>`crates/railit-runtime/src/scenario.rs` | `blocked_point_is_not_moved`<br>`route_over_blocked_point_in_position`<br>`blocking_signal_drops_proceed`<br>`track_closure_rejects_routes_through_it`<br>`track_closure_is_lifted_by_aux_only`<br>`blocks_survive_take_over`<br>`kernel_never_becomes_unsafe`<br>`blocking_over_api`<br>`apps/railitd/tests/api.rs`<br>`apps/railitd/ui/test/model.test.ts`<br>`crates/railit-kernel/tests/blocking.rs`<br>`crates/railit-kernel/tests/invariants.rs`<br>Szenario 28 |
+| REQ-IXL-028 | H-001, H-003, H-019 | `crates/railit-kernel/src/invariants.rs`<br>`crates/railit-kernel/src/kernel.rs` | `shunting_into_occupied_track`<br>`only_the_target_may_be_occupied`<br>`release_waits_until_the_movement_has_left_the_points`<br>`disturbed_target_drops_proceed`<br>`kernel_never_becomes_unsafe_with_shunting`<br>`crates/railit-kernel/tests/invariants.rs`<br>`crates/railit-kernel/tests/shunting.rs`<br>Szenario 29 |
 
 ## [kommunikation.md](../requirements/kommunikation.md)
 
@@ -161,6 +163,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-PLN-020 | H-007 | `crates/railit-plan/src/view.rs` | `inconsistent_phase2_data_is_rejected` |
 | REQ-PLN-021 | H-001, H-002, H-004 | `crates/railit-plan/src/format.rs`<br>`crates/railit-plan/src/model.rs`<br>`crates/railit-plan/src/view.rs`<br>`crates/railit-planning/src/error.rs`<br>`crates/railit-planning/src/generate.rs` | `routes_over_a_double_slip_require_all_four_points`<br>`single_slip_has_one_curve`<br>`crossover_points_move_together`<br>`tampered_couplings_are_rejected`<br>`coupled_points_must_not_lie_in_an_approach`<br>`crates/railit-kernel/tests/coupling.rs`<br>`crates/railit-planning/tests/slip.rs`<br>Szenario 25 |
 | REQ-PLN-022 | H-008, H-004 | `apps/railit-node/src/main.rs`<br>`apps/railit/src/plan.rs`<br>`apps/railitd/src/main.rs`<br>`crates/railit-plan/src/approval.rs`<br>`crates/railit-runtime/src/keys.rs` | `plans_need_approvals_from_distinct_trusted_reviewers`<br>`plans_need_four_eyes_approval`<br>`keygen_compile_verify_info`<br>`apps/railit/tests/cli.rs` |
+| REQ-PLN-023 | H-001, H-004, H-019 | `crates/railit-plan/src/format.rs`<br>`crates/railit-plan/src/model.rs`<br>`crates/railit-plan/src/view.rs`<br>`crates/railit-planning/src/generate.rs`<br>`crates/railit-planning/src/verify.rs`<br>`crates/railit-runtime/src/names.rs`<br>`crates/railit-sim/src/lib.rs` | `shunting_routes_are_checked`<br>`version_5_is_read_without_shunting_routes`<br>`shunting_routes_in_plan`<br>`crates/railit-plan/tests/image.rs`<br>Szenario 29 |
 
 ## [sicherheit.md](../requirements/sicherheit.md)
 
@@ -210,4 +213,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-137 Anforderungen, davon 137 mit Nachweis.
+140 Anforderungen, davon 140 mit Nachweis.

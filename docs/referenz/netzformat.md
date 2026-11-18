@@ -84,7 +84,8 @@ ist der Teil nach dem letzten Punkt.
 | `system` | `ks` (Vorgabe) · `hv` | Signalsystem |
 | `auto` | bool, Vorgabe `false` | Selbstblocksignal: die Zuglenkung stellt selbsttätig |
 
-Hauptsignale stehen an einer Grenze der Gleisfreimeldung (REQ-PLN-010).
+Hauptsignale stehen an einer Grenze der Gleisfreimeldung (REQ-PLN-010). Rangiersignale an
+einer solchen Grenze am Gleisende beginnen und begrenzen Rangierstraßen (REQ-PLN-023).
 
 ## `[[level_crossing]]` – Bahnübergang
 

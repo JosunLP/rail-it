@@ -23,7 +23,7 @@
 //! ```
 //!
 //! **Aktionen:** `set_route`, `cancel_route`, `move_point = { point, position }`,
-//! `add_train = { name, signal, length_m, speed_kmh, ignore_signals, etcs, pzb }`,
+//! `add_train = { name, signal, length_m, speed_kmh, ignore_signals, etcs, pzb, shunting }`,
 //! `fault` / `clear_fault = { kind, element }` mit `kind` aus `point_disturbed`,
 //! `tvd_disturbed`, `tvd_occupied`, `signal_defective`, `lx_disturbed`,
 //! `aux = { kind, element, position, operator }` (Hilfshandlung anfordern; `kind` aus
@@ -373,6 +373,7 @@ struct MovePoint {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)]
 struct TrainEntry {
     name: String,
     signal: String,
@@ -384,6 +385,8 @@ struct TrainEntry {
     etcs: bool,
     #[serde(default)]
     pzb: bool,
+    #[serde(default)]
+    shunting: bool,
 }
 
 // `deny_unknown_fields` verträgt sich nicht mit `flatten`.
@@ -1079,6 +1082,7 @@ impl<F: SimulatedField> Ctx<F> {
                 ignore_signals: t.ignore_signals,
                 etcs: t.etcs,
                 pzb: t.pzb,
+                shunting: t.shunting,
             });
         match spec.map(|s| self.rt.field_mut().simulator_mut().add_train(s)) {
             Some(Ok(())) => {

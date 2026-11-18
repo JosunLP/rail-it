@@ -386,6 +386,7 @@ pub(crate) fn info(plan_path: &Path, output: Output) -> ExitCode {
                 "name": r.name(),
                 "start": view.signal_name(r.start()),
                 "end": end_name(r.end()),
+                "shunting": r.is_shunting(),
                 "speed_kmh": r.speed().map(railit_plan::Speed::as_kmh),
                 "points": r.points().map(|(p, pos)| json!({"point": view.point_name(p), "position": pos})).collect::<Vec<_>>(),
                 "tvds": r.tvds().map(|t| view.tvd_name(t)).collect::<Vec<_>>(),
@@ -450,10 +451,15 @@ fn print_routes(view: &PlanView<'_>) {
             .map(|c| view.route_name(c).unwrap_or("?"))
             .collect();
         println!(
-            "  {:<10} {} → {}",
+            "  {:<10} {} → {}{}",
             r.name(),
             view.signal_name(r.start()).unwrap_or("?"),
-            end_name(r.end())
+            end_name(r.end()),
+            if r.is_shunting() {
+                " (Rangierstraße)"
+            } else {
+                ""
+            }
         );
         println!(
             "             Weichen:    {}",

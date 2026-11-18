@@ -499,6 +499,12 @@ eine Weiche in gesperrtem Abschnitt zu stellen führt in den sicheren Zustand) u
 Fahrtbedingungen (Fahrt und Ersatzsignal nur ohne Sperre an Startsignal, Fahrweg und
 Durchrutschweg – auch als Invariante unabhängig nachgerechnet).
 
+**Rangierstraßen (Phase 16, REQ-IXL-028).** `RouteView::is_shunting` kennzeichnet sie. Der
+Kern behandelt sie wie Zugstraßen mit einer Ausnahme: Der letzte Abschnitt (bei mindestens
+zwei Abschnitten) darf besetzt sein. Damit die zugbewirkte Auflösung den Fahrweg nicht unter
+der Rangierfahrt freigibt, gilt ein besetzter Zielabschnitt erst als erreicht, wenn die
+Fahrt den Abschnitt davor befahren und geräumt hat.
+
 ### 10.7 Stand Phase 2
 
 - **Verschlüsse:** Fahrweg exklusiv je Abschnitt und Weiche; Durchrutschweg exklusiv je
@@ -968,7 +974,7 @@ Daraus folgen diese Regeln:
 | **14 – Planungsdetails** | Kreuzungsweichen in PlanPro (`W_Kr_Anlage`, Import und Export, bitgleiche Rundreise); Hauptsignale bis 30 m vor der Freimeldegrenze mit Längen ab dem Signal (REQ-PLN-010); PZB 90 im Simulator mit 500-Hz-Magnet, Überwachungskurven der Zugarten und Wachsamkeit (REQ-MOV-007) | Reale Planungsdaten mit DKW und abgesetzten Signalen lassen sich übernehmen; Haltüberfahrungen werden wie bei PZB 90 überwacht (Szenario 26) | ✔ |
 | **15 – Version 1.0** | Freigabe der Pläne im Vier-Augen-Prinzip (REQ-PLN-022); Sperrlisten für mTLS (REQ-SEC-006); Betriebsführung bei der Übernahme (REQ-OPS-007); RaSTA-Redundanzschicht über mehrere Kanäle (REQ-COM-011); zyklische Speicherprüfung (REQ-SAF-008); ETCS über Prozessgrenzen mit Fahrerlaubnis-Vorschau zwischen RBC (REQ-ETCS-004); Siegel mit Zeitstempel und unabhängige Zeugen (REQ-JRN-010); [FMEA](safety/fmea.md) | Funktionsumfang für Labor, Ausbildung und Prüfstand vollständig; offen bleibt, was nur Organisation, Hardware und reale Technik schließen können ([Teil 7](safety/safety-case.md#teil-7--offene-punkte-bis-zu-einer-zulassung)) | ✔ |
 
-| **16 – Betrieb im Alltag** | Sperren von Weichen, Signalen und Gleisen im Kern, Gleissperrung nur als Hilfshandlung aufhebbar (REQ-IXL-027); Dienst, CLI, gRPC, Szenarien und Bedienplatz | Arbeitsstellen und Instandhaltung lassen sich sicher abbilden (Szenario 28) | in Arbeit |
+| **16 – Betrieb im Alltag** | Sperren von Weichen, Signalen und Gleisen im Kern, Gleissperrung nur als Hilfshandlung aufhebbar (REQ-IXL-027); Dienst, CLI, gRPC, Szenarien und Bedienplatz. Rangierstraßen ab Rangiersignalen ohne Durchrutschweg, ins besetzte Zielgleis mit Auflösung erst nach Räumen der Weichen (REQ-PLN-023, REQ-IXL-028), Sh0/Sh1 (REQ-MOV-008), Rangierfahrten im Simulator, Plan-Image v6 | Arbeitsstellen und Instandhaltung lassen sich sicher abbilden (Szenario 28); Rangieren ins Abstellgleis (Szenario 29, `examples/rangieren.toml`) | in Arbeit |
 
 **Umgesetzte Crates (Stand Version 1.0):** `railit-types`, `railit-topology`, `railit-plan`,
 `railit-planning`, `railit-rules`, `railit-kernel`, `railit-safety` (Kanäle, Voter, Watchdog),

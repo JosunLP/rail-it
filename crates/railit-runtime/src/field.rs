@@ -63,6 +63,7 @@ impl FieldAdapter for Simulator {
             ignore_signals: false,
             etcs: spawn.etcs,
             pzb: false,
+            shunting: false,
         })
         .map_err(|e| e.to_string())
     }

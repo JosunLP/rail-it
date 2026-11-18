@@ -148,6 +148,22 @@ fn in_path(view: &RouteView<'_>, t: TvdId) -> bool {
     view.tvds().any(|x| x == t)
 }
 
+/// Zielabschnitt einer Rangierstraße, der besetzt sein darf (REQ-IXL-028): der letzte
+/// Abschnitt einer Rangierstraße mit mindestens zwei Abschnitten.
+pub(crate) fn shunting_target(view: &RouteView<'_>) -> Option<TvdId> {
+    if !view.is_shunting() || view.tvds().len() < 2 {
+        return None;
+    }
+    view.tvds().last()
+}
+
+/// Ist der Abschnitt `t` der Fahrstraße für Zulassung und Fahrt frei genug? Frei – oder als
+/// Zielabschnitt einer Rangierstraße besetzt (nicht gestört).
+pub(crate) fn path_tvd_ok(view: &RouteView<'_>, t: TvdId, occupancy: Occupancy) -> bool {
+    occupancy == Occupancy::Clear
+        || (occupancy == Occupancy::Occupied && shunting_target(view) == Some(t))
+}
+
 fn released_count(state: &RouteState) -> Res<usize> {
     usize::try_from(state.next_release).map_err(|_| IDX)
 }
@@ -571,10 +587,12 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
             }
         }
         for t in view.tvds() {
-            if tvd(st, t)?.owner.is_some() {
+            let state = tvd(st, t)?;
+            if state.owner.is_some() {
                 return Ok(Err(Rejection::Conflict));
             }
-            if !self.tvd_clear(st, t, now)? {
+            let occupancy = effective_occupancy(&state, now, self.rules.report_timeout());
+            if !path_tvd_ok(view, t, occupancy) {
                 return Ok(Err(Rejection::TvdNotClear(t)));
             }
         }
@@ -1059,8 +1077,9 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
         if !self.route_secured(st, view, now)? {
             return Ok(false);
         }
+        let timeout = self.rules.report_timeout();
         for t in view.tvds().chain(view.overlap_tvds()) {
-            if !self.tvd_clear(st, t, now)? {
+            if !path_tvd_ok(view, t, effective_occupancy(&tvd(st, t)?, now, timeout)) {
                 return Ok(false);
             }
         }
@@ -1230,9 +1249,28 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
         out: &mut O,
     ) -> Res<()> {
         let timeout = self.rules.report_timeout();
+        let target = shunting_target(view);
         for t in view.tvds() {
+            if Some(t) == target {
+                continue;
+            }
             let state = tvd_mut(st, t)?;
             if state.owner == Some(r)
+                && effective_occupancy(state, now, timeout) == Occupancy::Occupied
+            {
+                state.seen_occupied = true;
+            }
+        }
+        // REQ-IXL-028: Der Zielabschnitt einer Rangierstraße kann schon besetzt sein. Er gilt
+        // erst als erreicht, wenn die Fahrt den Abschnitt davor befahren und wieder geräumt
+        // hat und er besetzt ist – sonst würde der Fahrweg unter der Fahrt aufgelöst.
+        if let Some(last) = target {
+            let count = view.tvds().len();
+            let before = view.tvds().nth(count.saturating_sub(2)).ok_or(IDX)?;
+            let passed = tvd(st, before)?.seen_occupied && self.tvd_clear(st, before, now)?;
+            let state = tvd_mut(st, last)?;
+            if passed
+                && state.owner == Some(r)
                 && effective_occupancy(state, now, timeout) == Occupancy::Occupied
             {
                 state.seen_occupied = true;

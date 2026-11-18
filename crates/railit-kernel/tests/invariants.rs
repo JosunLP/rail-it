@@ -142,10 +142,19 @@ fn check_outputs(h: &Harness, field_points: &[PointReport], field_tvds: &[Occupa
                 signal,
                 aspect: Aspect::Proceed,
             } => {
+                // REQ-IXL-028: Nur das Zielgleis einer Rangierstraße darf besetzt sein.
+                let target = |r: &RouteView<'_>, t: TvdId| {
+                    r.is_shunting()
+                        && r.tvds().len() >= 2
+                        && r.tvds().last() == Some(t)
+                        && field_tvds[t.index().unwrap()] == Occupancy::Occupied
+                };
                 let justified = plan.routes().any(|r| {
                     r.start() == signal
                         && h.state.routes()[r.id().index().unwrap()].phase() == RoutePhase::Proceed
-                        && r.tvds().chain(r.overlap_tvds()).all(clear)
+                        && r.tvds()
+                            .chain(r.overlap_tvds())
+                            .all(|t| clear(t) || target(&r, t))
                         && unblocked(h, &r)
                         && secured_in_field(h, &r, field_points)
                 });
@@ -271,41 +280,76 @@ fn check_take_over(h: &Harness, before: &OwnedState) {
     assert_eq!(h.state.pending_aux().count(), 0);
 }
 
+/// Bahnhof mit Rangierstraßen (REQ-IXL-028).
+fn shunting_yard() -> Harness {
+    const NETWORK: &str = include_str!("../../../examples/rangieren.toml");
+    let net = railit_import::toml_format::parse(NETWORK).unwrap().topology;
+    let plan = railit_planning::compile(&net, None).unwrap().plan;
+    Harness::with_plan(common::leak(&plan))
+}
+
+fn run_actions(mut h: Harness, actions: Vec<Action>) -> Result<(), TestCaseError> {
+    h.step(&[]);
+    let points = h.points.len();
+    for a in actions {
+        let mut requests = Vec::new();
+        let mut dt = 100;
+        match a {
+            Action::Tvd(i, o) => h.tvds[i] = o,
+            Action::Point(i, r) => h.points[i % points] = r,
+            Action::Signal(i, r) => h.signals[i] = r,
+            Action::Set(i) => requests.push(Request::SetRoute(RouteId::from_index(i).unwrap())),
+            Action::Cancel(i) => {
+                requests.push(Request::CancelRoute(RouteId::from_index(i).unwrap()));
+            }
+            Action::Move(i, p) => requests.push(Request::MovePoint(
+                PointId::from_index(i % points).unwrap(),
+                p,
+            )),
+            Action::Lx(r) => {
+                if let Some(l) = h.lxs.first_mut() {
+                    *l = r;
+                }
+            }
+            Action::Aux(op, who) => requests.push(Request::AuxRequest {
+                op,
+                operator: OperatorId(who),
+            }),
+            Action::Confirm(id, who, op) => requests.push(Request::AuxConfirm {
+                aux: AuxId(id),
+                operator: OperatorId(who),
+                op,
+            }),
+            Action::Wait(ms) => dt = ms,
+            Action::Block(t) => requests.push(Request::Block(t)),
+            Action::Unblock(t) => requests.push(Request::Unblock(t)),
+            Action::TakeOver(ms) => {
+                let before = h.state.clone();
+                h.take_over_after(ms);
+                prop_assert_eq!(h.last, Ok(()), "Übernahme abgewiesen");
+                check_take_over(&h, &before);
+                continue;
+            }
+        }
+        let (field_points, field_tvds) = (h.points.clone(), h.tvds.clone());
+        h.lxs_before = h.lxs.clone();
+        h.step_after(dt, &requests);
+        prop_assert_eq!(h.last, Ok(()), "sicherer Zustand nach {:?}", a);
+        check_outputs(&h, &field_points, &field_tvds);
+    }
+    Ok(())
+}
+
 proptest! {
     // Standard: 256 Fälle; mehr über die Umgebungsvariable PROPTEST_CASES.
     #[test]
     fn kernel_never_becomes_unsafe(actions in prop::collection::vec(action(), 1..200)) {
-        let mut h = Harness::new();
-        h.step(&[]);
-        for a in actions {
-            let mut requests = Vec::new();
-            let mut dt = 100;
-            match a {
-                Action::Tvd(i, o) => h.tvds[i] = o,
-                Action::Point(i, r) => h.points[i] = r,
-                Action::Signal(i, r) => h.signals[i] = r,
-                Action::Set(i) => requests.push(Request::SetRoute(RouteId::from_index(i).unwrap())),
-                Action::Cancel(i) => requests.push(Request::CancelRoute(RouteId::from_index(i).unwrap())),
-                Action::Move(i, p) => requests.push(Request::MovePoint(PointId::from_index(i).unwrap(), p)),
-                Action::Lx(r) => h.lxs[0] = r,
-                Action::Aux(op, who) => requests.push(Request::AuxRequest { op, operator: OperatorId(who) }),
-                Action::Confirm(id, who, op) => requests.push(Request::AuxConfirm { aux: AuxId(id), operator: OperatorId(who), op }),
-                Action::Wait(ms) => dt = ms,
-                Action::Block(t) => requests.push(Request::Block(t)),
-                Action::Unblock(t) => requests.push(Request::Unblock(t)),
-                Action::TakeOver(ms) => {
-                    let before = h.state.clone();
-                    h.take_over_after(ms);
-                    prop_assert_eq!(h.last, Ok(()), "Übernahme abgewiesen");
-                    check_take_over(&h, &before);
-                    continue;
-                }
-            }
-            let (field_points, field_tvds) = (h.points.clone(), h.tvds.clone());
-            h.lxs_before = h.lxs.clone();
-            h.step_after(dt, &requests);
-            prop_assert_eq!(h.last, Ok(()), "sicherer Zustand nach {:?}", a);
-            check_outputs(&h, &field_points, &field_tvds);
-        }
+        run_actions(Harness::new(), actions)?;
+    }
+
+    /// REQ-IXL-028: dasselbe mit Rangierstraßen, deren Zielgleis besetzt sein darf.
+    #[test]
+    fn kernel_never_becomes_unsafe_with_shunting(actions in prop::collection::vec(action(), 1..200)) {
+        run_actions(shunting_yard(), actions)?;
     }
 }

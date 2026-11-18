@@ -29,6 +29,8 @@ use crate::error::{PlanningError, PlanningReport};
 /// Vergleichbare Beschreibung eines Fahrwegs.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Key {
+    /// Rangierstraße (REQ-PLN-023).
+    shunting: bool,
     start: SignalId,
     end: EndKey,
     points: BTreeSet<(PointId, PointPosition)>,
@@ -139,6 +141,54 @@ fn end_signal(net: &Topology, track: TrackId, entered_at: Port, max_gap: u64) ->
     found.first().map(|(_, id)| *id)
 }
 
+/// REQ-PLN-023: Begrenzt das Rangiersignal `id` Rangierstraßen? Es steht höchstens `max_gap`
+/// vor dem Ende seines Gleises, dahinter kein Bahnübergang und keine Kreuzungsstelle, am
+/// Gleisende beginnt ein anderer Abschnitt (kein Netzende), und dort steht kein Hauptsignal
+/// derselben Richtung, das ein Ziel wäre.
+fn shunting_limit(net: &Topology, id: SignalId, max_gap: u64) -> bool {
+    let Some(s) = net.signal(id) else {
+        return false;
+    };
+    if s.kind != SignalKind::Shunting || rest(net, id) > max_gap || blocked_behind(net, id) {
+        return false;
+    }
+    let own = tvd_of(net, NodeRef::Track(s.track));
+    let beyond = net.linked(PortRef::new(NodeRef::Track(s.track), forward(s.direction)));
+    let boundary = match beyond.map(|p| p.node) {
+        Some(n @ (NodeRef::Track(_) | NodeRef::Point(_))) => tvd_of(net, n) != own,
+        _ => false,
+    };
+    let entered = if s.direction == Direction::AToB {
+        Port::A
+    } else {
+        Port::B
+    };
+    boundary && end_signal(net, s.track, entered, max_gap).is_none()
+}
+
+/// Rangiersignal auf `track` am Ende in Fahrtrichtung, das Rangierstraßen begrenzt.
+fn shunting_end(
+    net: &Topology,
+    track: TrackId,
+    entered_at: Port,
+    max_gap: u64,
+) -> Option<SignalId> {
+    let mut found: Vec<SignalId> = net
+        .signals()
+        .filter(|(id, s)| {
+            s.track == track
+                && matches!(
+                    (entered_at, s.direction),
+                    (Port::A, Direction::AToB) | (Port::B, Direction::BToA)
+                )
+                && shunting_limit(net, *id, max_gap)
+        })
+        .map(|(id, _)| id)
+        .collect();
+    found.sort_unstable();
+    found.first().copied()
+}
+
 /// Bahnübergang oder Kreuzungsstelle zwischen Signal und Gleisende?
 fn blocked_behind(net: &Topology, signal: SignalId) -> bool {
     let Some(s) = net.signal(signal) else {
@@ -169,6 +219,7 @@ struct Walked {
 fn walk(
     net: &Topology,
     start: SignalId,
+    shunting: bool,
     choices: &[PointPosition],
     max_gap: u64,
 ) -> (Result<Walked, String>, usize) {
@@ -193,6 +244,7 @@ fn walk(
         }
         let done = |end, points: &BTreeSet<_>, tvds: &Vec<_>, tracks: &Vec<_>| Walked {
             key: Key {
+                shunting,
                 start,
                 end,
                 points: points.clone(),
@@ -214,7 +266,12 @@ fn walk(
             }
             (NodeRef::Track(t), entered) => {
                 tracks.push(t);
-                if let Some(s) = end_signal(net, t, entered, max_gap) {
+                let end = end_signal(net, t, entered, max_gap).or_else(|| {
+                    shunting
+                        .then(|| shunting_end(net, t, entered, max_gap))
+                        .flatten()
+                });
+                if let Some(s) = end {
                     return (Ok(done(EndKey::Signal(s), &points, &tvds, &tracks)), used);
                 }
                 port = PortRef::new(entry.node, leave(entered));
@@ -253,13 +310,14 @@ fn walk(
 fn enumerate(
     net: &Topology,
     start: SignalId,
+    shunting: bool,
     max_gap: u64,
     out: &mut Vec<Walked>,
     problems: &mut Vec<String>,
 ) {
     let mut choices: Vec<PointPosition> = Vec::new();
     loop {
-        let (result, used) = walk(net, start, &choices, max_gap);
+        let (result, used) = walk(net, start, shunting, &choices, max_gap);
         match result {
             Ok(w) => out.push(w),
             Err(msg) => problems.push(msg),
@@ -712,7 +770,9 @@ fn check_details(
     }
 
     let length = u64::from(cfg.overlap_length.as_mm());
-    let overlap = if let RouteEnd::Signal(e) = r.end {
+    let overlap = if let RouteEnd::Signal(e) = r.end
+        && !r.shunting
+    {
         let Ok(o) = expected_overlap(net, e, length) else {
             fail("Durchrutschweg");
             return;
@@ -798,13 +858,17 @@ fn check_details(
 fn check_routes(net: &Topology, cfg: PlanningConfig, plan: &Plan, problems: &mut Vec<String>) {
     let mut walked = Vec::new();
     for (id, s) in net.signals() {
+        let gap = u64::from(cfg.signal_gap.as_mm());
         if is_route_signal(s.kind) {
-            enumerate(
-                net,
-                id,
-                u64::from(cfg.signal_gap.as_mm()),
-                &mut walked,
-                problems,
+            enumerate(net, id, false, gap, &mut walked, problems);
+        } else if shunting_limit(net, id, gap) {
+            // REQ-PLN-023: Rangierstraßen enden an Signalen und am Prellbock.
+            let mut shunts = Vec::new();
+            enumerate(net, id, true, gap, &mut shunts, problems);
+            walked.extend(
+                shunts
+                    .into_iter()
+                    .filter(|w| matches!(w.key.end, EndKey::Signal(_) | EndKey::BufferStop)),
             );
         }
     }
@@ -828,6 +892,7 @@ fn check_routes(net: &Topology, cfg: PlanningConfig, plan: &Plan, problems: &mut
     let mut actual: BTreeMap<Key, usize> = BTreeMap::new();
     for r in &plan.routes {
         let key = Key {
+            shunting: r.shunting,
             start: r.start,
             end: r.end.into(),
             points: r.points.iter().copied().collect(),

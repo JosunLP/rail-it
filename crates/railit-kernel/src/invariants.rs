@@ -28,8 +28,8 @@ use railit_types::{BorderId, Duration, LxId, RouteId, SignalId, Tick, TvdId};
 
 use crate::io::{Aspect, Occupancy, RoutePhase, SafeStateReason, SignalReport};
 use crate::kernel::{
-    border, effective_occupancy, effective_position, fresh, lx, lx_closed, point, route, signal,
-    tvd,
+    border, effective_occupancy, effective_position, fresh, lx, lx_closed, path_tvd_ok, point,
+    route, signal, tvd,
 };
 use crate::state::{KernelState, RouteState};
 
@@ -552,7 +552,8 @@ fn justifies_proceed(
     let mut ok = start.report != Some(SignalReport::Defective) && secured(st, view, now, timeout)?;
     for t in view.tvds() {
         let state = tvd(st, t)?;
-        ok &= effective_occupancy(&state, now, timeout) == Occupancy::Clear;
+        // REQ-IXL-028: Nur der Zielabschnitt einer Rangierstraße darf besetzt sein.
+        ok &= path_tvd_ok(view, t, effective_occupancy(&state, now, timeout));
         ok &= state.owner == Some(r);
     }
     for t in view.overlap_tvds() {

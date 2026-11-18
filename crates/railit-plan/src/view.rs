@@ -16,9 +16,9 @@ use crate::format::{
     END_SIGNAL, FLAG_SIGNED, FLANK_POINT, FLANK_SIGNAL, FLANK_WORDS, H_BODY_LEN, H_BORDER_OFF,
     H_BORDERS, H_CONFLICT_OFF, H_COUPLING_OFF, H_FLAGS, H_LX_TVD_OFF, H_LXS, H_NAMES_LEN,
     H_NAMES_OFF, H_POINT_TVD_OFF, H_POINTS, H_POOL_OFF, H_POOL_WORDS, H_ROUTE_OFF, H_ROUTES,
-    H_SIGNAL_OFF, H_SIGNALS, H_TVD_FLAGS_OFF, H_TVDS, H_VERSION, HEADER_LEN, MAGIC, NONE,
-    ROUTE_LEN, SIGNAL_WORDS, SIGNATURE_LEN, TVD_ENTRY, VERSION, decode_point, r, read_u32,
-    read_u64, read_word,
+    H_SIGNAL_OFF, H_SIGNALS, H_TVD_FLAGS_OFF, H_TVDS, H_VERSION, HEADER_LEN, MAGIC, MIN_VERSION,
+    NONE, ROUTE_LEN, ROUTE_SHUNTING, SIGNAL_WORDS, SIGNATURE_LEN, TVD_ENTRY, VERSION, decode_point,
+    r, read_u32, read_u64, read_word,
 };
 
 /// Ziel einer Fahrstraße.
@@ -75,6 +75,8 @@ struct Range {
 struct RawRoute {
     start: u32,
     end_kind: u32,
+    /// Rangierstraße (Merkmal im Wort „Zielart“, seit v6).
+    shunting: bool,
     end_signal: u32,
     speed: u32,
     points: Range,
@@ -119,6 +121,7 @@ pub struct PlanView<'a> {
     names_end: usize,
     names_count: usize,
     signed: bool,
+    version: u32,
 }
 
 impl fmt::Debug for PlanView<'_> {
@@ -153,7 +156,7 @@ impl<'a> PlanView<'a> {
         }
         let h = |i| read_word(bytes, 0, i).ok_or(PlanError::TooShort);
         let version = h(H_VERSION)?;
-        if version != VERSION {
+        if !(MIN_VERSION..=VERSION).contains(&version) {
             return Err(PlanError::UnsupportedVersion(version));
         }
 
@@ -207,6 +210,7 @@ impl<'a> PlanView<'a> {
             names_end: 0,
             names_count,
             signed,
+            version,
         };
 
         view.check_section("Fahrstraßen", view.route_off, mul(routes, ROUTE_LEN)?)?;
@@ -389,14 +393,39 @@ impl<'a> PlanView<'a> {
                 self.signal_kind(SignalId::new(s))
                     .is_some_and(SignalKind::delimits_routes)
             };
-            if !delimits(raw.start) {
-                return Err(bad("Startsignal")(index));
-            }
-            match raw.end_kind {
-                END_SIGNAL if delimits(raw.end_signal) => {}
-                END_BOUNDARY | END_BUFFER_STOP if raw.end_signal == NONE => {}
-                END_BORDER if to_usize(raw.end_signal).is_ok_and(|b| b < self.borders) => {}
-                _ => return Err(bad("Ziel")(index)),
+            let shunting_signal =
+                |s: u32| self.signal_kind(SignalId::new(s)) == Some(SignalKind::Shunting);
+            if raw.shunting {
+                // REQ-PLN-023: Rangierstraßen beginnen an einem Rangiersignal und enden an
+                // einem Haupt- oder Rangiersignal oder am Prellbock, ohne Durchrutschweg.
+                if self.version < 6 || !shunting_signal(raw.start) {
+                    return Err(bad("Startsignal der Rangierstraße")(index));
+                }
+                let target = |s: u32| {
+                    shunting_signal(s)
+                        || matches!(
+                            self.signal_kind(SignalId::new(s)),
+                            Some(SignalKind::Main | SignalKind::Combined)
+                        )
+                };
+                match raw.end_kind {
+                    END_SIGNAL if target(raw.end_signal) => {}
+                    END_BUFFER_STOP if raw.end_signal == NONE => {}
+                    _ => return Err(bad("Ziel der Rangierstraße")(index)),
+                }
+                if raw.overlap_tvds.len != 0 || raw.overlap_points.len != 0 {
+                    return Err(bad("Durchrutschweg einer Rangierstraße")(index));
+                }
+            } else {
+                if !delimits(raw.start) {
+                    return Err(bad("Startsignal")(index));
+                }
+                match raw.end_kind {
+                    END_SIGNAL if delimits(raw.end_signal) => {}
+                    END_BOUNDARY | END_BUFFER_STOP if raw.end_signal == NONE => {}
+                    END_BORDER if to_usize(raw.end_signal).is_ok_and(|b| b < self.borders) => {}
+                    _ => return Err(bad("Ziel")(index)),
+                }
             }
             if u16::try_from(raw.speed).is_err() {
                 return Err(bad("Geschwindigkeit")(index));
@@ -762,7 +791,8 @@ impl<'a> PlanView<'a> {
         };
         Some(RawRoute {
             start: w(r::START)?,
-            end_kind: w(r::END_KIND)?,
+            end_kind: w(r::END_KIND)? & !ROUTE_SHUNTING,
+            shunting: w(r::END_KIND)? & ROUTE_SHUNTING != 0,
             end_signal: w(r::END_SIGNAL)?,
             speed: w(r::SPEED)?,
             points: range(r::POINTS)?,
@@ -1054,6 +1084,11 @@ impl<'a> RouteView<'a> {
     /// Startsignal.
     pub const fn start(&self) -> SignalId {
         SignalId::new(self.raw.start)
+    }
+
+    /// Ist die Fahrstraße eine Rangierstraße (REQ-PLN-023)?
+    pub const fn is_shunting(&self) -> bool {
+        self.raw.shunting
     }
 
     /// Ziel.

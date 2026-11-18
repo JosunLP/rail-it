@@ -370,9 +370,14 @@ fn proceed_only_when_safe(
             }
             let mut ok =
                 s.report != Some(SignalReport::Defective) && secured(st, &view, now, timeout)?;
-            for t in view.tvds() {
+            // Rangierstraßen mit mindestens zwei Abschnitten dürfen in ein besetztes (nicht
+            // gestörtes) Zielgleis führen.
+            let count = view.tvds().count();
+            for (i, t) in view.tvds().enumerate() {
                 let state = tvd(st, t)?;
-                ok &= effective_occupancy(&state, now, timeout) == Occupancy::Clear;
+                let occupancy = effective_occupancy(&state, now, timeout);
+                let target = view.is_shunting() && count >= 2 && i.saturating_add(1) == count;
+                ok &= occupancy == Occupancy::Clear || (target && occupancy == Occupancy::Occupied);
                 ok &= state.owner == Some(r);
             }
             for t in view.overlap_tvds() {

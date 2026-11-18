@@ -782,6 +782,9 @@ enum TrainCommand {
         /// Vorsignal in Warnstellung, bremst ihn die PZB zwangsweise.
         #[arg(long)]
         pzb: bool,
+        /// Rangierfahrt: beachtet auch Rangiersignale (Sh0/Sh1).
+        #[arg(long)]
+        shunting: bool,
     },
     /// Alle Züge.
     List,
@@ -1103,10 +1106,11 @@ fn run_sim(
             ignore_signals,
             etcs,
             pzb,
+            shunting,
         }) => {
             let body = json!({
                 "name": name, "signal": at, "length_m": length, "speed_kmh": speed,
-                "ignore_signals": ignore_signals, "etcs": etcs, "pzb": pzb,
+                "ignore_signals": ignore_signals, "etcs": etcs, "pzb": pzb, "shunting": shunting,
             });
             online::sim_done(
                 c.post("/v1/sim/trains", Some(body)),

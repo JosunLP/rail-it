@@ -18,7 +18,7 @@ use crate::format::{
     FLANK_POINT, FLANK_SIGNAL, H_BODY_LEN, H_BORDER_OFF, H_BORDERS, H_CONFLICT_OFF, H_COUPLING_OFF,
     H_FLAGS, H_LX_TVD_OFF, H_LXS, H_NAMES_LEN, H_NAMES_OFF, H_POINT_TVD_OFF, H_POINTS, H_POOL_OFF,
     H_POOL_WORDS, H_ROUTE_OFF, H_ROUTES, H_SIGNAL_OFF, H_SIGNALS, H_TVD_FLAGS_OFF, H_TVDS,
-    H_VERSION, HEADER_LEN, MAGIC, NONE, TVD_ENTRY, VERSION, encode_point,
+    H_VERSION, HEADER_LEN, MAGIC, NONE, ROUTE_SHUNTING, TVD_ENTRY, VERSION, encode_point,
 };
 use crate::view::{Flank, PlanView, Protection, RouteEnd};
 
@@ -113,6 +113,9 @@ pub struct RouteDef {
     pub length: Length,
     /// Länge des Durchrutschwegs (null ohne Durchrutschweg).
     pub overlap_length: Length,
+    /// Rangierstraße (REQ-PLN-023): beginnt an einem Rangiersignal, ohne Durchrutschweg; das
+    /// Zielgleis darf besetzt sein.
+    pub shunting: bool,
 }
 
 /// Vollständiger Plan im Speicher.
@@ -250,6 +253,7 @@ impl Plan {
                     conflicts: r.conflicts().collect(),
                     length: r.length(),
                     overlap_length: r.overlap_length(),
+                    shunting: r.is_shunting(),
                 })
                 .collect(),
             borders: ids(view.border_count())
@@ -314,6 +318,11 @@ impl Plan {
                 RouteEnd::Boundary => (END_BOUNDARY, NONE),
                 RouteEnd::BufferStop => (END_BUFFER_STOP, NONE),
                 RouteEnd::Border(b) => (END_BORDER, b.raw()),
+            };
+            let end_kind = if r.shunting {
+                end_kind | ROUTE_SHUNTING
+            } else {
+                end_kind
             };
             let points = pool.list(encode_points(&r.points)?, 1)?;
             let tvds = pool.list(r.tvds.iter().map(|t| t.raw()), 1)?;

@@ -1,0 +1,164 @@
+# Rangieren – Bahnhof mit Abstellgleis und Rangiersignalen (REQ-PLN-023).
+#
+#                 A ▶   Ra5 ▷            N1 ▶
+#   GW ════ west ════ vorfeld ═ W1 ╤════ 1 ════════ east ════ GE
+#                ◁ Ra4           ╘═ 3 ═|PB3          ◀ F
+#                               ◁ Ra3      ◀ P1
+#
+# Zugstraßen beginnen an den Hauptsignalen A, F und P1. Rangierstraßen beginnen an den
+# Rangiersignalen (Sh): Ra5 vor der Weiche W1 nach Gleis 1 (bis N1) oder ins Abstellgleis 3
+# bis zum Prellbock, Ra3 aus dem Abstellgleis und P1-seitig nicht – Ra3 führt über W1 auf das
+# Vorfeld bis Ra4. Ra4 steht am Gleisende vor dem Netzrand und begrenzt nur als Ziel.
+# Rangierstraßen haben keinen Durchrutschweg; ihr Zielgleis darf besetzt sein.
+
+[network]
+name = "Rangieren"
+
+[[terminal]]
+name = "GW"
+kind = "boundary"
+
+[[terminal]]
+name = "GE"
+kind = "boundary"
+
+[[terminal]]
+name = "PB3"
+kind = "buffer_stop"
+
+[[track]]
+name = "west"
+length_m = 1000
+
+[[track]]
+name = "vorfeld"
+length_m = 200
+
+[[track]]
+name = "1"
+length_m = 600
+
+[[track]]
+name = "3"
+length_m = 300
+
+[[track]]
+name = "east"
+length_m = 1000
+
+[[point]]
+name = "W1"
+diverging = "right"
+diverging_speed_kmh = 40
+
+[[link]]
+from = "GW.end"
+to = "west.a"
+
+[[link]]
+from = "west.b"
+to = "vorfeld.a"
+
+[[link]]
+from = "vorfeld.b"
+to = "W1.tip"
+
+[[link]]
+from = "W1.left"
+to = "1.a"
+
+[[link]]
+from = "W1.right"
+to = "3.a"
+
+[[link]]
+from = "3.b"
+to = "PB3.end"
+
+[[link]]
+from = "1.b"
+to = "east.a"
+
+[[link]]
+from = "east.b"
+to = "GE.end"
+
+[[signal]]
+name = "A"
+track = "west"
+position_m = 1000
+direction = "a_to_b"
+kind = "combined"
+system = "ks"
+
+[[signal]]
+name = "N1"
+track = "1"
+position_m = 600
+direction = "a_to_b"
+kind = "main"
+system = "ks"
+
+[[signal]]
+name = "F"
+track = "east"
+position_m = 0
+direction = "b_to_a"
+kind = "combined"
+system = "ks"
+
+[[signal]]
+name = "P1"
+track = "1"
+position_m = 0
+direction = "b_to_a"
+kind = "main"
+system = "ks"
+
+[[signal]]
+name = "Ra5"
+track = "vorfeld"
+position_m = 200
+direction = "a_to_b"
+kind = "shunting"
+system = "ks"
+
+[[signal]]
+name = "Ra4"
+track = "vorfeld"
+position_m = 0
+direction = "b_to_a"
+kind = "shunting"
+system = "ks"
+
+[[signal]]
+name = "Ra3"
+track = "3"
+position_m = 0
+direction = "b_to_a"
+kind = "shunting"
+system = "ks"
+
+[[tvd]]
+name = "TW"
+elements = ["west"]
+
+[[tvd]]
+name = "TV"
+elements = ["vorfeld"]
+
+[[tvd]]
+name = "TW1"
+elements = ["W1"]
+
+[[tvd]]
+name = "T1"
+elements = ["1"]
+
+[[tvd]]
+name = "T3"
+elements = ["3"]
+
+[[tvd]]
+name = "TE"
+elements = ["east"]

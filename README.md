@@ -50,7 +50,8 @@ Signale vor der Freimeldegrenze, PZB 90) und Phase 15 (Version 1.0: Vier-Augen-F
 Pläne, Sperrlisten für mTLS, Betriebsführung bei der Übernahme, RaSTA-Redundanzschicht,
 zyklische Speicherprüfung, ETCS über Prozessgrenzen, Siegel mit Zeitstempel und Zeugen,
 [FMEA](docs/safety/fmea.md)) sind umgesetzt. In Arbeit ist Phase 16 (Betrieb im Alltag): Sperren
-von Weichen, Signalen und Gleisen, siehe [Sperren](#sperren).
+von Weichen, Signalen und Gleisen, siehe [Sperren](#sperren), und Rangierstraßen, siehe
+[Rangieren](#rangieren).
 
 **Version 1.0** schließt den Funktionsumfang für Labor, Ausbildung und Prüfstände ab. Was bis
 zu einer Zulassung fehlt – unabhängige Begutachtung, qualifizierte Toolchain, Hardware, Regeln
@@ -193,6 +194,20 @@ railit scenario run tests/scenarios/28_sperren.toml
 ```
 
 Am Bedienplatz: Rechtsklick auf Signal, Weiche oder Abschnitt, oder `SP W1` / `ESP W1`.
+
+### Rangieren
+
+Rangiersignale (`kind = "shunting"`) am Gleisende beginnen **Rangierstraßen** bis zum
+nächsten Haupt- oder Rangiersignal oder zum Prellbock – ohne Durchrutschweg, und das
+Zielgleis darf besetzt sein (REQ-PLN-023, REQ-IXL-028). Die Rangierstraße löst ins besetzte
+Gleis erst auf, wenn die Fahrt die Weichen geräumt hat; das Rangiersignal zeigt dann Sh1.
+
+```sh
+railit plan compile examples/rangieren.toml --out rangieren.rplan --key railit.key
+railit plan info rangieren.rplan                 # Rangierstraßen sind gekennzeichnet
+railit scenario run tests/scenarios/29_rangieren.toml
+railit sim train add Lok --at Ra5 --length 20 --speed 25 --shunting   # online
+```
 
 ### Sicherer Rechner
 

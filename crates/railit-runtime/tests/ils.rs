@@ -380,6 +380,7 @@ mod split {
                 ignore_signals: false,
                 etcs: true,
                 pzb: false,
+                shunting: false,
             })
             .unwrap();
         let end = |west: &Runtime<Simulator>| {

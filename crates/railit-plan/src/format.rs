@@ -1,4 +1,4 @@
-//! Binärformat des Plan-Images, Version 5.
+//! Binärformat des Plan-Images, Version 6.
 //!
 //! Alle Zahlen sind little-endian. Offsets sind Byte-Offsets ab Anfang des Images.
 //!
@@ -56,7 +56,7 @@
 //! | 11 | `conflict_off` | | |
 //!
 //! **Fahrstraße** (18 × u32): Startsignal, Zielart (0 Signal, 1 Netzgrenze, 2 Prellbock,
-//! 3 Bereichsgrenze), Zielsignal bzw. Grenze (oder `u32::MAX`), Geschwindigkeit in km/h (0 = keine Beschränkung), dann je
+//! 3 Bereichsgrenze; seit v6 Bit 8 gesetzt für eine Rangierstraße), Zielsignal bzw. Grenze (oder `u32::MAX`), Geschwindigkeit in km/h (0 = keine Beschränkung), dann je
 //! Pool-Start und Anzahl für: Weichen, TVDs (Fahrreihenfolge), TVDs des Durchrutschwegs,
 //! Weichen des Durchrutschwegs, Flankenschutz-Einträge, Bahnübergänge; zuletzt die Länge
 //! vom Startsignal bis zum Ziel und die Länge des Durchrutschwegs, beide in mm (seit v4, für
@@ -80,8 +80,13 @@
 
 /// Kennung am Anfang jedes Plan-Images.
 pub const MAGIC: [u8; 4] = *b"RPLN";
-/// Unterstützte Formatversion.
-pub const VERSION: u32 = 5;
+/// Formatversion, die geschrieben wird.
+pub const VERSION: u32 = 6;
+/// Älteste Formatversion, die gelesen wird. Version 5 kennt keine Rangierstraßen; das Merkmal
+/// [`ROUTE_SHUNTING`] ist dort ungültig.
+pub const MIN_VERSION: u32 = 5;
+/// Merkmal im Wort „Zielart“ einer Fahrstraße: Rangierstraße (seit v6, REQ-PLN-023).
+pub const ROUTE_SHUNTING: u32 = 0x100;
 /// Länge des Kopfs in Byte.
 pub const HEADER_LEN: usize = 96;
 /// Länge eines Fahrstraßeneintrags in Byte.

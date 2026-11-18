@@ -44,6 +44,8 @@ struct Draft {
     level_crossings: Vec<LxId>,
     speed: Option<Speed>,
     overlap_length: u64,
+    /// Rangierstraße (REQ-PLN-023).
+    shunting: bool,
 }
 
 /// Teilweg während der Suche.
@@ -162,6 +164,47 @@ fn check_signals(
     ends
 }
 
+/// REQ-PLN-023: Ziele von Rangierstraßen je (Gleis, Fahrtrichtung). Das sind die Hauptsignale
+/// aus `ends` und, wo dort keins steht, Rangiersignale am Gleisende an einer
+/// Gleisfreimeldegrenze. Rangiersignale an anderer Stelle begrenzen keine Rangierstraße; sie
+/// wirken nur als Schutzsignal (Flankenschutz).
+fn shunting_ends(
+    net: &Topology,
+    cfg: PlanningConfig,
+    ends: &HashMap<(TrackId, Direction), SignalId>,
+    errors: &mut Vec<PlanningError>,
+) -> HashMap<(TrackId, Direction), SignalId> {
+    let mut out = ends.clone();
+    let mut shunting: HashMap<(TrackId, Direction), SignalId> = HashMap::new();
+    for (id, s) in net
+        .signals()
+        .filter(|(_, s)| s.kind == SignalKind::Shunting)
+    {
+        let at_end =
+            signal_gap(net, id) <= u64::from(cfg.signal_gap.as_mm()) && !gap_blocked(net, id);
+        let exit = PortRef::new(NodeRef::Track(s.track), exit_port(s.direction));
+        let at_boundary = match net.linked(exit).map(|p| p.node) {
+            Some(beyond @ (NodeRef::Track(_) | NodeRef::Point(_))) => {
+                member_tvd(net, beyond) != net.tvd_of(TvdMember::Track(s.track))
+            }
+            Some(NodeRef::Terminal(_)) | None => false,
+        };
+        if !at_end || !at_boundary || ends.contains_key(&(s.track, s.direction)) {
+            continue;
+        }
+        if shunting.insert((s.track, s.direction), id).is_some() {
+            errors.push(PlanningError::DuplicateSignals {
+                track: net
+                    .track(s.track)
+                    .map(|t| t.name.clone())
+                    .unwrap_or_default(),
+            });
+        }
+    }
+    out.extend(shunting);
+    out
+}
+
 /// REQ-PLN-017: Jedes Vorsignal kündigt genau ein Hauptsignal an, das ohne spitz befahrene
 /// Weiche erreicht wird.
 fn announced_signals(
@@ -250,10 +293,13 @@ pub(crate) fn border_ids(net: &Topology) -> HashMap<TerminalId, BorderId> {
         .collect()
 }
 
-/// Alle Fahrwege ab Startsignal `start`.
+/// Alle Fahrwege ab Startsignal `start`; mit `shunting` die Rangierstraßen (sie enden nur an
+/// Signalen und am Prellbock).
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn explore(
     net: &Topology,
     start: SignalId,
+    shunting: bool,
     ends: &HashMap<(TrackId, Direction), SignalId>,
     borders: &HashMap<TerminalId, BorderId>,
     drafts: &mut Vec<Draft>,
@@ -325,12 +371,14 @@ fn explore(
             level_crossings: Vec::new(),
             speed: None,
             overlap_length: 0,
+            shunting,
         };
 
         match entry.node {
             NodeRef::Terminal(t) => {
                 if let Some((end, name)) = terminal_end(net, t, borders)
                     && feasible(net, &frame.points)
+                    && (!shunting || end == RouteEnd::BufferStop)
                 {
                     drafts.push(finish(frame, end, name));
                 }
@@ -806,7 +854,9 @@ fn complete(
         .min();
 
     let mut overlap_tracks = Vec::new();
-    if let RouteEnd::Signal(end) = d.end {
+    if let RouteEnd::Signal(end) = d.end
+        && !d.shunting
+    {
         match overlap(net, end, cfg.overlap_length) {
             Ok((tvds, points, tracks)) => {
                 if let Some(t) = tvds.iter().find(|t| d.tvds.contains(t)) {
@@ -1067,8 +1117,38 @@ fn route_defs(net: &Topology, drafts: Vec<Draft>, names: Vec<String>) -> Vec<Rou
             flank: d.flank,
             level_crossings: d.level_crossings,
             conflicts: Vec::new(),
+            shunting: d.shunting,
         })
         .collect()
+}
+
+/// Fahrwege aller Zugstraßen und Rangierstraßen (REQ-PLN-023).
+fn all_drafts(
+    net: &Topology,
+    cfg: PlanningConfig,
+    ends: &HashMap<(TrackId, Direction), SignalId>,
+    border_map: &HashMap<TerminalId, BorderId>,
+    errors: &mut Vec<PlanningError>,
+) -> Vec<Draft> {
+    let shunt_ends = shunting_ends(net, cfg, ends, errors);
+    let mut drafts = Vec::new();
+    for (id, s) in net.signals() {
+        if s.kind.delimits_routes() {
+            explore(net, id, false, ends, border_map, &mut drafts, errors);
+        }
+    }
+    // REQ-PLN-023: Rangierstraßen ab jedem Rangiersignal, das eine Rangierstraße begrenzt.
+    let shunt_starts: Vec<SignalId> = net
+        .signals()
+        .filter(|(id, s)| {
+            s.kind == SignalKind::Shunting && shunt_ends.get(&(s.track, s.direction)) == Some(id)
+        })
+        .map(|(id, _)| id)
+        .collect();
+    for id in shunt_starts {
+        explore(net, id, true, &shunt_ends, border_map, &mut drafts, errors);
+    }
+    drafts
 }
 
 /// Erzeugt den Plan für ein Netz.
@@ -1086,12 +1166,7 @@ pub fn generate_with(net: &Topology, cfg: &PlanningConfig) -> Result<Plan, Plann
     let border_map = border_ids(net);
     let borders = border_defs(net, &border_map, &ends, *cfg, &mut errors);
 
-    let mut drafts = Vec::new();
-    for (id, s) in net.signals() {
-        if s.kind.delimits_routes() {
-            explore(net, id, &ends, &border_map, &mut drafts, &mut errors);
-        }
-    }
+    let mut drafts = all_drafts(net, *cfg, &ends, &border_map, &mut errors);
     let names = route_names(net, &drafts);
     for (d, name) in drafts.iter_mut().zip(&names) {
         complete(net, *cfg, d, name, &mut errors);

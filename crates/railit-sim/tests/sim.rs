@@ -47,6 +47,7 @@ fn train(name: &str, signal: SignalId, ignore_signals: bool) -> TrainSpec {
         ignore_signals,
         etcs: false,
         pzb: false,
+        shunting: false,
     }
 }
 
@@ -212,6 +213,7 @@ fn faults_override_reports() {
 fn pzb_train(name: &str, signal: SignalId, ignore_signals: bool) -> TrainSpec {
     TrainSpec {
         pzb: true,
+        shunting: false,
         ..train(name, signal, ignore_signals)
     }
 }

@@ -149,6 +149,8 @@ pub enum TrainState {
 
 /// Neuer Zug.
 #[derive(Clone, Debug, PartialEq, Eq)]
+// Die Merkmale sind voneinander unabhängig.
+#[allow(clippy::struct_excessive_bools)]
 pub struct TrainSpec {
     /// Zugnummer.
     pub name: String,
@@ -166,6 +168,9 @@ pub struct TrainSpec {
     /// Zug mit PZB-Fahrzeuggerät: Überfährt er einen wirksamen Gleismagneten, wird er
     /// zwangsgebremst (siehe [`Simulator`]).
     pub pzb: bool,
+    /// Rangierfahrt (REQ-PLN-023): beachtet auch Rangiersignale (Sh0/Sh1). Zugfahrten
+    /// beachten nur Hauptsignale und Halt-Tafeln.
+    pub shunting: bool,
 }
 
 /// Einspeisbare Störung.
@@ -377,6 +382,8 @@ struct Train {
     cab: Option<HashSet<SignalId>>,
     /// PZB-Fahrzeuggerät.
     pzb: bool,
+    /// Rangierfahrt: beachtet auch Rangiersignale.
+    shunting: bool,
     /// Zwangsbremsung: aktuelle Geschwindigkeit in mm/s und bisheriger Bremsweg in mm.
     braking: Option<(u64, u64)>,
     /// Zurückgelegter Weg der Spitze (mm).
@@ -408,6 +415,11 @@ const fn delimits(kind: SignalKind) -> bool {
         kind,
         SignalKind::Main | SignalKind::Combined | SignalKind::EtcsStopMarker
     )
+}
+
+/// Beachtet eine Fahrt das Signal? Rangierfahrten auch Rangiersignale.
+const fn obeys(kind: SignalKind, shunting: bool) -> bool {
+    delimits(kind) || (shunting && matches!(kind, SignalKind::Shunting))
 }
 
 /// Ob der Zug die Stelle `pos` (mm ab Port `a`) auf Gleis `track` überdeckt.
@@ -745,6 +757,7 @@ impl Simulator {
             reference: (spec.signal, false),
             cab: spec.etcs.then(HashSet::new),
             pzb: spec.pzb,
+            shunting: spec.shunting,
             braking: None,
             odometer: 0,
             pzb_1000: None,
@@ -921,6 +934,7 @@ impl Simulator {
         seg: &Seg,
         head: u64,
         cab: Option<&HashSet<SignalId>>,
+        shunting: bool,
     ) -> Option<(u64, SignalId)> {
         let NodeRef::Track(track) = seg.node else {
             return None;
@@ -930,7 +944,7 @@ impl Simulator {
             .signals_on(track)
             .filter(|(id, s)| {
                 s.direction == dir
-                    && delimits(s.kind)
+                    && obeys(s.kind, shunting)
                     && match cab {
                         // ETCS: nur die Fahrerlaubnis zählt, nicht der Signalbegriff.
                         Some(authority) => !authority.contains(id),
@@ -974,7 +988,7 @@ impl Simulator {
             let stop = if t.ignore_signals {
                 None
             } else {
-                self.stop_ahead(&seg, t.head, t.cab.as_ref())
+                self.stop_ahead(&seg, t.head, t.cab.as_ref(), t.shunting)
             };
 
             if let Some((offset, _)) = stop
@@ -1007,7 +1021,7 @@ impl Simulator {
                 limit = limit.min(offset);
             }
             if t.ignore_signals
-                && let Some((offset, signal)) = self.stop_ahead(&seg, t.head, None)
+                && let Some((offset, signal)) = self.stop_ahead(&seg, t.head, None, t.shunting)
                 && offset <= t.head.saturating_add(remaining)
             {
                 let name = self
@@ -1035,7 +1049,7 @@ impl Simulator {
             }
             // Hauptsignale stehen am Gleisende: Mit dem Übergang ins nächste Element ist der
             // Zug an ihnen vorbei.
-            let at_end = self.signal_at_end(&seg);
+            let at_end = self.signal_at_end(&seg, t.shunting);
             if !self.enter_next(t, &seg) {
                 break;
             }
@@ -1297,14 +1311,14 @@ impl Simulator {
             // Die Spitze steht am Signal und fährt an bzw. ist darüber hinweggefahren.
             let crossed = (o >= from && o < to) || (from == to && o == from);
             if s.direction == dir
-                && delimits(s.kind)
+                && obeys(s.kind, t.shunting)
                 && crossed
                 && passed.is_none_or(|(p, _)| o >= p)
             {
                 passed = Some((o, id));
             }
             if s.direction == dir
-                && delimits(s.kind)
+                && obeys(s.kind, t.shunting)
                 && within(o)
                 && self.substitute(id)
                 && self.signal_report(id) != Some(SignalReport::Proceed)
@@ -1320,7 +1334,7 @@ impl Simulator {
     }
 
     /// Hauptsignal bzw. Halt-Tafel am Ende des Elements in Fahrtrichtung.
-    fn signal_at_end(&self, seg: &Seg) -> Option<SignalId> {
+    fn signal_at_end(&self, seg: &Seg, shunting: bool) -> Option<SignalId> {
         let NodeRef::Track(track) = seg.node else {
             return None;
         };
@@ -1334,7 +1348,7 @@ impl Simulator {
                 } else {
                     seg.len.saturating_sub(pos)
                 };
-                s.direction == dir && delimits(s.kind) && offset == seg.len
+                s.direction == dir && obeys(s.kind, shunting) && offset == seg.len
             })
             .map(|(id, _)| id)
     }

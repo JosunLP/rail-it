@@ -192,6 +192,7 @@ fn operate<F: FieldAdapter>(
                     ignore_signals: false,
                     etcs: false,
                     pzb: false,
+                    shunting: false,
                 });
             }
         }
@@ -464,6 +465,7 @@ fn crossing(gated: bool, reads_to_end: bool) -> Outcome {
             ignore_signals: false,
             etcs: false,
             pzb: false,
+            shunting: false,
         })
         .unwrap();
     let mut standby = Standby::new(&primary);

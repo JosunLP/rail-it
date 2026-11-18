@@ -434,6 +434,7 @@ impl Simulation for Grpc {
             ignore_signals: r.ignore_signals,
             etcs: r.etcs,
             pzb: r.pzb,
+            shunting: r.shunting,
         };
         self.service.add_train(&who, train).await?;
         Ok(done())
