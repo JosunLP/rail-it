@@ -21,6 +21,10 @@ Bahnübergänge ihren Zustand, Grenzen den Halter der Erlaubnis. Zugnummern steh
 | Weiche umstellen | Rechtsklick auf die Weiche | `W1 L` bzw. `W1 R` |
 | Erlaubnis anfordern | Rechtsklick auf die Grenze | |
 | Hilfshandlung anfordern | Rechtsklick auf Signal, Weiche oder Abschnitt | |
+| Sperren, entsperren | Rechtsklick auf Signal, Weiche oder Abschnitt | `SP W1` bzw. `ESP W1` |
+
+Gesperrte Abschnitte zeigt der Spurplan gestrichelt, gesperrte Weichen und Signale mit rotem,
+unterstrichenem Namen. Eine Gleissperrung hebt das Menü nur als Hilfshandlung auf.
 
 Jede Bedienung ist eine Anforderung; der Kern nimmt sie an oder lehnt sie mit Grund ab (z. B.
 „feindliche Fahrstraße“, „Abschnitt nicht frei“). Die Meldungen stehen in der Liste rechts.

@@ -1,6 +1,6 @@
 # rail-it – Konzept einer Engine für Netz- und Stellwerkmanagement
 
-> Status: **v1.0.0** (Phasen 0 bis 15 umgesetzt) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
+> Status: **v1.0.x** (Phasen 0 bis 15 umgesetzt, Phase 16 in Arbeit) · Sprache der Implementierung: **Rust** · Lizenz: **NCSL v1.0**
 >
 > v0.2 arbeitet die Grundsatzentscheidungen aus Abschnitt 2 ein: vollständiger Netz- und
 > Bahnbetrieb, deutsches ESTW **und** europäisches System (ETCS/EULYNX), Server **und**
@@ -489,6 +489,16 @@ wird erst, wenn ein **anderer** Bediener innerhalb der Bestätigungsfrist bestä
 Voraussetzungen dann noch gelten; jede Ausführung erhöht das Zählwerk. Nicht bestätigte
 Anforderungen verfallen. Das Journal hält Anforderung und Bestätigung fest (REQ-IXL-014).
 
+**Sperren (Phase 16, REQ-IXL-027).** `Request::Block(BlockTarget)` sperrt eine Weiche
+(Weichensperre), ein Signal (Signalsperre) oder einen Abschnitt (Gleissperrung);
+`Request::Unblock` hebt Weichen- und Signalsperren auf. Eine Gleissperrung schützt eine
+Arbeitsstelle und hebt darum nur die Hilfshandlung `AuxOperation::UnblockTvd` auf. Sperren
+ist restriktiv und immer zulässig. Die Wirkung liegt an drei Stellen: in der Zulassung
+(Startsignal, Abschnitte, umzustellende Weichen), im Stellbefehl (eine gesperrte Weiche oder
+eine Weiche in gesperrtem Abschnitt zu stellen führt in den sicheren Zustand) und in den
+Fahrtbedingungen (Fahrt und Ersatzsignal nur ohne Sperre an Startsignal, Fahrweg und
+Durchrutschweg – auch als Invariante unabhängig nachgerechnet).
+
 ### 10.7 Stand Phase 2
 
 - **Verschlüsse:** Fahrweg exklusiv je Abschnitt und Weiche; Durchrutschweg exklusiv je
@@ -957,6 +967,8 @@ Daraus folgen diese Regeln:
 | **13 – Weichenkopplung & verteilter Betrieb** | Gekoppelte Weichen an einem Antrieb (REQ-TOP-017), Kreuzungsweichen (EKW, DKW) aus Zungenpaaren, inneren Gleisen und Kreuzung; Projektierung mit Partnerweichen und Flankenschutz über die Kreuzungsweiche hinaus (REQ-PLN-021), Plan-Image v5 mit Kopplungstabelle, Einzelstellen beider Weichen im Kern (REQ-IXL-026); TOML, railML, Spurplan, Bedienplatz. Fahrplan und Zuglenkung bei Stellbereichen in getrennten Prozessen mit Zugvormeldung und Zugübergabe über SCI-ILS (REQ-OPS-006); PZB im Simulator mit Zwangsbremsung an 1000- und 2000-Hz-Magneten (REQ-MOV-007) | Bahnhofsköpfe mit DKW und Weichenverbindungen an einem Antrieb lassen sich projektieren und betreiben (Szenario 25, `examples/dkw.toml`); der Nordbahn-Fahrplan läuft mit drei Prozessen (Feldrechner, Stellwerk West, Stellwerk Ost); Haltüberfahrungen mit PZB enden vor dem Gefahrpunkt (Szenario 26); über EULYNX ist jede Kopplung ein Antrieb (Szenario 27); jedes Teilnetz kann einen eigenen Bereitschaftsrechner haben | ✔ |
 | **14 – Planungsdetails** | Kreuzungsweichen in PlanPro (`W_Kr_Anlage`, Import und Export, bitgleiche Rundreise); Hauptsignale bis 30 m vor der Freimeldegrenze mit Längen ab dem Signal (REQ-PLN-010); PZB 90 im Simulator mit 500-Hz-Magnet, Überwachungskurven der Zugarten und Wachsamkeit (REQ-MOV-007) | Reale Planungsdaten mit DKW und abgesetzten Signalen lassen sich übernehmen; Haltüberfahrungen werden wie bei PZB 90 überwacht (Szenario 26) | ✔ |
 | **15 – Version 1.0** | Freigabe der Pläne im Vier-Augen-Prinzip (REQ-PLN-022); Sperrlisten für mTLS (REQ-SEC-006); Betriebsführung bei der Übernahme (REQ-OPS-007); RaSTA-Redundanzschicht über mehrere Kanäle (REQ-COM-011); zyklische Speicherprüfung (REQ-SAF-008); ETCS über Prozessgrenzen mit Fahrerlaubnis-Vorschau zwischen RBC (REQ-ETCS-004); Siegel mit Zeitstempel und unabhängige Zeugen (REQ-JRN-010); [FMEA](safety/fmea.md) | Funktionsumfang für Labor, Ausbildung und Prüfstand vollständig; offen bleibt, was nur Organisation, Hardware und reale Technik schließen können ([Teil 7](safety/safety-case.md#teil-7--offene-punkte-bis-zu-einer-zulassung)) | ✔ |
+
+| **16 – Betrieb im Alltag** | Sperren von Weichen, Signalen und Gleisen im Kern, Gleissperrung nur als Hilfshandlung aufhebbar (REQ-IXL-027); Dienst, CLI, gRPC, Szenarien und Bedienplatz | Arbeitsstellen und Instandhaltung lassen sich sicher abbilden (Szenario 28) | in Arbeit |
 
 **Umgesetzte Crates (Stand Version 1.0):** `railit-types`, `railit-topology`, `railit-plan`,
 `railit-planning`, `railit-rules`, `railit-kernel`, `railit-safety` (Kanäle, Voter, Watchdog),

@@ -1,7 +1,7 @@
 // Anzeigemodell: reine Funktionen von Zustandsbild und Spurplan zu Darstellung und
 // Bedienhandlungen. Ohne DOM, damit sie sich mit `bun test` prüfen lassen.
 
-import type { AuxKind, NamedAux, ReviewCycle, ReviewRow, Snapshot, TrainState } from './types';
+import type { AuxKind, BlockKind, NamedAux, ReviewCycle, ReviewRow, Snapshot, TrainState } from './types';
 
 /** Nach so vielen Millisekunden ohne neues Zustandsbild gilt die Anzeige als gestört. */
 export const STALE_AFTER_MS = 2000;
@@ -87,7 +87,21 @@ const AUX_TEXT: Record<AuxKind, string> = {
   substitute: 'Ersatzsignal',
   force_point: 'Weiche hilfsweise umstellen',
   take_permission: 'Erlaubnis zurückholen',
+  unblock_tvd: 'Gleissperrung aufheben',
 };
+
+/** Ist das Element gesperrt (REQ-IXL-027)? */
+export function isBlocked(snapshot: Snapshot, kind: BlockKind, name: string | null): boolean {
+  if (!name) return false;
+  switch (kind) {
+    case 'point':
+      return snapshot.points.find((x) => x.name === name)?.blocked === true;
+    case 'signal':
+      return snapshot.signals.find((x) => x.name === name)?.blocked === true;
+    case 'tvd':
+      return snapshot.tvds.find((x) => x.name === name)?.blocked === true;
+  }
+}
 
 /** Hilfshandlung in Worten. */
 export function auxText(op: NamedAux): string {
@@ -135,6 +149,14 @@ export function reasonText(reason: string | undefined, element?: string | null):
       return 'Voraussetzungen der Hilfshandlung nicht erfüllt';
     case 'no_permission':
       return `keine Erlaubnis für ${e}`;
+    case 'point_blocked':
+      return `Weiche ${e} gesperrt`;
+    case 'signal_blocked':
+      return `Signal ${e} gesperrt`;
+    case 'tvd_blocked':
+      return `Abschnitt ${e} gesperrt (Gleissperrung)`;
+    case 'aux_required':
+      return 'nur als Hilfshandlung zulässig';
     default:
       return reason ?? 'unbekannt';
   }
@@ -176,14 +198,24 @@ export type Command =
   | { kind: 'set_route'; route: string }
   | { kind: 'cancel_route'; route: string }
   | { kind: 'move_point'; point: string; position: 'left' | 'right' }
+  | { kind: 'block'; target: BlockKind; element: string; on: boolean }
   | { kind: 'error'; message: string };
 
 /** Kurzhilfe für die Eingabezeile. */
-export const COMMAND_HELP = 'Start Ziel (z. B. „A N1“) · FRT Fahrstraße · Weiche L/R';
+export const COMMAND_HELP = 'Start Ziel (z. B. „A N1“) · FRT Fahrstraße · Weiche L/R · SP/ESP Element';
+
+/** Art eines Elements für eine Sperre: Weiche, Signal oder Abschnitt. */
+function blockKindOf(snapshot: Snapshot, name: string): BlockKind | undefined {
+  if (snapshot.points.some((p) => p.name === name)) return 'point';
+  if (snapshot.signals.some((s) => s.name === name)) return 'signal';
+  if (snapshot.tvds.some((t) => t.name === name)) return 'tvd';
+  return undefined;
+}
 
 /**
  * Liest eine Eingabe: `A N1` oder `A-N1` (Fahrstraße einstellen), `FRT A-N1` (zurücknehmen),
- * `W1 L` bzw. `W1 R` (Weiche umstellen). Groß- und Kleinschreibung der Befehlswörter ist
+ * `W1 L` bzw. `W1 R` (Weiche umstellen), `SP W1` bzw. `ESP W1` (Weiche, Signal oder Abschnitt
+ * sperren bzw. entsperren, REQ-IXL-027). Groß- und Kleinschreibung der Befehlswörter ist
  * gleich; Elementnamen gelten, wie sie im Netz heißen.
  */
 export function parseCommand(text: string, snapshot: Snapshot): Command {
@@ -196,6 +228,14 @@ export function parseCommand(text: string, snapshot: Snapshot): Command {
     return routeNamed(second)
       ? { kind: 'cancel_route', route: second }
       : { kind: 'error', message: `Fahrstraße ${second} gibt es nicht` };
+  }
+  const verb = first.toUpperCase();
+  if (verb === 'SP' || verb === 'ESP') {
+    if (!second || third) return { kind: 'error', message: `${verb} erwartet genau ein Element` };
+    const target = blockKindOf(snapshot, second);
+    return target
+      ? { kind: 'block', target, element: second, on: verb === 'SP' }
+      : { kind: 'error', message: `Element ${second} gibt es nicht` };
   }
   if (words.length === 1) {
     return routeNamed(first)

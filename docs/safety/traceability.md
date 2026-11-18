@@ -122,6 +122,7 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 | REQ-IXL-024 | H-015 | `apps/railit/src/bench.rs` | `bench_measures_a_small_corridor` |
 | REQ-IXL-025 | H-001, H-003, H-015, H-017 | `apps/railitd/src/takeover.rs`<br>`crates/railit-kernel/src/kernel.rs`<br>`crates/railit-runtime/src/runtime.rs` | `proceed_falls_to_halt_and_locks_remain`<br>`locked_route_and_train_in_route_continue`<br>`pending_aux_expires_and_substitute_goes_out`<br>`safe_state_is_kept`<br>`kernel_never_becomes_unsafe`<br>`crates/railit-kernel/tests/common/mod.rs`<br>`crates/railit-kernel/tests/invariants.rs`<br>`crates/railit-kernel/tests/takeover.rs`<br>`crates/railit-runtime/tests/takeover.rs` |
 | REQ-IXL-026 | H-002, H-003 | `crates/railit-kernel/src/kernel.rs` | `single_move_takes_the_partner_along`<br>`route_locks_all_four_points`<br>`forced_move_takes_the_partner_along`<br>`coupled_points_share_one_drive`<br>`crates/railit-adapters/tests/drives.rs`<br>`crates/railit-kernel/tests/coupling.rs`<br>Szenario 25<br>Szenario 27 |
+| REQ-IXL-027 | H-003, H-018 | `apps/railit/src/main.rs`<br>`apps/railitd/src/api.rs`<br>`apps/railitd/src/service.rs`<br>`apps/railitd/ui/src/main.ts`<br>`apps/railitd/ui/src/model.ts`<br>`apps/railitd/ui/src/types.ts`<br>`crates/railit-kernel/src/invariants.rs`<br>`crates/railit-kernel/src/invariants/reference.rs`<br>`crates/railit-kernel/src/io.rs`<br>`crates/railit-kernel/src/kernel.rs`<br>`crates/railit-kernel/src/state.rs`<br>`crates/railit-runtime/src/directory.rs`<br>`crates/railit-runtime/src/names.rs`<br>`crates/railit-runtime/src/scenario.rs` | `blocked_point_is_not_moved`<br>`route_over_blocked_point_in_position`<br>`blocking_signal_drops_proceed`<br>`track_closure_rejects_routes_through_it`<br>`track_closure_is_lifted_by_aux_only`<br>`blocks_survive_take_over`<br>`kernel_never_becomes_unsafe`<br>`blocking_over_api`<br>`apps/railitd/tests/api.rs`<br>`apps/railitd/ui/test/model.test.ts`<br>`crates/railit-kernel/tests/blocking.rs`<br>`crates/railit-kernel/tests/invariants.rs`<br>Szenario 28 |
 
 ## [kommunikation.md](../requirements/kommunikation.md)
 
@@ -209,4 +210,4 @@ Kani-Nachweise, die die ID nennen, im Nachweis genannte Funktionen, Szenarien).
 
 ---
 
-136 Anforderungen, davon 136 mit Nachweis.
+137 Anforderungen, davon 137 mit Nachweis.

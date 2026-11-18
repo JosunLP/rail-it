@@ -31,6 +31,9 @@
 //! `confirm_aux = { operator }` (zuletzt angeforderte Hilfshandlung bestätigen; mit `kind`,
 //! `element`, `position` nennt der zweite Bediener sie selbst – weicht sie ab, lehnt der Kern
 //! mit `aux_mismatch` ab und die Hilfshandlung verfällt).
+//! Sperren (REQ-IXL-027): `block` / `unblock = { kind, element }` mit `kind` aus `point`
+//! (Weichensperre), `signal` (Signalsperre), `tvd` (Gleissperrung); eine Gleissperrung hebt
+//! nur die Hilfshandlung `unblock_tvd` auf.
 //!
 //! Betriebsführung: `[scenario] timetable = "…"` (Fahrplan, relativ zur Szenariodatei),
 //! `ars = true` (Zuglenkung) oder `ops = true` (nur Zugnummernmeldung und Selbstblock)
@@ -41,7 +44,7 @@
 //!
 //! **Bedingungen** (`until`, `expect`): `route`, `signal` (befohlener Begriff),
 //! `substitute` (Ersatzsignal ein/aus), `picture` (Signalbild, z. B. `"Ks1 Zs3(4)"`), `point`, `tvd` (Meldung des Felds), `lx` (Meldung
-//! des Bahnübergangs), `train`, `accepted`, `rejected` (Grund), `alarm` / `no_alarm`
+//! des Bahnübergangs), `blocked` (Weiche, Signal oder Abschnitt → gesperrt), `train`, `accepted`, `rejected` (Grund), `alarm` / `no_alarm`
 //! (Listen), `sim_event` (Liste), `aux_counter`, `safe_state`, `permission` (Grenze →
 //! Erlaubnis gehalten), `berth` (Zugnummer → Signal, `"left"` nach Verlassen des Netzes),
 //! `at_stop` (Zugnummer → `"Betriebsstelle/Gleis"`), `ops_event` (Liste der Ereignisarten
@@ -95,7 +98,7 @@ use railit_ops::{OpsConfig, OpsEvent, Timetable};
 use railit_safety::{Fault as ChannelFault, Redundancy, SafetyEvent};
 
 use crate::field::{FieldAdapter, SimulatedField};
-use crate::names::{NamedAux, NamedEvent};
+use crate::names::{NamedAux, NamedBlock, NamedEvent};
 use crate::runtime::{Addressed, AreaSafetyEvent, Runtime, SafetyConfig};
 
 #[derive(Debug, Deserialize)]
@@ -260,6 +263,10 @@ struct Step {
     aux: Option<AuxEntry>,
     #[serde(default)]
     confirm_aux: Option<ConfirmEntry>,
+    #[serde(default)]
+    block: Option<NamedBlock>,
+    #[serde(default)]
+    unblock: Option<NamedBlock>,
     #[serde(default)]
     describe: Option<DescribeEntry>,
     #[serde(default)]
@@ -454,6 +461,8 @@ struct Conditions {
     point: BTreeMap<String, PointReport>,
     #[serde(default)]
     tvd: BTreeMap<String, Occupancy>,
+    #[serde(default)]
+    blocked: BTreeMap<String, bool>,
     #[serde(default)]
     train: BTreeMap<String, TrainState>,
     #[serde(default)]
@@ -933,6 +942,26 @@ impl<F: SimulatedField> Ctx<F> {
         }
     }
 
+    /// Sperren und Entsperren (REQ-IXL-027).
+    fn block_actions(&mut self, step: &Step) -> Vec<String> {
+        let mut failures = Vec::new();
+        for (entry, on) in [(&step.block, true), (&step.unblock, false)] {
+            let Some(entry) = entry else { continue };
+            match self.rt.directory().resolve_block(entry) {
+                Ok((area, target)) => self.request(
+                    area,
+                    if on {
+                        Request::Block(target)
+                    } else {
+                        Request::Unblock(target)
+                    },
+                ),
+                Err(e) => failures.push(format!("Sperre: {e}")),
+            }
+        }
+        failures
+    }
+
     fn actions(&mut self, step: &Step) -> Vec<String> {
         let mut failures = Vec::new();
         if let Some(name) = &step.set_route {
@@ -996,6 +1025,7 @@ impl<F: SimulatedField> Ctx<F> {
                 Err(e) => failures.push(format!("Hilfshandlung: {e}")),
             }
         }
+        failures.extend(self.block_actions(step));
         failures.extend(self.ops_actions(step));
         if let Some(l) = &step.link
             && let Err(e) = self.rt.field_mut().set_link_faults(&l.controller, l.faults)
@@ -1205,6 +1235,23 @@ impl<F: SimulatedField> Ctx<F> {
             let got = signal(name).map(|(_, _, s)| s.substitute());
             if got != Some(*want) {
                 failures.push(format!("Ersatzsignal {name}: erwartet {want}, ist {got:?}"));
+            }
+        }
+        for (name, want) in &c.blocked {
+            let got = rt
+                .find_point(name)
+                .and_then(|(a, p)| Some(rt.state_of(a)?.points().get(p.index()?)?.blocked()))
+                .or_else(|| {
+                    rt.find_signal(name).and_then(|(a, s)| {
+                        Some(rt.state_of(a)?.signals().get(s.index()?)?.blocked())
+                    })
+                })
+                .or_else(|| {
+                    rt.find_tvd(name)
+                        .and_then(|(a, t)| Some(rt.state_of(a)?.tvds().get(t.index()?)?.blocked()))
+                });
+            if got != Some(*want) {
+                failures.push(format!("Sperre {name}: erwartet {want}, ist {got:?}"));
             }
         }
         for (name, want) in &c.picture {

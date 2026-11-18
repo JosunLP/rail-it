@@ -1,10 +1,10 @@
 //! Namensauflösung über alle Stellbereiche.
 
-use railit_kernel::AuxOperation;
+use railit_kernel::{AuxOperation, BlockTarget};
 use railit_plan::PlanView;
 use railit_types::{BorderId, LxId, PointId, RouteId, SignalId, TvdId};
 
-use crate::names::{AuxKind, NamedAux};
+use crate::names::{AuxKind, NamedAux, NamedBlock};
 
 /// Pläne aller Stellbereiche mit ihren Namen; löst fachliche Namen in (Bereich, ID) auf.
 ///
@@ -114,6 +114,21 @@ impl Directory {
         for (i, (_, plan)) in self.areas.iter().enumerate() {
             match aux.resolve(plan) {
                 Ok(op) => return Ok((i, op)),
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
+    }
+
+    /// Löst eine benannte Sperre auf: Bereich und Sperrziel des Kerns (REQ-IXL-027).
+    ///
+    /// # Errors
+    /// Beschreibung, wenn das Element in keinem Bereich existiert.
+    pub fn resolve_block(&self, block: &NamedBlock) -> Result<(usize, BlockTarget), String> {
+        let mut last = String::from("kein Stellbereich");
+        for (i, (_, plan)) in self.areas.iter().enumerate() {
+            match block.resolve(plan) {
+                Ok(target) => return Ok((i, target)),
                 Err(e) => last = e,
             }
         }

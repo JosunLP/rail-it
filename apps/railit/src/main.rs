@@ -21,6 +21,7 @@
 //! railit state
 //! railit route list|set|cancel [NAME]
 //! railit point move NAME left|right
+//! railit block|unblock point|signal|tvd ELEMENT
 //! railit sim train add|list|remove …
 //! railit sim fault set|clear ART ELEMENT
 //! railit aux list
@@ -136,6 +137,23 @@ enum Command {
     /// Weichen (online).
     #[command(subcommand)]
     Point(PointCommand),
+    /// Element sperren: Weichensperre, Signalsperre, Gleissperrung (online).
+    Block {
+        /// Art des Elements.
+        #[arg(value_enum)]
+        kind: BlockKind,
+        /// Name des Elements.
+        element: String,
+    },
+    /// Sperre aufheben (online). Eine Gleissperrung hebt nur die Hilfshandlung
+    /// `aux request unblock-tvd` auf.
+    Unblock {
+        /// Art des Elements.
+        #[arg(value_enum)]
+        kind: BlockKind,
+        /// Name des Elements.
+        element: String,
+    },
     /// Simulation steuern (online).
     #[command(subcommand)]
     Sim(SimCommand),
@@ -597,6 +615,10 @@ enum AuxKind {
     Substitute,
     /// Weiche im gestörten Abschnitt umstellen (Element: Weiche, mit --position).
     ForcePoint,
+    /// Erlaubnis an einer Bereichsgrenze zurückholen (Element: Grenze `Bereich>Nachbar`).
+    TakePermission,
+    /// Gleissperrung aufheben (Element: Abschnitt).
+    UnblockTvd,
 }
 
 impl AuxKind {
@@ -606,6 +628,37 @@ impl AuxKind {
             Self::ResetTvd => "reset_tvd",
             Self::Substitute => "substitute",
             Self::ForcePoint => "force_point",
+            Self::TakePermission => "take_permission",
+            Self::UnblockTvd => "unblock_tvd",
+        }
+    }
+}
+
+/// Art einer Sperre.
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum BlockKind {
+    /// Weichensperre.
+    Point,
+    /// Signalsperre.
+    Signal,
+    /// Gleissperrung (Gleisfreimeldeabschnitt).
+    Tvd,
+}
+
+impl BlockKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Point => "point",
+            Self::Signal => "signal",
+            Self::Tvd => "tvd",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Point => "Weiche",
+            Self::Signal => "Signal",
+            Self::Tvd => "Abschnitt",
         }
     }
 }
@@ -911,6 +964,28 @@ fn main() -> ExitCode {
     }
 }
 
+/// Sperren und Entsperren (REQ-IXL-027).
+fn run_block(
+    c: &online::Client,
+    kind: BlockKind,
+    element: &str,
+    on: bool,
+    output: Output,
+) -> Result<ExitCode, online::Failure> {
+    let (path, verb) = if on {
+        ("/v1/block", "sperren")
+    } else {
+        ("/v1/unblock", "entsperren")
+    };
+    online::request(
+        c,
+        path,
+        Some(json!({ "kind": kind.as_str(), "element": element })),
+        &format!("{} {element} {verb}", kind.label()),
+        output,
+    )
+}
+
 fn run_online(
     c: &online::Client,
     command: Command,
@@ -948,6 +1023,8 @@ fn run_online(
                 output,
             )
         }
+        Command::Block { kind, element } => run_block(c, kind, &element, true, output),
+        Command::Unblock { kind, element } => run_block(c, kind, &element, false, output),
         Command::Sim(cmd) => run_sim(c, cmd, output),
         Command::Aux(AuxCommand::List) => online::aux_list(c, output),
         Command::Aux(AuxCommand::Request {

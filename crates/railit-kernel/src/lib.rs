@@ -53,9 +53,9 @@ mod kernel;
 mod state;
 
 pub use io::{
-    Alarm, Aspect, AuxId, AuxOperation, BorderMessage, Command, Event, Input, LxReport, Occupancy,
-    OperatorId, Outputs, PointReport, Rejection, Request, RequestId, RoutePhase, SafeStateReason,
-    SignalReport,
+    Alarm, Aspect, AuxId, AuxOperation, BlockTarget, BorderMessage, Command, Event, Input,
+    LxReport, Occupancy, OperatorId, Outputs, PointReport, Rejection, Request, RequestId,
+    RoutePhase, SafeStateReason, SignalReport,
 };
 pub use kernel::Interlocking;
 pub use state::{

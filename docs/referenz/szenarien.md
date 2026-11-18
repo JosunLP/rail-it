@@ -59,10 +59,11 @@ und prüft danach `expect`. `note` beschreibt den Schritt in der Ausgabe.
 | `request_permission` | Grenze | Erlaubnis an einer Bereichsgrenze anfordern (z. B. `"Adorf>Strecke"`) |
 | `aux` | `{ kind, element, position, operator }` | Hilfshandlung anfordern |
 | `confirm_aux` | `{ operator }` bzw. `{ operator, kind, element, position }` | Zuletzt angeforderte Hilfshandlung bestätigen; mit Angaben nennt der zweite Bediener sie selbst |
+| `block` / `unblock` | `{ kind, element }` | Sperren bzw. entsperren (REQ-IXL-027): `kind` aus `point`, `signal`, `tvd`; eine Gleissperrung hebt nur die Hilfshandlung `unblock_tvd` auf |
 
 Hilfshandlungen (`kind`): `release_route` (Fahrstraße), `reset_tvd` (Abschnitt), `substitute`
 (Ersatzsignal, Fahrstraße), `force_point` (Weiche mit `position`), `take_permission`
-(Grenze). Weicht eine selbst genannte Bestätigung ab, lehnt der Kern mit `aux_mismatch` ab und
+(Grenze), `unblock_tvd` (Gleissperrung aufheben, Abschnitt). Weicht eine selbst genannte Bestätigung ab, lehnt der Kern mit `aux_mismatch` ab und
 die Hilfshandlung verfällt.
 
 ### Simulation
@@ -108,6 +109,7 @@ Mit eingeschalteter Betriebsführung trägt `add_train` die Zugnummer am Signal 
 | `signal` | `{ Signal = Begriff }` | `stop`, `proceed` (befohlener Begriff) |
 | `picture` | `{ Signal = Bild }` | Signalbild, z. B. `"Ks1 Zs3(4)"` |
 | `substitute` | `{ Signal = bool }` | Ersatzsignal an |
+| `blocked` | `{ Element = bool }` | Weiche, Signal oder Abschnitt gesperrt |
 | `point` | `{ Weiche = Meldung }` | `left`, `right`, `no_end_position`, `disturbed` |
 | `tvd` | `{ Abschnitt = Meldung }` | `clear`, `occupied`, `disturbed` |
 | `lx` | `{ BÜ = Meldung }` | `open`, `closing`, `closed`, `disturbed` |

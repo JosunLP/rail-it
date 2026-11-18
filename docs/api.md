@@ -57,6 +57,8 @@ Auditprotokoll (JSON Lines mit Hashkette, `railit audit verify audit.log`; mit
 | POST | `/v1/routes/{name}/cancel` | Fahrstraße zurücknehmen | 200 / 409 |
 | POST | `/v1/points/{name}/move` | Weiche umstellen, Body `{"position":"left"\|"right"}` | 200 / 409 |
 | GET | `/v1/areas` | Stellbereiche mit Grenzen und Erlaubnissen | JSON-Liste |
+| POST | `/v1/block` | Element sperren (REQ-IXL-027), Body `{"kind","element"}` mit `kind` aus `point` (Weichensperre), `signal` (Signalsperre), `tvd` (Gleissperrung) | 200 / 404 / 422 |
+| POST | `/v1/unblock` | Sperre aufheben, Body wie `/v1/block`; eine Gleissperrung hebt nur die Hilfshandlung `unblock_tvd` auf (sonst `aux_required`) | 200 / 409 / 404 |
 | POST | `/v1/borders/{Bereich>Nachbar}/request` | Erlaubnis anfordern | 200 / 409 |
 | POST | `/v1/borders/{Bereich>Nachbar}/withdraw` | Anforderung zurückziehen | 200 / 409 |
 | GET | `/v1/aux` | Offene Hilfshandlungen mit Prüfcode (`check`) und Zählwerk | `{"pending": […], "counter"}` |
@@ -110,7 +112,29 @@ Ablehnungsgründe: `conflict`, `tvd_not_clear`, `point_locked`, `point_not_opera
 `signal_held`, `aux_busy`, `aux_unknown`, `aux_expired`, `same_operator`,
 `aux_mismatch` (Bestätigung weicht ab, Hilfshandlung verfallen), `check_mismatch` (Prüfcode
 der Anzeige weicht ab, vom Dienst), `aux_not_applicable`, `no_permission` (Ausfahrt über eine
-Grenze ohne Erlaubnis).
+Grenze ohne Erlaubnis), `point_blocked`, `signal_blocked`, `tvd_blocked` (Sperre, mit
+`element`), `aux_required` (nur als Hilfshandlung zulässig).
+
+## Sperren
+
+Sperren verbieten die Benutzung eines Elements, bis sie aufgehoben werden (REQ-IXL-027).
+Sperren ist restriktiv und daher immer zulässig; im Zustandsbild trägt jede Weiche, jedes
+Signal und jeder Abschnitt das Feld `blocked`.
+
+| `kind` | Sperre | Wirkung | Aufheben |
+|--------|--------|---------|----------|
+| `point` | Weichensperre | Die Weiche läuft nicht um – weder einzeln, durch eine Fahrstraße noch hilfsweise. Fahrstraßen über die Weiche in ihrer Lage bleiben möglich. | `POST /v1/unblock` |
+| `signal` | Signalsperre | Keine Fahrstraße beginnt am Signal; Fahrt und Ersatzsignal fallen sofort weg. | `POST /v1/unblock` |
+| `tvd` | Gleissperrung | Keine Fahrstraße führt mit Fahrweg oder Durchrutschweg durch den Abschnitt, keine Weiche darin läuft um; Fahrt durch ihn fällt sofort weg. | Hilfshandlung `unblock_tvd` |
+
+```sh
+railit block tvd T1                              # Arbeitsstelle in Gleis 1
+railit route set A-N1                            # abgelehnt: Abschnitt T1 gesperrt
+railit aux request unblock-tvd T1 --operator 1   # Räumung gemeldet: aufheben …
+railit aux confirm 0 unblock-tvd T1 --operator 2 # … ein zweiter Bediener bestätigt
+```
+
+Über gRPC: `Interlocking.Block` und `Interlocking.Unblock` mit `BlockRequest {kind, element}`.
 
 ## Hilfshandlungen
 
@@ -125,6 +149,7 @@ und erhöht das Zählwerk. Der Kopf `X-Railit-Operator: <Nummer>` identifiziert 
 | `substitute` | Fahrstraße | festgelegt oder haltgefallen, Weichen in Lage, Schutzsignale Halt, BÜ geschlossen |
 | `force_point` | Weiche, dazu `"position"` | unverschlossen, Abschnitt gestört |
 | `take_permission` | Grenze `Bereich>Nachbar` | Erlaubnis zurückholen: weder dieser Kern noch der Nachbar hält sie |
+| `unblock_tvd` | Abschnitt | Gleissperrung aufheben: der Abschnitt ist gesperrt |
 
 ```sh
 curl -s -X POST -H "Authorization: Bearer $RAILIT_TOKEN" -H "X-Railit-Operator: 1" \

@@ -4,7 +4,7 @@
 // Netz werden ausschließlich als Text gesetzt.
 
 import { $ } from '@bquery/bquery/core';
-import { berths, pointPosition, signalClass, tvdClass } from './model';
+import { berths, isBlocked, pointPosition, signalClass, tvdClass } from './model';
 import type { Layout, Pos, Snapshot } from './types';
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -216,21 +216,23 @@ export class PlanView {
   /** Zustandsbild übernehmen. */
   update(snapshot: Snapshot): void {
     for (const [tvd, nodes] of this.tracks) {
-      const cls = tvdClass(snapshot, tvd);
+      const cls = tvdClass(snapshot, tvd) + (isBlocked(snapshot, 'tvd', tvd) ? ' blocked' : '');
       for (const n of nodes) n.setAttribute('class', `track ${cls}`);
     }
     for (const [name, p] of this.points) {
-      const cls = tvdClass(snapshot, p.tvd);
+      const cls = tvdClass(snapshot, p.tvd) + (isBlocked(snapshot, 'tvd', p.tvd) ? ' blocked' : '');
       const pos = pointPosition(snapshot, name);
       const locked = snapshot.points.find((x) => x.name === name)?.locked_by ? ' locked' : '';
       p.left.setAttribute('class', `track leg ${cls} ${pos === 'left' ? 'leg-on' : 'leg-off'}`);
       p.right.setAttribute('class', `track leg ${cls} ${pos === 'right' ? 'leg-on' : 'leg-off'}`);
-      p.group.setAttribute('class', `point${pos ? '' : ' point-unknown'}${locked}`);
+      const blocked = isBlocked(snapshot, 'point', name) ? ' blocked' : '';
+      p.group.setAttribute('class', `point${pos ? '' : ' point-unknown'}${locked}${blocked}`);
     }
     const trains = berths(snapshot);
     for (const [name, s] of this.signals) {
       const selected = this.selected === name ? ' selected' : '';
-      s.group.setAttribute('class', `signal ${signalClass(snapshot, name)}${selected}`);
+      const blocked = isBlocked(snapshot, 'signal', name) ? ' blocked' : '';
+      s.group.setAttribute('class', `signal ${signalClass(snapshot, name)}${selected}${blocked}`);
       s.berth.textContent = trains.get(name) ?? '';
     }
     for (const [name, g] of this.crossings) {

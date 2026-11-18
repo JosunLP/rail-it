@@ -131,6 +131,19 @@ fn answer(a: Answer) -> pb::Answer {
     }
 }
 
+impl Grpc {
+    async fn set_block(&self, request: Request<pb::BlockRequest>, on: bool) -> Res<pb::Answer> {
+        let who = who(&request)?;
+        let r = request.get_ref();
+        let block = railit_runtime::NamedBlock {
+            kind: parse("Art der Sperre", &r.kind)?,
+            element: r.element.clone(),
+        };
+        let a = self.service.block(&who, &block, on).await?;
+        Ok(Response::new(answer(a)))
+    }
+}
+
 fn done() -> Response<pb::Done> {
     Response::new(pb::Done {})
 }
@@ -238,6 +251,14 @@ impl Interlocking for Grpc {
         let position = parse("Lage", &r.position)?;
         let a = self.service.move_point(&who, &r.point, position).await?;
         Ok(Response::new(answer(a)))
+    }
+
+    async fn block(&self, request: Request<pb::BlockRequest>) -> Res<pb::Answer> {
+        self.set_block(request, true).await
+    }
+
+    async fn unblock(&self, request: Request<pb::BlockRequest>) -> Res<pb::Answer> {
+        self.set_block(request, false).await
     }
 
     async fn request_permission(&self, request: Request<pb::BorderRequest>) -> Res<pb::Answer> {

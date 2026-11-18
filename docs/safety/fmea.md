@@ -35,6 +35,7 @@ Sicherheitsnachweises als offen geführt.
 | Störung einer Meldung bleibt unbemerkt | Fahrt auf veralteter Grundlage | Alter jeder Meldung (Meldezeit) | Ohne aktuelle Meldung gilt das Element als gestört, gestört wie besetzt (REQ-IXL-009) | 3 | 1 | 3 |
 | Panik, Überlauf, Endlosschleife im Kern | Ausfall des Kerns | `forbid(unsafe)`, Lints, Fuzzing; Watchdog | Keine Allokation, keine Panikpfade (REQ-IXL-001; Lints, Fuzzing), Watchdog (REQ-SAF-005) | 2 | 1 | 2 |
 | Nichtdeterministisches Verhalten | Kanäle weichen ab | Voter | Deterministischer Kern ohne Uhr und Zufall (REQ-IXL-001); Abweichung → sicherer Zustand (REQ-SAF-001) | 2 | 1 | 2 |
+| Sperre wirkt nicht (Fahrt oder Umstellen in einer Arbeitsstelle) | Gefährdung von Personen im Gleis, Zusammenstoß mit Arbeitsfahrzeugen | Invariantenprüfung nach jedem Zyklus; Prüfung des Stellbefehls | Sperren in Zulassung, Stellbefehl und Fahrtbedingungen (REQ-IXL-027); Stellbefehl an gesperrte Weiche ⇒ sicherer Zustand; Fahrt und Ersatzsignal durch Sperre ⇒ Invariantenverletzung; Gleissperrung nur als Hilfshandlung aufhebbar | 3 | 1 | 3 |
 
 ## Plan und Projektierung (`railit-planning`, `railit-plan`)
 

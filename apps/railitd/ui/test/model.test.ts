@@ -6,6 +6,7 @@ import {
   clock,
   findRoute,
   health,
+  isBlocked,
   nodeProblem,
   operable,
   pointPosition,
@@ -187,6 +188,7 @@ describe('Bedienung', () => {
     );
     expect(reasonText('aux_mismatch')).toContain('weicht von der angeforderten ab');
     expect(reasonText('tvd_not_clear', 'T1')).toBe('Abschnitt T1 nicht frei');
+    expect(reasonText('tvd_blocked', 'T1')).toBe('Abschnitt T1 gesperrt (Gleissperrung)');
     expect(reasonText('neu')).toBe('neu');
     expect(reasonText(undefined)).toBe('unbekannt');
   });
@@ -214,6 +216,17 @@ describe('Stelltisch-Eingabe (REQ-UI-004)', () => {
     expect(parseCommand('FRT X', s).kind).toBe('error');
     expect(parseCommand('W1 r', s)).toEqual({ kind: 'move_point', point: 'W1', position: 'right' });
     expect(parseCommand('W1 L', s)).toEqual({ kind: 'move_point', point: 'W1', position: 'left' });
+  });
+  test('Sperren (REQ-IXL-027)', () => {
+    expect(parseCommand('sp W1', s)).toEqual({ kind: 'block', target: 'point', element: 'W1', on: true });
+    expect(parseCommand('ESP S1', s)).toEqual({ kind: 'block', target: 'signal', element: 'S1', on: false });
+    expect(parseCommand('SP T1', s)).toEqual({ kind: 'block', target: 'tvd', element: 'T1', on: true });
+    expect(parseCommand('SP X', s).kind).toBe('error');
+    expect(parseCommand('SP', s).kind).toBe('error');
+    const blocked = { ...s, tvds: s.tvds.map((t) => (t.name === 'T1' ? { ...t, blocked: true } : t)) };
+    expect(isBlocked(blocked, 'tvd', 'T1')).toBe(true);
+    expect(isBlocked(blocked, 'tvd', 'T2')).toBe(false);
+    expect(isBlocked(blocked, 'point', null)).toBe(false);
   });
   test('Fehler', () => {
     expect(parseCommand('', s).kind).toBe('error');

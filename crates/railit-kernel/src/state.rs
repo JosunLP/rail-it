@@ -37,6 +37,8 @@ pub struct PointState {
     pub(crate) owner: Option<RouteId>,
     pub(crate) holds: u8,
     pub(crate) locked_pos: Option<PointPosition>,
+    /// Weichensperre (REQ-IXL-027).
+    pub(crate) blocked: bool,
 }
 
 impl PointState {
@@ -74,6 +76,11 @@ impl PointState {
     pub const fn is_locked(&self) -> bool {
         self.owner.is_some() || self.holds > 0
     }
+
+    /// Ist die Weiche gesperrt (Weichensperre)?
+    pub const fn blocked(&self) -> bool {
+        self.blocked
+    }
 }
 
 /// Zustand eines Gleisfreimeldeabschnitts.
@@ -87,6 +94,8 @@ pub struct TvdState {
     pub(crate) seen_occupied: bool,
     /// Anzahl der Grenzen, deren Annäherungsabschnitt den Abschnitt verschließt.
     pub(crate) border_locks: u8,
+    /// Gleissperrung (REQ-IXL-027).
+    pub(crate) blocked: bool,
 }
 
 impl TvdState {
@@ -115,10 +124,17 @@ impl TvdState {
     pub const fn border_locked(&self) -> bool {
         self.border_locks > 0
     }
+
+    /// Ist der Abschnitt gesperrt (Gleissperrung)?
+    pub const fn blocked(&self) -> bool {
+        self.blocked
+    }
 }
 
 /// Zustand eines Signals.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+// Die Merkmale sind voneinander unabhängig.
+#[allow(clippy::struct_excessive_bools)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SignalState {
     pub(crate) report: Option<SignalReport>,
@@ -135,6 +151,8 @@ pub struct SignalState {
     pub(crate) stop_holds: u8,
     /// Ersatzsignal (Zs1) eingeschaltet.
     pub(crate) substitute: bool,
+    /// Signalsperre (REQ-IXL-027).
+    pub(crate) blocked: bool,
 }
 
 impl SignalState {
@@ -156,6 +174,11 @@ impl SignalState {
     /// Ist das Ersatzsignal (Zs1) eingeschaltet?
     pub const fn substitute(&self) -> bool {
         self.substitute
+    }
+
+    /// Ist das Signal gesperrt (Signalsperre)?
+    pub const fn blocked(&self) -> bool {
+        self.blocked
     }
 }
 

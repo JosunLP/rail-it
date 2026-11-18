@@ -369,6 +369,23 @@ svg.plan text {
   stroke: #555;
 }
 
+/* Gleissperrung (REQ-IXL-027): gestrichelt, unabhängig von Belegung und Verschluss. */
+.track.blocked {
+  stroke-dasharray: 10 6;
+}
+
+.point.blocked .point-name,
+.signal.blocked .signal-name {
+  fill: var(--stop) !important;
+  text-decoration: underline;
+}
+
+.signal.blocked .lamp {
+  stroke: var(--stop);
+  stroke-width: 3;
+  stroke-dasharray: 2 2;
+}
+
 /* Weichen: Der Schenkel ohne Endlage wird abgeschwächt. */
 .leg.leg-off {
   stroke: #3a424c;

@@ -11,6 +11,9 @@
 //!   bestätigte Hilfshandlung) oder eine Fahrstraße über sie festgelegt ist.
 //! - Fahrt zeigt ein Signal nur bei freiem Durchrutschweg, Weichen in Lage (auch Flanken-
 //!   schutz) und geschlossenen Bahnübergängen; das Ersatzsignal nur bei gesichertem Fahrweg.
+//! - Gesperrte Weichen und Weichen in gesperrten Abschnitten werden nie gestellt; kein
+//!   gesperrtes Signal zeigt Fahrt oder Ersatzsignal, keine Fahrt führt durch einen gesperrten
+//!   Abschnitt (REQ-IXL-027).
 
 mod common;
 
@@ -32,6 +35,8 @@ enum Action {
     Aux(AuxOperation, u32),
     Confirm(u32, u32, AuxOperation),
     Wait(u64),
+    Block(BlockTarget),
+    Unblock(BlockTarget),
     /// Übernahme durch einen Bereitschaftsrechner nach `ms` (REQ-IXL-025).
     TakeOver(u64),
 }
@@ -66,6 +71,12 @@ fn action() -> impl Strategy<Value = Action> {
         route.prop_map(AuxOperation::Substitute),
         (0u32..6).prop_map(|t| AuxOperation::ResetTvd(TvdId::new(t))),
         (0u32..2, pos.clone()).prop_map(|(p, pos)| AuxOperation::ForcePoint(PointId::new(p), pos)),
+        (0u32..6).prop_map(|t| AuxOperation::UnblockTvd(TvdId::new(t))),
+    ];
+    let target = prop_oneof![
+        (0u32..2).prop_map(|p| BlockTarget::Point(PointId::new(p))),
+        (0u32..6).prop_map(|s| BlockTarget::Signal(railit_plan::SignalId::new(s))),
+        (0u32..6).prop_map(|t| BlockTarget::Tvd(TvdId::new(t))),
     ];
     prop_oneof![
         1 => lx.prop_map(Action::Lx),
@@ -79,6 +90,8 @@ fn action() -> impl Strategy<Value = Action> {
         1 => (0usize..2, pos).prop_map(|(i, p)| Action::Move(i, p)),
         2 => (0u64..70_000).prop_map(Action::Wait),
         1 => (0u64..3_000).prop_map(Action::TakeOver),
+        1 => target.clone().prop_map(Action::Block),
+        1 => target.prop_map(Action::Unblock),
     ]
 }
 
@@ -98,6 +111,15 @@ fn secured_in_field(h: &Harness, r: &RouteView<'_>, field_points: &[PointReport]
             .all(|l| h.lxs_before[l.index().unwrap()] == LxReport::Closed)
 }
 
+/// Ist die Fahrstraße frei von Sperren (Startsignal, Fahrweg, Durchrutschweg)?
+fn unblocked(h: &Harness, r: &RouteView<'_>) -> bool {
+    !h.state.signals()[r.start().index().unwrap()].blocked()
+        && r.tvds()
+            .chain(r.overlap_tvds())
+            .all(|t| !h.state.tvds()[t.index().unwrap()].blocked())
+}
+
+#[allow(clippy::too_many_lines)]
 fn check_outputs(h: &Harness, field_points: &[PointReport], field_tvds: &[Occupancy]) {
     let plan = *h.plan();
     let clear = |t: TvdId| field_tvds[t.index().unwrap()] == Occupancy::Clear;
@@ -124,6 +146,7 @@ fn check_outputs(h: &Harness, field_points: &[PointReport], field_tvds: &[Occupa
                     r.start() == signal
                         && h.state.routes()[r.id().index().unwrap()].phase() == RoutePhase::Proceed
                         && r.tvds().chain(r.overlap_tvds()).all(clear)
+                        && unblocked(h, &r)
                         && secured_in_field(h, &r, field_points)
                 });
                 assert!(justified, "Fahrt an {signal} ohne Rechtfertigung");
@@ -134,12 +157,18 @@ fn check_outputs(h: &Harness, field_points: &[PointReport], field_tvds: &[Occupa
                     r.start() == signal
                         && matches!(state.phase(), RoutePhase::Locked | RoutePhase::Halted)
                         && state.substitute_since().is_some()
+                        && unblocked(h, &r)
                         && secured_in_field(h, &r, field_points)
                 });
                 assert!(justified, "Ersatzsignal an {signal} ohne Rechtfertigung");
             }
             Command::MovePoint { point, .. } => {
                 let tvd = plan.point_tvd(point).unwrap();
+                assert!(
+                    !h.state.points()[point.index().unwrap()].blocked()
+                        && !h.state.tvds()[tvd.index().unwrap()].blocked(),
+                    "gesperrte Weiche {point} gestellt"
+                );
                 if !forced.contains(&point) {
                     assert!(
                         clear(tvd),
@@ -262,6 +291,8 @@ proptest! {
                 Action::Aux(op, who) => requests.push(Request::AuxRequest { op, operator: OperatorId(who) }),
                 Action::Confirm(id, who, op) => requests.push(Request::AuxConfirm { aux: AuxId(id), operator: OperatorId(who), op }),
                 Action::Wait(ms) => dt = ms,
+                Action::Block(t) => requests.push(Request::Block(t)),
+                Action::Unblock(t) => requests.push(Request::Unblock(t)),
                 Action::TakeOver(ms) => {
                     let before = h.state.clone();
                     h.take_over_after(ms);

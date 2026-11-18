@@ -19,8 +19,8 @@
 | Einsatzvarianten | 1. alles auf dem Server (`railitd` mit 1, 2 oder 3 Kanälen je Stellbereich); 2. verteilt: Kern und Sicherheitsschicht auf einem sicheren Rechner (`railit-embedded`; auf dem Server als `railit-node`, Ziel Cortex-R), angebunden über RaSTA mit `railitd --node`; 3. Haupt- und Bereitschaftsrechner (`railitd --standby … --takeover-after-ms`) an einem Feldrechner mit Umschalter (`railit-field`), Feld über RaSTA/UDP |
 | Sicherheitsrelevant außerhalb des Kerns | Umschalter des Feldrechners (`railit_adapters::net`): Er entscheidet, welches Stellwerk stellt. Heute Teil des simulierten Feldrechners; für einen realen Einsatz in sicherer Feldtechnik umzusetzen (Teil 7) |
 | Schnittstellen | Plan-Image (signiert), Feld über EULYNX SCI-P/-LS/-TDS/-LX auf RaSTA, Nachbarstellwerke über Grenzmeldungen, ETCS-Fahrzeuge über die RBC-Funktion, Bedienung über REST/gRPC und den Bedienplatz (`/ui/`) |
-| Gefährdungen | [Gefährdungsliste](hazard-log.md), H-001 bis H-017 |
-| Anforderungen | [Anforderungen](../requirements/README.md), 136 Anforderungen mit stabilen IDs |
+| Gefährdungen | [Gefährdungsliste](hazard-log.md), H-001 bis H-018 |
+| Anforderungen | [Anforderungen](../requirements/README.md), 137 Anforderungen mit stabilen IDs |
 | Fehleranalyse | [FMEA](fmea.md): Fehlerarten je Funktionsblock mit Erkennung, Maßnahme und Restrisiko (qualitativ) |
 
 ## Teil 2 – Qualitätsmanagementbericht
@@ -43,7 +43,7 @@
 | Sicherheitsanforderungen | Je Gefährdung Anforderungen mit ID, Gefährdungsbezug und Nachweis | [requirements/](../requirements/README.md) |
 | Rückverfolgbarkeit | Anforderung → Code → Nachweis, automatisch erzeugt und in der CI geprüft (`cargo xtask trace --check`): jede ID im Code ist dokumentiert, jede Anforderung hat einen Nachweis, jeder genannte Nachweis existiert | [traceability.md](traceability.md) |
 | Verifikation | Modul- und Integrationstests, Eigenschaftstests (Invarianten, Streckenblock, RaSTA, Voter), unabhängige Gegenprüfung der Projektierung, formale Nachweise (Kani), Fuzzing | CI-Jobs, Teil 4 |
-| Validierung | Deklarative Betriebsszenarien (27) gegen den Simulator, alle zusätzlich mit 2-von-3-Kanälen; Ende-zu-Ende-Tests von Dienst und CLI | `tests/scenarios/`, `apps/*/tests/` |
+| Validierung | Deklarative Betriebsszenarien (28) gegen den Simulator, alle zusätzlich mit 2-von-3-Kanälen; Ende-zu-Ende-Tests von Dienst und CLI | `tests/scenarios/`, `apps/*/tests/` |
 | Betrieb und Nachvollziehbarkeit | Betriebsjournal mit Hashkette und Replay, Auditprotokoll aller Bedienungen | REQ-JRN, REQ-SEC |
 | Rollen | Implementierung, Verifikation, Validierung und Begutachtung müssen vor einer Zulassung unabhängig besetzt werden | Teil 7 |
 
@@ -110,6 +110,7 @@ Kontext: nur Simulation, Ausbildung, Prüfstände (Teil 1); Anwendungsbedingunge
 | Veraltete Anzeige wird erkannt und sperrt die Bedienung | REQ-UI-002 |
 | Spurplan aus der Topologie berechnet, nicht von Hand gezeichnet | REQ-UI-001 |
 | Rücksetzen der Sicherheitsschicht nur durch die Instandhaltung, protokolliert | REQ-SAF-004 |
+| Sperren von Weichen, Signalen und Gleisen wirken im Kern: kein Stellbefehl, keine Fahrt, kein Ersatzsignal durch eine Sperre (Invariante); Gleissperrung nur als zählpflichtige Hilfshandlung aufhebbar | REQ-IXL-027, H-018 |
 
 Der Bedienplatz selbst bleibt SIL 0. Das Argument stützt sich nicht auf seine Richtigkeit:
 Eine falsche Anzeige kann den Bediener täuschen, aber der Kern führt eine Hilfshandlung nur
@@ -184,6 +185,10 @@ rail-it ist als **generisches Produkt** angelegt. Für einen Einsatz sind zusät
    übersteigen (Vorgabe im Test: 8 s gegenüber 0,5 s + 1,8 s + 0,5 s). Nach einer Übernahme
    sind Fahrstraßen mit Fahrt neu einzustellen; nach einem Neustart gelten alle Elemente als
    unbekannt.
+10. Arbeitsstellen im Gleis mit einer Gleissperrung des betroffenen Abschnitts sichern,
+   Weichen in Instandhaltung mit einer Weichensperre. Die Gleissperrung hebt erst auf, wer
+   die Räumung der Arbeitsstelle bestätigt bekommen hat; der zweite Bediener prüft das
+   unabhängig. Eine Sperre ersetzt nicht die Regeln des Betreibers für Arbeitsstellen.
 
 ## Teil 7 – Offene Punkte bis zu einer Zulassung
 
@@ -230,7 +235,7 @@ Die hervorgehobenen Restrisiken der [FMEA](fmea.md) sind hier eingeordnet.
 ## Teil 8 – Schlussfolgerung
 
 Für den Geltungsbereich – Simulation, Ausbildung und Prüfstände – sind die identifizierten
-Gefährdungen H-001 bis H-017 durch Anforderungen beherrscht, deren Umsetzung durch Tests,
+Gefährdungen H-001 bis H-018 durch Anforderungen beherrscht, deren Umsetzung durch Tests,
 Szenarien, Eigenschaftstests, formale Nachweise und Fuzzing belegt und lückenlos
 rückverfolgbar ist; die FMEA findet kein Fehlerbild mit Unfallfolge, das allein
 organisatorisch beherrscht wäre. Für den realen Bahnbetrieb reicht das nicht: Die Punkte aus Teil 7,

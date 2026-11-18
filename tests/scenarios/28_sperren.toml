@@ -1,0 +1,90 @@
+[scenario]
+name = "Sperren: Arbeitsstelle in Gleis 1, Weichen- und Signalsperre"
+description = """
+Gleis 1 wird für eine Arbeitsstelle gesperrt (Gleissperrung). Fahrstraßen nach Gleis 1 und
+Weichen darin sind ausgeschlossen; der Zug fährt nach Gleis 2. Die Weichensperre an W1 lässt
+Fahrten über die Weiche nur in ihrer Lage zu, die Signalsperre an A hält das Signal in Halt.
+Die Gleissperrung hebt nur die zählpflichtige Hilfshandlung auf (REQ-IXL-027).
+"""
+network = "../../examples/beispielstadt.toml"
+
+[[step]]
+note = "Gleis 1 sperren"
+block = { kind = "tvd", element = "T1" }
+wait_s = 1
+expect = { accepted = true, blocked = { T1 = true } }
+
+[[step]]
+note = "Keine Fahrstraße in das gesperrte Gleis"
+set_route = "A-N1"
+wait_s = 1
+expect = { rejected = "tvd_blocked", route = { "A-N1" = "idle" } }
+
+[[step]]
+note = "Weiche W1 in Lage für Gleis 2 und sperren"
+move_point = { point = "W1", position = "right" }
+until = { point = { W1 = "right" } }
+timeout_s = 15
+
+[[step]]
+block = { kind = "point", element = "W1" }
+wait_s = 1
+expect = { accepted = true, blocked = { W1 = true } }
+
+[[step]]
+note = "Gesperrte Weiche läuft nicht um"
+move_point = { point = "W1", position = "left" }
+wait_s = 1
+expect = { rejected = "point_blocked", point = { W1 = "right" } }
+
+[[step]]
+note = "Fahrt nach Gleis 2 über die gesperrte Weiche in ihrer Lage"
+set_route = "A-N2"
+until = { route = { "A-N2" = "proceed" } }
+timeout_s = 15
+expect = { signal = { A = "proceed" } }
+
+[[step]]
+note = "Signalsperre an A: Signal fällt sofort auf Halt"
+block = { kind = "signal", element = "A" }
+wait_s = 1
+expect = { blocked = { A = true }, signal = { A = "stop" }, route = { "A-N2" = "halted" }, alarm = ["signal_dropped"] }
+
+[[step]]
+note = "Fahrstraße zurücknehmen, Signal entsperren"
+cancel_route = "A-N2"
+until = { route = { "A-N2" = "idle" } }
+timeout_s = 120
+
+[[step]]
+unblock = { kind = "signal", element = "A" }
+wait_s = 1
+expect = { accepted = true, blocked = { A = false } }
+
+[[step]]
+note = "Gleissperrung lässt sich nicht einfach aufheben"
+unblock = { kind = "tvd", element = "T1" }
+wait_s = 1
+expect = { rejected = "aux_required", blocked = { T1 = true } }
+
+[[step]]
+note = "Arbeitsstelle geräumt: Aufheben als Hilfshandlung"
+aux = { kind = "unblock_tvd", element = "T1", operator = 7 }
+wait_s = 1
+
+[[step]]
+confirm_aux = { operator = 8 }
+wait_s = 1
+expect = { accepted = true, blocked = { T1 = false }, aux_counter = 1 }
+
+[[step]]
+note = "Weichensperre aufheben; Fahrstraße nach Gleis 1 wieder möglich"
+unblock = { kind = "point", element = "W1" }
+wait_s = 1
+expect = { accepted = true, blocked = { W1 = false } }
+
+[[step]]
+set_route = "A-N1"
+until = { route = { "A-N1" = "proceed" } }
+timeout_s = 15
+expect = { point = { W1 = "left" }, signal = { A = "proceed" } }

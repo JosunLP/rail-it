@@ -13,7 +13,7 @@ use railit_journal::audit::{AuditRecord, AuditWriter, verify_audit};
 use railit_kernel::{AuxId, OperatorId, Request};
 use railit_plan::{PlanView, Protection, RouteEnd};
 use railit_runtime::keys::to_hex;
-use railit_runtime::{Directory, NamedAux, NamedEvent, Snapshot};
+use railit_runtime::{Directory, NamedAux, NamedBlock, NamedEvent, Snapshot};
 use railit_sim::{Fault, TrainInfo, TrainSpec};
 use railit_topology::{ElementRef, Topology};
 use railit_types::{Length, PointPosition, Speed};
@@ -356,6 +356,22 @@ impl Service {
             .ok_or_else(|| not_found("Weiche", name))?;
         let request = Request::MovePoint(p, position);
         self.operate(who, Permission::Operate, "move_point", name, area, request)
+            .await
+    }
+
+    /// Sperren und Entsperren (REQ-IXL-027).
+    pub(crate) async fn block(&self, who: &Principal, block: &NamedBlock, on: bool) -> Res<Answer> {
+        let (area, target) = self
+            .directory
+            .resolve_block(block)
+            .map_err(ServiceError::NotFound)?;
+        let (action, request) = if on {
+            ("block", Request::Block(target))
+        } else {
+            ("unblock", Request::Unblock(target))
+        };
+        let label = format!("{} {}", block.kind.as_str(), block.element);
+        self.operate(who, Permission::Operate, action, &label, area, request)
             .await
     }
 

@@ -226,6 +226,13 @@ fn reason_text(reason: &str, element: Option<&str>) -> String {
         }
         "check_mismatch" => "Prüfcode stimmt nicht mit der offenen Hilfshandlung überein".into(),
         "aux_not_applicable" => "Voraussetzungen der Hilfshandlung nicht erfüllt".into(),
+        "point_blocked" => format!("Weiche {e} gesperrt"),
+        "signal_blocked" => format!("Signal {e} gesperrt"),
+        "tvd_blocked" => format!("Abschnitt {e} gesperrt (Gleissperrung)"),
+        "aux_required" => {
+            "nur als Hilfshandlung zulässig (railit aux request unblock-tvd …)".into()
+        }
+        "no_permission" => format!("keine Erlaubnis für die Grenze {e}"),
         other => other.into(),
     }
 }
@@ -258,10 +265,13 @@ pub(crate) fn state(c: &Client, output: Output) -> Res<ExitCode> {
         } else {
             "Halt"
         };
-        let held = match sig["flank_holds"].as_u64() {
-            Some(n) if n > 0 => " · Flankenschutz",
-            _ => "",
+        let mut held = match sig["flank_holds"].as_u64() {
+            Some(n) if n > 0 => " · Flankenschutz".to_string(),
+            _ => String::new(),
         };
+        if sig["blocked"] == true {
+            held.push_str(" · GESPERRT");
+        }
         println!(
             "  {:<8} {aspect:<6} {:<22} (Meldung: {}){held}",
             show(&sig["name"]),
@@ -282,6 +292,9 @@ pub(crate) fn state(c: &Client, output: Output) -> Res<ExitCode> {
                 show(&p["locked_position"])
             );
         }
+        if p["blocked"] == true {
+            lock.push_str(" · GESPERRT");
+        }
         println!("  {:<8} {}{lock}", show(&p["name"]), show(&p["report"]));
     }
     println!("\nGleisfreimeldeabschnitte:");
@@ -292,6 +305,9 @@ pub(crate) fn state(c: &Client, output: Output) -> Res<ExitCode> {
             .unwrap_or_default();
         if let Some(r) = t["overlap_of"].as_str() {
             let _ = write!(lock, " · Durchrutschweg von {r}");
+        }
+        if t["blocked"] == true {
+            lock.push_str(" · GLEISSPERRUNG");
         }
         println!("  {:<8} {}{lock}", show(&t["name"]), show(&t["occupancy"]));
     }

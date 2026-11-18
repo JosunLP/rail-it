@@ -138,6 +138,34 @@ pub enum AuxOperation {
     /// Erlaubnis zurückholen, wenn der Nachbar sie nicht hält, aber auch nicht abgibt
     /// (z. B. nach seinem Neustart). Der Kern übernimmt sie erst nach der Einschwingzeit.
     TakePermission(BorderId),
+    /// Gleissperrung aufheben (REQ-IXL-027). Eine Gleissperrung schützt z. B. eine
+    /// Arbeitsstelle; sie wird darum nur im Vier-Augen-Prinzip und gezählt aufgehoben.
+    UnblockTvd(TvdId),
+}
+
+/// Element, das gesperrt werden kann (REQ-IXL-027).
+///
+/// Eine Sperre verbietet die Benutzung eines Elements, bis sie aufgehoben wird:
+///
+/// - **Weichensperre**: Die Weiche wird nicht umgestellt – weder einzeln noch durch eine
+///   Fahrstraße. Fahrstraßen über die Weiche in ihrer vorhandenen Lage bleiben möglich.
+/// - **Signalsperre**: Keine Fahrstraße beginnt an dem Signal; Fahrtbegriff und Ersatzsignal
+///   fallen sofort weg.
+/// - **Gleissperrung**: Keine Fahrstraße führt mit Fahrweg oder Durchrutschweg durch den
+///   Abschnitt, keine Weiche darin wird umgestellt. Aufgehoben wird sie nur mit der
+///   Hilfshandlung [`AuxOperation::UnblockTvd`].
+///
+/// Sperren ist restriktiv und daher immer zulässig.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum BlockTarget {
+    /// Weichensperre.
+    Point(PointId),
+    /// Signalsperre.
+    Signal(SignalId),
+    /// Gleissperrung.
+    Tvd(TvdId),
 }
 
 /// Signalbegriff, den der Kern befiehlt.
@@ -194,6 +222,11 @@ pub enum Request {
         /// Hilfshandlung, wie der bestätigende Bediener sie verstanden hat.
         op: AuxOperation,
     },
+    /// Element sperren (REQ-IXL-027).
+    Block(BlockTarget),
+    /// Sperre aufheben (Weiche, Signal). Eine Gleissperrung hebt nur die Hilfshandlung
+    /// [`AuxOperation::UnblockTvd`] auf.
+    Unblock(BlockTarget),
 }
 
 /// Eingabe eines Zyklus.
@@ -354,6 +387,14 @@ pub enum Rejection {
     AuxNotApplicable,
     /// Für die Grenze fehlt die Erlaubnis; sie muss erst angefordert werden.
     NoPermission(BorderId),
+    /// Die Weiche ist gesperrt und darf nicht umgestellt werden (REQ-IXL-027).
+    PointBlocked(PointId),
+    /// Das Signal ist gesperrt (REQ-IXL-027).
+    SignalBlocked(SignalId),
+    /// Der Abschnitt ist gesperrt (REQ-IXL-027).
+    TvdBlocked(TvdId),
+    /// Die Anforderung ist nur als Hilfshandlung zulässig (Gleissperrung aufheben).
+    AuxRequired,
 }
 
 /// Störungs- und Gefahrenmeldung.
@@ -456,6 +497,8 @@ pub enum SafeStateReason {
     UnsafeSubstitute(SignalId),
     /// Die Sicherheitsschicht hat abgeschaltet (Abweichung der Kanäle, Watchdog).
     SafetyLayer,
+    /// Stellbefehl an eine gesperrte Weiche oder eine Weiche in einem gesperrten Abschnitt.
+    BlockedPointCommanded(PointId),
 }
 
 /// Empfänger der Ausgaben eines Zyklus.

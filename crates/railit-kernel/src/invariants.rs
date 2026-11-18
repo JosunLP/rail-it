@@ -492,9 +492,15 @@ fn borders_are_consistent(plan: &PlanView<'_>, st: &KernelState<'_>) -> Res<()> 
     Ok(())
 }
 
-/// Weichen, Schutzsignale und Bahnübergänge einer Fahrstraße sind gesichert.
+/// Weichen, Schutzsignale und Bahnübergänge einer Fahrstraße sind gesichert, Startsignal und
+/// Abschnitte nicht gesperrt.
 fn secured(st: &KernelState<'_>, view: &RouteView<'_>, now: Tick, timeout: Duration) -> Res<bool> {
-    let mut ok = signal(st, view.start())?.stop_holds == 0;
+    let start = signal(st, view.start())?;
+    let mut ok = start.stop_holds == 0 && !start.blocked;
+    // Keine Fahrt und kein Ersatzsignal durch einen gesperrten Abschnitt (REQ-IXL-027).
+    for t in view.tvds().chain(view.overlap_tvds()) {
+        ok &= !tvd(st, t)?.blocked;
+    }
     for (p, pos) in view.points().chain(view.overlap_points()) {
         ok &= effective_position(&point(st, p)?, now, timeout) == Some(pos);
     }
@@ -728,7 +734,7 @@ mod tests {
                 x.wrapping_sub(1)
             }
         };
-        match rng.below(14) {
+        match rng.below(16) {
             0 if !v.points.is_empty() => {
                 let i = rng.below(v.points.len());
                 v.points[i].holds = delta(rng, v.points[i].holds);
@@ -797,6 +803,14 @@ mod tests {
                     2 => RoutePhase::Occupied,
                     _ => RoutePhase::Idle,
                 };
+            }
+            13 => {
+                let i = rng.below(v.tvds.len());
+                v.tvds[i].blocked = !v.tvds[i].blocked;
+            }
+            14 => {
+                let i = rng.below(v.signals.len());
+                v.signals[i].blocked = !v.signals[i].blocked;
             }
             _ => {
                 if !v.borders.is_empty() {

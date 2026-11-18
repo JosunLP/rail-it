@@ -16,6 +16,8 @@
 //! | POST | `/v1/routes/{name}/set` | Fahrstraße einstellen |
 //! | POST | `/v1/routes/{name}/cancel` | Fahrstraße zurücknehmen |
 //! | POST | `/v1/points/{name}/move` | Weiche umstellen (`{"position":"left"}`) |
+//! | POST | `/v1/block` | Element sperren (`{"kind":"tvd","element":"T1"}`, REQ-IXL-027) |
+//! | POST | `/v1/unblock` | Sperre aufheben (Weiche, Signal; Gleissperrung nur als Hilfshandlung) |
 //! | POST | `/v1/borders/{address}/request` | Erlaubnis an einer Grenze anfordern |
 //! | POST | `/v1/borders/{address}/withdraw` | Anforderung zurückziehen |
 //! | GET | `/v1/aux` | Offene Hilfshandlungen und Zählwerk |
@@ -63,7 +65,7 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use railit_runtime::{NamedAux, NamedEvent, Snapshot};
+use railit_runtime::{NamedAux, NamedBlock, NamedEvent, Snapshot};
 use railit_types::PointPosition;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -133,6 +135,8 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/v1/routes/{name}/set", post(set_route))
         .route("/v1/routes/{name}/cancel", post(cancel_route))
         .route("/v1/points/{name}/move", post(move_point))
+        .route("/v1/block", post(block))
+        .route("/v1/unblock", post(unblock))
         .route("/v1/borders/{address}/request", post(request_permission))
         .route("/v1/borders/{address}/withdraw", post(withdraw_permission))
         .route("/v1/aux", get(aux_list).post(aux_request))
@@ -452,6 +456,22 @@ async fn move_point(
     Ok(answer(
         state.service.move_point(&who, &name, body.position).await?,
     ))
+}
+
+async fn block(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Json(body): Json<NamedBlock>,
+) -> ApiResult {
+    Ok(answer(state.service.block(&who, &body, true).await?))
+}
+
+async fn unblock(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Json(body): Json<NamedBlock>,
+) -> ApiResult {
+    Ok(answer(state.service.block(&who, &body, false).await?))
 }
 
 async fn request_permission(

@@ -277,6 +277,71 @@ fn operate_station_over_api() {
     );
 }
 
+/// REQ-IXL-027: Sperren über die API; die Gleissperrung hebt nur die Hilfshandlung auf.
+#[test]
+fn blocking_over_api() {
+    let (plan, public) = prepare("block", true);
+    let d = start(&[
+        "--plan",
+        plan.to_str().unwrap(),
+        "--trusted-key",
+        public.to_str().unwrap(),
+    ]);
+    let block = |kind: &str, element: &str| json!({"kind": kind, "element": element});
+
+    let (status, answer) = post(&d, "/v1/block", Some(block("tvd", "T1")));
+    assert_eq!(
+        (status, answer["type"].as_str()),
+        (200, Some("accepted")),
+        "{answer}"
+    );
+    let (_, state) = get(&d, "/v1/state", true);
+    let t1 = state["tvds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "T1")
+        .unwrap();
+    assert_eq!(t1["blocked"], true);
+
+    let (status, answer) = post(&d, "/v1/routes/A-N1/set", None);
+    assert_eq!(
+        (status, answer["reason"].as_str()),
+        (409, Some("tvd_blocked"))
+    );
+    assert_eq!(answer["element"], "T1");
+
+    let (status, answer) = post(&d, "/v1/unblock", Some(block("tvd", "T1")));
+    assert_eq!(
+        (status, answer["reason"].as_str()),
+        (409, Some("aux_required"))
+    );
+
+    let (status, answer) = post(&d, "/v1/block", Some(block("point", "W1")));
+    assert_eq!(status, 200, "{answer}");
+    let (status, answer) = post(&d, "/v1/points/W1/move", Some(json!({"position": "left"})));
+    assert_eq!(
+        (status, answer["reason"].as_str()),
+        (409, Some("point_blocked"))
+    );
+    assert_eq!(post(&d, "/v1/unblock", Some(block("point", "W1"))).0, 200);
+
+    assert_eq!(post(&d, "/v1/block", Some(block("signal", "XYZ"))).0, 404);
+    assert_eq!(post(&d, "/v1/block", Some(block("track", "T1"))).0, 422);
+
+    let unblock = json!({"kind": "unblock_tvd", "element": "T1"});
+    let (status, answer) = post_as(&d, "/v1/aux", Some(unblock), 1);
+    assert_eq!(status, 200, "{answer}");
+    let id = answer["aux"]["aux"].as_u64().unwrap();
+    let (_, aux) = get(&d, "/v1/aux", true);
+    let check = aux["pending"][0]["check"].as_str().unwrap().to_string();
+    let confirm = json!({"kind": "unblock_tvd", "element": "T1", "check": check});
+    let (status, answer) = post_as(&d, &format!("/v1/aux/{id}/confirm"), Some(confirm), 2);
+    assert_eq!(status, 200, "{answer}");
+    let (status, _) = post(&d, "/v1/routes/A-N1/set", None);
+    assert_eq!(status, 200);
+}
+
 /// REQ-IXL-014, REQ-JRN-001/002: Hilfshandlung über die API, Journal prüfen und abspielen.
 #[test]
 fn aux_operation_and_journal() {

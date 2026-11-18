@@ -1,8 +1,8 @@
 //! Zustand und Ereignisse mit fachlichen Namen statt IDs.
 
 use railit_kernel::{
-    Alarm, Aspect, AuxOperation, Command, Event, LxReport, Occupancy, OwnedState, PointReport,
-    Rejection, RoutePhase, SignalReport,
+    Alarm, Aspect, AuxOperation, BlockTarget, Command, Event, LxReport, Occupancy, OwnedState,
+    PointReport, Rejection, RoutePhase, SignalReport,
 };
 use railit_plan::{PlanView, RouteEnd};
 use railit_types::{BorderId, LxId, PointId, PointPosition, RouteId, SignalId, Tick, TvdId};
@@ -47,6 +47,8 @@ pub enum AuxKind {
     ForcePoint,
     /// Erlaubnis an einer Bereichsgrenze zurückholen (Element: Grenze).
     TakePermission,
+    /// Gleissperrung aufheben (Element: Abschnitt, REQ-IXL-027).
+    UnblockTvd,
 }
 
 impl AuxKind {
@@ -58,6 +60,7 @@ impl AuxKind {
             Self::Substitute => "substitute",
             Self::ForcePoint => "force_point",
             Self::TakePermission => "take_permission",
+            Self::UnblockTvd => "unblock_tvd",
         }
     }
 }
@@ -135,6 +138,7 @@ impl NamedAux {
                 format!("{area}{}", border_name(plan, b)),
                 None,
             ),
+            AuxOperation::UnblockTvd(t) => (AuxKind::UnblockTvd, tvd_name(plan, t), None),
         };
         Self {
             kind,
@@ -162,11 +166,75 @@ impl NamedAux {
             AuxKind::TakePermission => {
                 AuxOperation::TakePermission(plan.find_border(&self.element).ok_or_else(unknown)?)
             }
+            AuxKind::UnblockTvd => {
+                AuxOperation::UnblockTvd(plan.find_tvd(&self.element).ok_or_else(unknown)?)
+            }
             AuxKind::ForcePoint => AuxOperation::ForcePoint(
                 plan.find_point(&self.element).ok_or_else(unknown)?,
                 self.position
                     .ok_or_else(|| "force_point braucht eine Lage (position)".to_string())?,
             ),
+        })
+    }
+}
+
+/// Art einer Sperre (REQ-IXL-027).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockKind {
+    /// Weichensperre.
+    Point,
+    /// Signalsperre.
+    Signal,
+    /// Gleissperrung (Abschnitt).
+    Tvd,
+}
+
+impl BlockKind {
+    /// Name wie in API und Szenarien.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Point => "point",
+            Self::Signal => "signal",
+            Self::Tvd => "tvd",
+        }
+    }
+}
+
+/// Sperre mit fachlichen Namen.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamedBlock {
+    /// Art des Elements.
+    pub kind: BlockKind,
+    /// Name des Elements.
+    pub element: String,
+}
+
+impl NamedBlock {
+    /// Übersetzt ein Sperrziel des Kerns.
+    pub fn new(plan: &PlanView<'_>, target: BlockTarget) -> Self {
+        let (kind, element) = match target {
+            BlockTarget::Point(p) => (BlockKind::Point, point_name(plan, p)),
+            BlockTarget::Signal(s) => (BlockKind::Signal, signal_name(plan, s)),
+            BlockTarget::Tvd(t) => (BlockKind::Tvd, tvd_name(plan, t)),
+        };
+        Self { kind, element }
+    }
+
+    /// Löst den Namen gegen den Plan auf.
+    ///
+    /// # Errors
+    /// Beschreibung, wenn das Element unbekannt ist.
+    pub fn resolve(&self, plan: &PlanView<'_>) -> Result<BlockTarget, String> {
+        let unknown = || format!("unbekanntes Element „{}“", self.element);
+        Ok(match self.kind {
+            BlockKind::Point => {
+                BlockTarget::Point(plan.find_point(&self.element).ok_or_else(unknown)?)
+            }
+            BlockKind::Signal => {
+                BlockTarget::Signal(plan.find_signal(&self.element).ok_or_else(unknown)?)
+            }
+            BlockKind::Tvd => BlockTarget::Tvd(plan.find_tvd(&self.element).ok_or_else(unknown)?),
         })
     }
 }
@@ -392,6 +460,10 @@ impl NamedEvent {
                     Rejection::AuxMismatch => ("aux_mismatch", None),
                     Rejection::AuxNotApplicable => ("aux_not_applicable", None),
                     Rejection::NoPermission(b) => ("no_permission", Some(border_name(b))),
+                    Rejection::PointBlocked(p) => ("point_blocked", Some(point_name(plan, p))),
+                    Rejection::SignalBlocked(s) => ("signal_blocked", Some(signal_name(plan, s))),
+                    Rejection::TvdBlocked(t) => ("tvd_blocked", Some(tvd_name(plan, t))),
+                    Rejection::AuxRequired => ("aux_required", None),
                 };
                 Self::Rejected {
                     request: id.0,
@@ -463,6 +535,8 @@ pub struct PointSnapshot {
     pub locked_position: Option<PointPosition>,
     /// Anzahl geteilter Verschlüsse (Durchrutschweg, Flankenschutz).
     pub holds: u8,
+    /// Weichensperre (REQ-IXL-027).
+    pub blocked: bool,
 }
 
 /// Zustand eines Signals.
@@ -484,6 +558,8 @@ pub struct SignalSnapshot {
     pub aspects: Option<railit_movement::Picture>,
     /// Anzahl der Fahrstraßen, die das Signal als Flankenschutz in Halt halten.
     pub flank_holds: u8,
+    /// Signalsperre (REQ-IXL-027).
+    pub blocked: bool,
 }
 
 /// Zustand eines Bahnübergangs.
@@ -531,6 +607,8 @@ pub struct TvdSnapshot {
     pub locked_by: Option<String>,
     /// Fahrstraße, deren Durchrutschweg den Abschnitt verschlossen hat.
     pub overlap_of: Option<String>,
+    /// Gleissperrung (REQ-IXL-027).
+    pub blocked: bool,
 }
 
 /// Zustand einer Fahrstraße.
@@ -772,6 +850,7 @@ impl Snapshot {
                     locked_by: owner(p.owner()),
                     locked_position: p.locked_position(),
                     holds: p.holds(),
+                    blocked: p.blocked(),
                 }),
         );
         self.signals.extend(
@@ -792,6 +871,7 @@ impl Snapshot {
                         .unwrap_or_default(),
                     aspects: pictures.picture(id),
                     flank_holds: s.stop_holds(),
+                    blocked: s.blocked(),
                 }),
         );
         self.tvds.extend(
@@ -806,6 +886,7 @@ impl Snapshot {
                     occupancy: t.occupancy(),
                     locked_by: owner(t.owner()),
                     overlap_of: owner(t.overlap_owner()),
+                    blocked: t.blocked(),
                 }),
         );
         self.routes.extend(plan.routes().map(|r| {

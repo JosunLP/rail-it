@@ -49,7 +49,8 @@ Zuglenkung über Prozessgrenzen, PZB im Simulator) und Phase 14 (Kreuzungsweiche
 Signale vor der Freimeldegrenze, PZB 90) und Phase 15 (Version 1.0: Vier-Augen-Freigabe der
 Pläne, Sperrlisten für mTLS, Betriebsführung bei der Übernahme, RaSTA-Redundanzschicht,
 zyklische Speicherprüfung, ETCS über Prozessgrenzen, Siegel mit Zeitstempel und Zeugen,
-[FMEA](docs/safety/fmea.md)) sind umgesetzt.
+[FMEA](docs/safety/fmea.md)) sind umgesetzt. In Arbeit ist Phase 16 (Betrieb im Alltag): Sperren
+von Weichen, Signalen und Gleisen, siehe [Sperren](#sperren).
 
 **Version 1.0** schließt den Funktionsumfang für Labor, Ausbildung und Prüfstände ab. Was bis
 zu einer Zulassung fehlt – unabhängige Begutachtung, qualifizierte Toolchain, Hardware, Regeln
@@ -174,6 +175,24 @@ einen echten `railitd`, vorher `cargo build -p railit -p railitd`). Das gebaute 
 `apps/railitd/ui/dist` wird nicht eingecheckt: CI und Release bauen den Bedienplatz in der
 Pipeline, `railitd` bettet ihn beim Bauen ein (`build.rs`). Ohne gebauten Bedienplatz zeigt
 `railitd` unter `/ui/` eine Hinweisseite; mit `RAILIT_REQUIRE_UI=1` bricht der Build ab.
+
+### Sperren
+
+Weichen, Signale und Gleise lassen sich sperren, z. B. für eine Arbeitsstelle
+(REQ-IXL-027). Der Kern lässt dann keine Fahrt, kein Ersatzsignal und keinen Stellbefehl
+durch die Sperre zu; eine Gleissperrung hebt nur eine zählpflichtige Hilfshandlung auf:
+
+```sh
+railit block tvd T1                              # Gleissperrung: Arbeitsstelle in Gleis 1
+railit block point W1                            # Weichensperre: W1 bleibt in ihrer Lage
+railit route set A-N1                            # abgelehnt – Abschnitt T1 gesperrt
+railit unblock point W1
+railit aux request unblock-tvd T1 --operator 1   # Gleissperrung aufheben …
+railit aux confirm 0 unblock-tvd T1 --operator 2 # … mit zweitem Bediener
+railit scenario run tests/scenarios/28_sperren.toml
+```
+
+Am Bedienplatz: Rechtsklick auf Signal, Weiche oder Abschnitt, oder `SP W1` / `ESP W1`.
 
 ### Sicherer Rechner
 

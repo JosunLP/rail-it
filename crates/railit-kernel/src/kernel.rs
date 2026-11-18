@@ -11,8 +11,8 @@ use railit_types::{LxId, PointId, PointPosition, RouteId, SignalId, Tick, TvdId}
 
 use crate::invariants;
 use crate::io::{
-    Alarm, Aspect, AuxId, AuxOperation, Command, Event, Input, LxReport, Occupancy, OperatorId,
-    Outputs, Rejection, Request, RequestId, RoutePhase, SafeStateReason, SignalReport,
+    Alarm, Aspect, AuxId, AuxOperation, BlockTarget, Command, Event, Input, LxReport, Occupancy,
+    OperatorId, Outputs, Rejection, Request, RequestId, RoutePhase, SafeStateReason, SignalReport,
 };
 use crate::state::{AuxSlot, KernelState, LxState, PointState, RouteState, SignalState, TvdState};
 
@@ -462,12 +462,65 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
             }
             Request::RequestPermission(b) => self.request_permission(st, b, true)?,
             Request::WithdrawPermissionRequest(b) => self.request_permission(st, b, false)?,
+            Request::Block(target) => Self::set_block(st, target, true),
+            Request::Unblock(BlockTarget::Tvd(t)) => {
+                if tvd(st, t).is_err() {
+                    Err(Rejection::UnknownElement)
+                } else {
+                    Err(Rejection::AuxRequired)
+                }
+            }
+            Request::Unblock(target) => Self::set_block(st, target, false),
         };
         out.event(match result {
             Ok(()) => Event::Accepted(id),
             Err(reason) => Event::Rejected(id, reason),
         });
         Ok(())
+    }
+
+    /// Sperren und Entsperren (REQ-IXL-027). Sperren ist restriktiv und immer zulässig; die
+    /// Wirkung prüfen Zulassung, Stellbefehle und Fahrtbedingungen.
+    fn set_block(st: &mut KernelState<'_>, target: BlockTarget, on: bool) -> Result<(), Rejection> {
+        let flag = match target {
+            BlockTarget::Point(p) => point_mut(st, p).map(|s| &mut s.blocked),
+            BlockTarget::Signal(s) => signal_mut(st, s).map(|s| &mut s.blocked),
+            BlockTarget::Tvd(t) => tvd_mut(st, t).map(|s| &mut s.blocked),
+        };
+        match flag {
+            Ok(flag) => {
+                *flag = on;
+                Ok(())
+            }
+            Err(_) => Err(Rejection::UnknownElement),
+        }
+    }
+
+    /// Darf die Weiche umgestellt werden, soweit Sperren betroffen sind? Weder die Weiche
+    /// noch ihr Abschnitt ist gesperrt (REQ-IXL-027).
+    fn point_unblocked(&self, st: &KernelState<'_>, p: PointId) -> Res<Result<(), Rejection>> {
+        if point(st, p)?.blocked {
+            return Ok(Err(Rejection::PointBlocked(p)));
+        }
+        let t = self.plan.point_tvd(p).ok_or(IDX)?;
+        if tvd(st, t)?.blocked {
+            return Ok(Err(Rejection::TvdBlocked(t)));
+        }
+        Ok(Ok(()))
+    }
+
+    /// Sperren, die Fahrt und Ersatzsignal einer Fahrstraße verbieten: Startsignal gesperrt
+    /// oder ein Abschnitt in Fahrweg oder Durchrutschweg gesperrt (REQ-IXL-027).
+    fn route_blocked(st: &KernelState<'_>, view: &RouteView<'_>) -> Res<Option<Rejection>> {
+        if signal(st, view.start())?.blocked {
+            return Ok(Some(Rejection::SignalBlocked(view.start())));
+        }
+        for t in view.tvds().chain(view.overlap_tvds()) {
+            if tvd(st, t)?.blocked {
+                return Ok(Some(Rejection::TvdBlocked(t)));
+            }
+        }
+        Ok(None)
     }
 
     fn tvd_clear(&self, st: &KernelState<'_>, t: TvdId, now: Tick) -> Res<bool> {
@@ -504,6 +557,9 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
         if signal(st, view.start())?.stop_holds > 0 {
             return Ok(Err(Rejection::SignalHeld(view.start())));
         }
+        if let Some(reason) = Self::route_blocked(st, view)? {
+            return Ok(Err(reason));
+        }
         if let RouteEnd::Border(b) = view.end()
             && !self.exit_permitted(st, b, now, false)?
         {
@@ -532,6 +588,11 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
             if state.owner.is_some() || state.locked_pos.is_some_and(|lp| lp != pos) {
                 return Ok(Err(Rejection::PointLocked(p)));
             }
+            if !self.in_position(st, p, pos, now)?
+                && let Err(reason) = self.point_unblocked(st, p)?
+            {
+                return Ok(Err(reason));
+            }
         }
         for (p, pos) in shared_points(view) {
             let state = point(st, p)?;
@@ -541,6 +602,9 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
             let must_move = state.owner.is_none() && !self.in_position(st, p, pos, now)?;
             if must_move && !self.point_tvd_clear(st, p, now)? {
                 return Ok(Err(Rejection::PointNotOperable(p)));
+            }
+            if must_move && let Err(reason) = self.point_unblocked(st, p)? {
+                return Ok(Err(reason));
             }
         }
         Ok(Ok(()))
@@ -651,6 +715,9 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
         if state.is_locked() {
             return Ok(Err(Rejection::PointLocked(p)));
         }
+        if let Err(reason) = self.point_unblocked(st, p)? {
+            return Ok(Err(reason));
+        }
         if !self.tvd_clear(st, t, now)? {
             return Ok(Err(Rejection::PointNotOperable(p)));
         }
@@ -659,6 +726,9 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
         if let Some((q, _)) = partner {
             if point(st, q)?.is_locked() {
                 return Ok(Err(Rejection::PointLocked(q)));
+            }
+            if let Err(reason) = self.point_unblocked(st, q)? {
+                return Ok(Err(reason));
             }
             if !self.point_tvd_clear(st, q, now)? {
                 return Ok(Err(Rejection::PointNotOperable(q)));
@@ -705,6 +775,9 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
         }
         if !forced && !self.point_tvd_clear(st, p, now)? {
             return Err(SafeStateReason::PointMovedUnderOccupancy(p));
+        }
+        if self.point_unblocked(st, p)?.is_err() {
+            return Err(SafeStateReason::BlockedPointCommanded(p));
         }
         point_mut(st, p)?.commanded = Some(pos);
         out.command(Command::MovePoint {
@@ -763,10 +836,20 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
                         let q_occupancy =
                             effective_occupancy(&tvd(st, qt)?, now, self.rules.report_timeout());
                         !point(st, q)?.is_locked()
+                            && self.point_unblocked(st, q)?.is_ok()
                             && matches!(q_occupancy, Occupancy::Disturbed | Occupancy::Clear)
                     }
                 };
-                !state.is_locked() && occupancy == Occupancy::Disturbed && partner_free
+                !state.is_locked()
+                    && self.point_unblocked(st, p)?.is_ok()
+                    && occupancy == Occupancy::Disturbed
+                    && partner_free
+            }
+            AuxOperation::UnblockTvd(t) => {
+                let Ok(state) = tvd(st, t) else {
+                    return Ok(Err(Rejection::UnknownElement));
+                };
+                state.blocked
             }
         };
         Ok(if applicable {
@@ -879,6 +962,10 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
                 Ok(())
             }
             AuxOperation::TakePermission(b) => Self::take_back(st, b),
+            AuxOperation::UnblockTvd(t) => {
+                tvd_mut(st, t)?.blocked = false;
+                Ok(())
+            }
         }
     }
 
@@ -937,6 +1024,9 @@ impl<'p, R: RuleSet> Interlocking<'p, R> {
     /// Schutzsignale in Halt, Bahnübergänge geschlossen, Startsignal nicht gehalten.
     fn route_secured(&self, st: &KernelState<'_>, view: &RouteView<'_>, now: Tick) -> Res<bool> {
         let timeout = self.rules.report_timeout();
+        if Self::route_blocked(st, view)?.is_some() {
+            return Ok(false);
+        }
         if !self.points_in_position(st, view, now)? {
             return Ok(false);
         }

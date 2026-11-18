@@ -33,6 +33,16 @@ service Interlocking {
   // Zählpflichtige Hilfshandlung anfordern und durch einen zweiten Bediener bestätigen.
   rpc RequestAux(AuxRequest) returns (Answer);
   rpc ConfirmAux(ConfirmAuxRequest) returns (Answer);
+  // Element sperren bzw. Sperre aufheben (Weiche, Signal; eine Gleissperrung hebt nur die
+  // Hilfshandlung "unblock_tvd" auf).
+  rpc Block(BlockRequest) returns (Answer);
+  rpc Unblock(BlockRequest) returns (Answer);
+}
+
+message BlockRequest {
+  // "point" (Weichensperre), "signal" (Signalsperre), "tvd" (Gleissperrung).
+  string kind = 1;
+  string element = 2;
 }
 
 message GetStateRequest {}
@@ -53,7 +63,8 @@ message BorderRequest {
 }
 
 message AuxRequest {
-  // "release_route", "reset_tvd", "substitute", "force_point", "take_permission".
+  // "release_route", "reset_tvd", "substitute", "force_point", "take_permission",
+  // "unblock_tvd".
   string kind = 1;
   string element = 2;
   // Nur für "force_point": "left" oder "right".
